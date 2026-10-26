@@ -1,0 +1,4 @@
+project_id = "feltus-labs"
+
+[analytics]
+enabled = false

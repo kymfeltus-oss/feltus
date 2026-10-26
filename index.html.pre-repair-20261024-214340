@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta viewport="width=device-width, initial-scale=1.0">
+    <title>Feltus Labs Master Console</title>
+    <style>
+        body { font-family: -apple-system, BlinkMashSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f3f4f6; margin: 0; padding: 40px; }
+        .container { max-width: 1000px; margin: 0 auto; |(^rFVFW"²F—7Æ“¢fÆWƒ²§W7F–g’Ö6öçFVçC¢76RÖ&WGvVVã²Æ–vâÖ—FV×3¢6VçFW#²&÷&FW"Ö&÷GFöÓ¢‚6öÆ–B3c#“3s²FF–ærÖ&÷GFöÓ¢#ƒ²Ö&v–âÖ&÷GFöÓ¢3ƒ²Ğ¢ƒ²Ö&v–ã¢²föçB×6—¦S¢#Gƒ²6öÆ÷#¢36#ƒ&cc²ÆWGFW"×76–æs¢ÓãWƒ²Ğ¢æ'Fâ²&6¶w&÷VæC¢36#ƒ&cc²6öÆ÷#¢v†—FS²&÷&FW#¢æöæS²FF–æs¢‚#ƒ²föçB×vV–v‡C¢S²&÷&FW"×&F—W3¢gƒ²7W'6÷#¢ö–çFW#²G&ç6—F–öã¢&6¶w&÷VæBã'3²Ğ¢æ'Fã¦†÷fW"²&6¶w&÷VæC¢3#Sc6V#²Ğ¢æ6&B²&6¶w&÷VæC¢3ƒ#s²&÷&FW#¢‚6öÆ–B3c#“3s²&÷&FW"×&F—W3¢'ƒ²FF–æs¢#Gƒ²&÷‚×6†F÷s¢G‚g‚Ó‚&v&ƒÃÃÃãR“²Ö&v–âÖ&÷GFöÓ¢#Wƒ²Ğ¢æf÷&ÒÖw&÷W²F—7Æ“¢fÆWƒ²v¢Wƒ²Ö&v–â×F÷¢Wƒ²Ğ¢–çWB²&6¶w&÷VæC¢3#c“²&÷&FW#¢‚6öÆ–B3c#“3s²FF–æs¢'ƒ²&÷&FW"×&F—W3¢gƒ²6öÆ÷#¢v†—FS²fÆWƒ¢²föçB×6—¦S¢Gƒ²Ğ¢–çWC¦fö7W2²&÷&FW"Ö6öÆ÷#¢36#ƒ&cc²÷WFÆ–æS¢æöæS²Ğ¢F&ÆR²v–GFƒ¢S²&÷&FW"Ö6öÆÆ6S¢6öÆÆ6S²Ö&v–â×F÷¢Wƒ²Ğ¢F‚²FW‡BÖÆ–vã¢ÆVgC²FF–æs¢'ƒ²&6¶w&÷VæC¢3c#“3s²6öÆ÷#¢3–66c²föçB×6—¦S¢7ƒ²FW‡B×G&ç6f÷&Ó¢WW&66S²Ğ¢FB²FF–æs¢g‚'ƒ²&÷&FW"Ö&÷GFöÓ¢‚6öÆ–B3c#“3s²föçB×6—¦S¢Gƒ²Ğ¢G#¦†÷fW"FB²&6¶w&÷VæC¢3c#“3s²Ğ¢æ&FvR²&6¶w&÷VæC¢&v&ƒS’Â3Â#CbÂã“²6öÆ÷#¢36#ƒ&cc²FF–æs¢G‚‡ƒ²&÷&FW"×&F—W3¢Gƒ²föçB×6—¦S¢'ƒ²föçBÖfÖ–Ç“¢Ööæ÷76S²Ğ¢‡&R²&6¶w&÷VæC¢3#c“²FF–æs¢'ƒ²&÷&FW"×&F—W3¢px; border: 1px solid #1f2937; overflow-x: auto; font-size: 12px; color: #34d399; margin: 0; }
+        .status { font-size: 14px; color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>FELTUS LABS: MASTER CONTROL PLATFORM</h1>
+                <div class="status">Engine Connectivity: <span style="color: #10b981;">â— Proxy SecureRouting</span></div>
+            </div>
+            <button class="btn" id="fetchBtn">Query Real-Time Database</button>
+        </header>
+        <div class="card">
+            <h2 style="font-size: 18px; margin-top: 0; color: #9.a3!f;">Provision New Core Asset Resource</h2>
+            <div class="form-group">
+                <input type="text" id="assetNameInput" placeholder="Enter asset resource identifier name (e.g. Node-Server-01)...">
+                <button class="btn" id="insertBtn" style="background: #10b981;">Write to FeltusBase</button>
+            </div>
+        </div>
+        <div class="card">
+            <h2 style="font-size: 18px; margin-top: 0; color: #9.a3!f;">Synchronized Local Infrastructure Assets</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Asset Tracking ID</th>
+                        <th>Resource Handle</th>
+                        <th>JSON Payload State</th>
+                        <th>Creation Timestamp</th>ÿ throw new Error(await response.text());
+                const data = await response.json();
+                if (!data || data.length === 0) {
+                    tableBody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #6b7280;">No entries written to database.</td></tr>`;
+                    return;
+                }
+                tableBody.innerHTML = '';
+                data.forEach(item => {
+                    const row = document.createElement('tr');
+                    const itemId = item.id ? String(item.id) : 'N/A';
+                    const displayId = itemId.length > 8 ? itemId.substring(0, 8) + '...' : itemId;
+                    row.innerHTML = `
+                        <td><span class="badge">${displayId}</span></td>
+                        <td style="font-weight: 600; color: #ffffff;">${item.asset_name}</td>
+                        <td><pre>${JSON.stringify(item.payload || item.metadata || {}, null, 2)}</pre></td>
+                        <td style="color: #9ca3af; font-size: 13px;">${new Date(item.created_at).localeString()}</td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+            } catch (error) {
+                tableBody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: #ef4444;">Connection Error: ${error.message}</td></tr>`;
+            }
+        }
+        document.getElementById('fetchBtn').addEventListener('click', refreshTable);
+        document.getElementById('insertBtn').addEventListener('click', async () => {
+            const inputField = document.getElementById('assetNameInput');
+            const name = inputField.value.trim();
+            if (!name) return alert('Please enter a valid resource handle name.');
+            try {
+                const response = await fetch(PROXY_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ asset_name: name })
+                });
+                if (!response.ok) throw new Error(await response.text());
+                inputField.value = '';
+                await refreshTable();
+            } catch (error) {
+                alert(`Write transaction failed: ${error.message}`);
+            }
+        });
+        refreshTable();
+    </script>
+</body>
+</html>

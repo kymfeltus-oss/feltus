@@ -1,0 +1,34 @@
+﻿# Local environment parameters
+.env
+.env.local
+.env.production
+
+# Locally generated signing secrets / keys
+jwt_private.pem
+jwt_public.pem
+
+# Runtime data paths
+supabase/.temp/
+volumes/db/data/
+volumes/storage/
+
+.feltus-dev-auth.json
+
+.feltus-storage/
+
+.feltus-runtime/
+.phase*/
+.phase*.txt
+*.pre-phase*.bak
+*.pre-persistent-host.bak
+node_modules/
+.env.*
+!.env.example
+.supabase/
+*.log
+Thumbs.db
+.DS_Store
+*.bak
+*.backup
+*.bak.*
+*.backup.*

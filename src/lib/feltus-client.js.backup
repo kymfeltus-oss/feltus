@@ -1,0 +1,72 @@
+﻿/**
+ * FELTUS LABS: ZERO-DEPENDENCY DATA BRIDGE CLIENT
+ * Protocol: RFC 2616 HTTP/1.1 REST Engine Mapping to PostgREST
+ */
+export class FeltusBaseClient {
+  constructor(apiUrl, jwtToken = null) {
+    // Standardizes any trailing slashes safely
+    this.apiUrl = apiUrl.replace(/\/$/, '');
+    this.jwtToken = jwtToken;
+  }
+
+  /** Update user token contexts dynamically upon state modifications */
+  setAuth(token) {
+    this.jwtToken = token;
+  }
+
+  /** Build uniform, cryptographically sound header contexts */
+  _getHeaders(customHeaders = {}) {
+    const headers = { 
+      'Content-Type': 'application/json', 
+      'Accept': 'application/json', 
+      ...customHeaders 
+    };
+    if (this.jwtToken) {
+  headers['apikey'] = this.jwtToken;
+
+  if (!this.jwtToken.startsWith('sb_secret_')) {
+    headers['Authorization'] = `Bearer ${this.jwtToken}`;
+  }
+}
+    return headers;
+  }
+
+  /** Root data entry-point interface */
+  from(table) {
+    // Validate and construct the table-specific REST endpoint.
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
+      throw new Error("Invalid database table name");
+    }
+
+    const tableUrl = `${this.apiUrl}/${table}`;
+    return {
+      /** Execute secure SELECT collections with explicit PostgREST operators */
+      select: async (selectColumns = '*', filters = {}) => {
+        let urlQuery = `?select=${encodeURIComponent(selectColumns)}`;
+        
+        Object.entries(filters).forEach(([key, val]) => { 
+          urlQuery += `&${encodeURIComponent(key)}=eq.${encodeURIComponent(val)}`; 
+        });
+
+        const response = await fetch(`${tableUrl}${urlQuery}`, { 
+          method: 'GET', 
+          headers: this._getHeaders() 
+        });
+        if (!response.ok) throw new Error(`[FeltusBase Data Fetch Error]: ${await response.text()}`);
+        return await response.json();
+      },
+
+      /** Execute transactional database INSERTS */
+      insert: async (recordsArray) => {
+        const response = await fetch(tableUrl, { 
+          method: 'POST', 
+          headers: this._getHeaders({ 'Prefer': 'return=representation' }), 
+          body: JSON.stringify(recordsArray) 
+        });
+        if (!response.ok) throw new Error(`[FeltusBase Write Failure]: ${await response.text()}`);
+        return await response.json();
+      }
+    };
+  }
+}
+

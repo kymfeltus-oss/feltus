@@ -1,0 +1,180 @@
+﻿export class FeltusAI {
+  constructor({
+    baseUrl =
+      process.env.FELTUS_OLLAMA_URL ||
+      "http://127.0.0.1:11434",
+
+    model =
+      process.env.FELTUS_AI_MODEL ||
+      "llama3:8b",
+
+    timeoutMs = 600000
+  } = {}) {
+    this.baseUrl =
+      baseUrl.replace(/\/+$/, "");
+
+    this.model = model;
+    this.timeoutMs = timeoutMs;
+  }
+
+
+  async request(
+    path,
+    {
+      method = "GET",
+      body = null
+    } = {}
+  ) {
+    const controller =
+      new AbortController();
+
+    const timeout =
+      setTimeout(
+        () => controller.abort(),
+        this.timeoutMs
+      );
+
+    try {
+      const response =
+        await fetch(
+          `${this.baseUrl}${path}`,
+          {
+            method,
+
+            headers: {
+              Accept:
+                "application/json",
+
+              ...(body
+                ? {
+                    "Content-Type":
+                      "application/json"
+                  }
+                : {})
+            },
+
+            body:
+              body
+                ? JSON.stringify(body)
+                : undefined,
+
+            signal:
+              controller.signal
+          }
+        );
+
+
+      const text =
+        await response.text();
+
+      let data;
+
+      try {
+        data =
+          JSON.parse(text);
+      } catch {
+        data = {
+          raw:
+            text
+        };
+      }
+
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+          data.message ||
+          `Ollama request failed with HTTP ${response.status}`
+        );
+      }
+
+
+      return data;
+
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+
+  async listModels() {
+    const result =
+      await this.request(
+        "/api/tags"
+      );
+
+    return Array.isArray(
+      result.models
+    )
+      ? result.models
+      : [];
+  }
+
+
+  async generate(
+    prompt,
+    {
+      model =
+        this.model,
+
+      temperature = 0,
+
+      numPredict = 256,
+
+      keepAlive = "10m"
+    } = {}
+  ) {
+    if (
+      typeof prompt !== "string" ||
+      !prompt.trim()
+    ) {
+      throw new Error(
+        "AI prompt is required."
+      );
+    }
+
+
+    const result =
+      await this.request(
+        "/api/generate",
+        {
+          method:
+            "POST",
+
+          body: {
+            model,
+
+            prompt:
+              prompt.trim(),
+
+            stream:
+              false,
+
+            keep_alive:
+              keepAlive,
+
+            options: {
+              temperature,
+              num_predict:
+                numPredict
+            }
+          }
+        }
+      );
+
+
+    if (
+      result.done !== true
+    ) {
+      throw new Error(
+        "Local AI inference did not complete."
+      );
+    }
+
+
+    return result;
+  }
+}
+
+
+export default FeltusAI;

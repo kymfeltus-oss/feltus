@@ -1,0 +1,8817 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FELTUS LABS | Master Command Console</title>
+
+<style>
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: #0d1016;
+  color: #edf1f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top right, rgba(150,170,200,.08), transparent 35%),
+    #0d1016;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 5%;
+  border-bottom: 1px solid #2b3340;
+  background: rgba(13,16,22,.96);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 23px;
+  letter-spacing: .09em;
+}
+
+.brand small {
+  display: block;
+  margin-top: 5px;
+  color: #818c9c;
+  letter-spacing: .08em;
+}
+
+.mode {
+  padding: 8px 12px;
+  border: 1px solid #354152;
+  border-radius: 999px;
+  font-size: 12px;
+  color: #a9d7bc;
+  background: #171c24;
+}
+
+main {
+  width: min(1240px, calc(100% - 36px));
+  margin: 34px auto 60px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-end;
+  margin-bottom: 28px;
+}
+
+.hero h2 {
+  margin: 0 0 8px;
+  font-size: 30px;
+}
+
+.hero p,
+.panel p {
+  margin: 0;
+  color: #929cac;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.metric,
+.panel,
+.project-card,
+.model-card {
+  background: #181d26;
+  border: 1px solid #2d3542;
+  border-radius: 14px;
+}
+
+.metric {
+  padding: 18px;
+}
+
+.metric-label {
+  color: #808b9a;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+
+.metric-value {
+  margin-top: 8px;
+  font-size: 22px;
+  font-weight: 650;
+}
+
+.panel {
+  padding: 24px;
+  margin-bottom: 22px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.panel h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+input,
+select {
+  padding: 12px 13px;
+  border-radius: 8px;
+  border: 1px solid #445063;
+  background: #0f141c;
+  color: #fff;
+  font: inherit;
+}
+
+input {
+  flex: 1;
+  min-width: 0;
+}
+
+select {
+  min-width: 160px;
+}
+
+button {
+  padding: 12px 17px;
+  border: 0;
+  border-radius: 8px;
+  background: #dbe3ec;
+  color: #151a22;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #303845;
+  color: #edf1f6;
+}
+
+button.danger {
+  background: #453337;
+  color: #f4dddd;
+}
+
+button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.inline,
+.model-toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.project-grid,
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 14px;
+}
+
+.project-card {
+  padding: 18px;
+  cursor: pointer;
+  transition: .15s ease;
+}
+
+.project-card:hover {
+  transform: translateY(-2px);
+  border-color: #58677b;
+}
+
+.project-card.active {
+  border-color: #a8b8cc;
+  box-shadow: 0 0 0 1px #a8b8cc inset;
+}
+
+.project-name,
+.model-name {
+  font-size: 17px;
+  font-weight: 650;
+  margin-bottom: 8px;
+}
+
+.project-meta,
+.model-table {
+  font-size: 12px;
+  color: #8d98a7;
+  line-height: 1.6;
+}
+
+.model-table {
+  font-family: Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #252d38;
+  font-size: 11px;
+  color: #b9c5d3;
+}
+
+.rls-on {
+  color: #9fd9bd;
+}
+
+.rls-off {
+  color: #ff9e9e;
+}
+
+.status {
+  min-height: 24px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: #96a1b0;
+}
+
+.success {
+  color: #9fd9bd;
+}
+
+.error {
+  color: #ff9696;
+}
+
+.context-box {
+  padding: 16px;
+  background: #11161e;
+  border: 1px solid #2c3440;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+
+.context-name {
+  font-weight: 650;
+}
+
+.context-id {
+  margin-top: 5px;
+  font: 12px Consolas, monospace;
+  color: #8592a3;
+}
+
+.column-builder {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.column-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) 180px 120px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #11161e;
+}
+
+.column-row input,
+.column-row select {
+  width: 100%;
+}
+
+.nullable-control,
+.rls-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #a3adba;
+  font-size: 13px;
+}
+
+.nullable-control input,
+.rls-control input {
+  width: auto;
+  flex: none;
+}
+
+.model-card {
+  padding: 18px;
+}
+
+.model-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 13px;
+  border-bottom: 1px solid #2c3440;
+  vertical-align: top;
+}
+
+th {
+  color: #8b96a6;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  font-family: Consolas, monospace;
+  color: #b9c3d0;
+}
+
+.empty {
+  padding: 28px;
+  text-align: center;
+  color: #737f90;
+}
+
+.hidden {
+  display: none !important;
+}
+
+footer {
+  text-align: center;
+  color: #667284;
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+@media (max-width: 850px) {
+  .metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .hero,
+  .panel-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 700px) {
+  .column-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .inline,
+  .model-toolbar {
+    flex-direction: column;
+  }
+
+  input,
+  select,
+  button {
+    width: 100%;
+  }
+}
+﻿.ai-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ai-status-card,
+.ai-chat,
+.ai-side-card {
+  border: 1px solid #303946;
+  background: #11161e;
+  border-radius: 12px;
+}
+
+.ai-status-card {
+  padding: 16px;
+}
+
+.ai-status-label {
+  color: #7f8b9b;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+}
+
+.ai-status-value {
+  margin-top: 7px;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.ai-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 16px;
+}
+
+.ai-chat {
+  overflow: hidden;
+}
+
+.ai-chat-header {
+  padding: 16px 18px;
+  border-bottom: 1px solid #29313c;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.ai-conversation {
+  min-height: 320px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.ai-empty {
+  padding: 75px 24px;
+  text-align: center;
+  color: #737f90;
+}
+
+.ai-message {
+  padding: 14px 16px;
+  border-radius: 11px;
+  margin-bottom: 16px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.ai-message-user {
+  background: #1b2a3d;
+  margin-left: 12%;
+}
+
+.ai-message-assistant {
+  background: #171e28;
+  border: 1px solid #2c3745;
+  margin-right: 5%;
+}
+
+.ai-message-label {
+  display: block;
+  margin-bottom: 7px;
+  color: #8f9baa;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.ai-composer {
+  padding: 14px;
+  border-top: 1px solid #29313c;
+}
+
+.ai-composer textarea {
+  width: 100%;
+  min-height: 95px;
+  resize: vertical;
+  padding: 13px;
+  border-radius: 9px;
+  border: 1px solid #445063;
+  background: #0e131a;
+  color: #fff;
+  font: inherit;
+}
+
+.ai-composer-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.ai-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-suggestion {
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
+.ai-side {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.ai-side-card {
+  padding: 16px;
+}
+
+.ai-side-card h4 {
+  margin: 0 0 12px;
+}
+
+.ai-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #252d37;
+  color: #8f9baa;
+  font-size: 12px;
+}
+
+.ai-detail:last-child {
+  border-bottom: 0;
+}
+
+.ai-detail strong {
+  color: #edf1f6;
+  text-align: right;
+}
+
+.ai-private {
+  color: #9fd9bd !important;
+}
+
+#aiModelSelect {
+  width: 100%;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 900px) {
+  .ai-status-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ai-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .ai-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+﻿.relationship-layout {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: 16px;
+}
+
+.relationship-builder,
+.er-map {
+  padding: 18px;
+  border: 1px solid #303946;
+  border-radius: 12px;
+  background: #11161e;
+}
+
+.relationship-builder h4,
+.er-map h4 {
+  margin: 0 0 5px;
+}
+
+.relationship-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 11px;
+  margin-top: 18px;
+}
+
+.relationship-field {
+  display: grid;
+  gap: 6px;
+}
+
+.relationship-field label {
+  color: #8490a0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.relationship-field select {
+  width: 100%;
+}
+
+.relationship-arrow {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-size: 22px;
+  color: #9aa8b8;
+}
+
+.relationship-actions {
+  margin-top: 15px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.er-nodes {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.er-node {
+  padding: 13px;
+  border-radius: 9px;
+  border: 1px solid #34404f;
+  background: #161d27;
+}
+
+.er-node-name {
+  font-weight: 650;
+  margin-bottom: 4px;
+}
+
+.er-node-table {
+  font: 11px Consolas, monospace;
+  color: #7f8b9b;
+  overflow-wrap: anywhere;
+}
+
+.er-edges {
+  display: grid;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.er-edge {
+  padding: 11px 13px;
+  border: 1px solid #354454;
+  border-radius: 9px;
+  background: #12202a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.er-edge-arrow {
+  color: #9fd9bd;
+  font-weight: 650;
+}
+
+.relationship-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.relationship-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #121820;
+}
+
+.relationship-path {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.relationship-meta {
+  margin-top: 5px;
+  color: #8390a0;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .relationship-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .relationship-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+﻿.activity-toolbar {
+  display: grid;
+  grid-template-columns:
+    minmax(150px, 1fr)
+    minmax(140px, .8fr)
+    minmax(190px, 1fr)
+    110px
+    auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.activity-filter {
+  display: grid;
+  gap: 6px;
+}
+
+.activity-filter label {
+  color: #8793a3;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.activity-filter select {
+  width: 100%;
+}
+
+.activity-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.activity-metric {
+  padding: 15px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #11161e;
+}
+
+.activity-metric-label {
+  color: #8793a3;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.activity-metric-value {
+  margin-top: 5px;
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.activity-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #303946;
+  border-radius: 11px;
+  background: #11161e;
+}
+
+.activity-table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+}
+
+.activity-table th {
+  padding: 11px 12px;
+  text-align: left;
+  color: #8793a3;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  border-bottom: 1px solid #303946;
+}
+
+.activity-table td {
+  padding: 12px;
+  vertical-align: top;
+  border-bottom: 1px solid #252d38;
+  font-size: 12px;
+}
+
+.activity-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.activity-time {
+  white-space: nowrap;
+  color: #a8b2bf;
+}
+
+.activity-event {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+}
+
+.activity-resource {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.activity-message {
+  color: #d5dbe4;
+}
+
+.activity-meta {
+  margin-top: 5px;
+  color: #788696;
+  font: 10px Consolas, monospace;
+  overflow-wrap: anywhere;
+  max-width: 420px;
+}
+
+.activity-duration {
+  white-space: nowrap;
+  font-family: Consolas, monospace;
+}
+
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 7px;
+  border: 1px solid #3a4553;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.activity-badge-success {
+  border-color: #315c4a;
+  background: #13251f;
+}
+
+.activity-badge-error {
+  border-color: #704047;
+  background: #29171a;
+}
+
+.activity-badge-warning {
+  border-color: #695a34;
+  background: #282214;
+}
+
+.activity-badge-info {
+  border-color: #38516a;
+  background: #14202a;
+}
+
+.activity-empty {
+  padding: 34px;
+  text-align: center;
+  color: #8290a0;
+}
+
+@media (max-width: 1050px) {
+  .activity-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .activity-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 650px) {
+  .activity-toolbar,
+  .activity-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+﻿.system-health-shell {
+  margin-top: 18px;
+}
+
+.system-health-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.system-health-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.system-health-summary {
+  color: #8d99a8;
+  font-size: 11px;
+}
+
+.system-health-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.system-health-card {
+  padding: 14px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #11161e;
+}
+
+.system-health-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.system-health-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.system-health-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  border: 1px solid #3a4553;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.system-health-online {
+  border-color: #315c4a;
+  background: #13251f;
+}
+
+.system-health-offline {
+  border-color: #704047;
+  background: #29171a;
+}
+
+.system-health-checking {
+  border-color: #555f6b;
+  background: #1a2028;
+}
+
+.system-health-detail {
+  margin-top: 9px;
+  color: #8290a0;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.system-health-overall {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+@media (max-width: 1100px) {
+  .system-health-grid {
+    grid-template-columns:
+      repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .system-health-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+﻿.infra-control-shell {
+  margin-bottom: 18px;
+}
+
+.infra-control-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.infra-control-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.infra-control-subtitle {
+  margin-top: 3px;
+  color: #8290a0;
+  font-size: 11px;
+}
+
+.infra-control-grid {
+  display: grid;
+  grid-template-columns:
+    repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.infra-control-card {
+  min-height: 82px;
+  padding: 14px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #11161e;
+}
+
+.infra-control-label {
+  color: #8793a3;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.infra-control-value {
+  margin-top: 7px;
+  font-size: 18px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.infra-control-value-small {
+  font-size: 13px;
+}
+
+.infra-control-detail {
+  margin-top: 5px;
+  color: #7f8b9a;
+  font-size: 10px;
+}
+
+.infra-control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.infra-health-state {
+  text-transform: uppercase;
+}
+
+.infra-health-healthy {
+  color: #79e7b3;
+}
+
+.infra-health-degraded {
+  color: #e6c56e;
+}
+
+.infra-health-unhealthy {
+  color: #ed8d94;
+}
+
+.infra-health-unknown {
+  color: #8f9aa8;
+}
+
+.infra-section-title {
+  margin: 18px 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 1100px) {
+  .infra-control-grid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  .infra-control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .infra-control-context {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+﻿.project-diagnostics {
+  margin: 20px 0;
+  padding-top: 18px;
+  border-top: 1px solid #303946;
+}
+
+.diagnostics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 13px;
+}
+
+.diagnostics-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.diagnostics-subtitle {
+  margin-top: 3px;
+  color: #8290a0;
+  font-size: 11px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns:
+    repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostic-card {
+  min-height: 90px;
+  padding: 14px;
+  border: 1px solid #303946;
+  border-radius: 10px;
+  background: #11161e;
+}
+
+.diagnostic-label {
+  color: #8793a3;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.diagnostic-value {
+  margin-top: 7px;
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-detail {
+  margin-top: 5px;
+  color: #8290a0;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.diagnostic-readiness {
+  text-transform: uppercase;
+}
+
+.diagnostic-ready {
+  color: #79e7b3;
+}
+
+.diagnostic-attention {
+  color: #e6c56e;
+}
+
+.diagnostic-blocked {
+  color: #ed8d94;
+}
+
+.diagnostic-neutral {
+  color: #9ba6b4;
+}
+
+@media (max-width: 1100px) {
+  .diagnostics-grid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 650px) {
+  .diagnostics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnostics-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+
+.infra-deployment-state {
+  text-transform: uppercase;
+}
+
+.infra-deployment-draft {
+  color: #e6c56e;
+}
+
+.infra-deployment-deployed {
+  color: #79e7b3;
+}
+
+.infra-deployment-blocked {
+  color: #ed8d94;
+}
+
+
+
+/* ============================================================
+   FELTUS PROJECT DOCUMENTS UI
+============================================================ */
+
+.documents-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.document-metric {
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.56);
+}
+
+.document-metric-label {
+  margin-bottom: 7px;
+  color: var(--muted, #94a3b8);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.document-metric-value {
+  color: var(--text, #f8fafc);
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.document-upload-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 126px;
+  margin-bottom: 18px;
+  padding: 20px;
+  border: 1px dashed rgba(56, 189, 248, 0.38);
+  border-radius: 14px;
+  background: rgba(8, 15, 30, 0.58);
+}
+
+.document-upload-zone.drag-active {
+  border-color: rgba(34, 211, 238, 0.9);
+  background: rgba(8, 47, 73, 0.42);
+}
+
+.document-upload-copy {
+  min-width: 0;
+}
+
+.document-upload-copy strong {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 15px;
+}
+
+.document-upload-copy span {
+  display: block;
+  color: var(--muted, #94a3b8);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.document-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.document-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.document-selected-file {
+  margin-top: 10px;
+  color: #67e8f9;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.document-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 12px;
+}
+
+.document-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.document-table th,
+.document-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.document-table th {
+  color: var(--muted, #94a3b8);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.document-table td {
+  color: var(--text, #e2e8f0);
+  font-size: 12px;
+}
+
+.document-name {
+  max-width: 330px;
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 4px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.document-state.ready {
+  border-color: rgba(45, 212, 191, 0.32);
+  color: #5eead4;
+  background: rgba(13, 148, 136, 0.1);
+}
+
+.document-state.stored,
+.document-state.processing {
+  border-color: rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+  background: rgba(14, 116, 144, 0.1);
+}
+
+.document-state.failed {
+  border-color: rgba(248, 113, 113, 0.32);
+  color: #fca5a5;
+  background: rgba(153, 27, 27, 0.12);
+}
+
+.document-empty {
+  padding: 30px 18px;
+  color: var(--muted, #94a3b8);
+  text-align: center;
+}
+
+.document-footer-note {
+  margin-top: 12px;
+  color: var(--muted, #94a3b8);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+@media (max-width: 900px) {
+
+  .documents-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .document-upload-zone {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .document-upload-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 560px) {
+
+  .documents-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="brand">
+    <h1>FELTUS LABS</h1>
+    <small>MASTER COMMAND CONSOLE</small>
+  </div>
+
+  <div class="mode">
+    PRIVATE LOCAL DEVELOPMENT
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div>
+    <h2>Platform Command Center</h2>
+    <p>Projects, infrastructure, relational models and local platform state.</p>
+  </div>
+
+  <button id="refreshAllBtn" class="secondary" type="button">
+    Refresh Platform
+  </button>
+</section>
+
+
+<section class="metrics">
+
+  <div class="metric">
+    <div class="metric-label">FELTUS Engine</div>
+    <div id="engineMetric" class="metric-value">Checking</div>
+  </div>
+
+  <div class="metric">
+    <div class="metric-label">Projects</div>
+    <div id="projectMetric" class="metric-value">—</div>
+  </div>
+
+  <div class="metric">
+    <div class="metric-label">Selected Assets</div>
+    <div id="assetMetric" class="metric-value">—</div>
+  </div>
+
+  <div class="metric">
+    <div class="metric-label">Data Models</div>
+    <div id="modelMetric" class="metric-value">—</div>
+  </div>
+
+</section>
+
+
+<section class="panel">
+
+  <div class="panel-header">
+    <div>
+      <h3>Deploy New Project</h3>
+      <p>Create a real FELTUS application workspace.</p>
+    </div>
+  </div>
+
+  <form id="projectForm" class="inline">
+
+    <input
+      id="projectNameInput"
+      type="text"
+      maxlength="200"
+      required
+      placeholder="Project name"
+    >
+
+    <select id="environmentInput">
+      <option value="development">Development</option>
+      <option value="staging">Staging</option>
+      <option value="production">Production</option>
+    </select>
+
+    <button id="createProjectBtn" type="submit">
+      Create Project
+    </button>
+
+  </form>
+
+  <div id="projectStatus" class="status"></div>
+
+</section>
+
+
+<section class="panel">
+
+  <div class="panel-header">
+    <div>
+      <h3>Application Registry</h3>
+      <p>Select a project to manage its infrastructure and relational models.</p>
+    </div>
+  </div>
+
+  <div id="projectGrid" class="project-grid"></div>
+
+</section>
+
+
+<section id="workspacePanel" class="panel hidden">
+
+  <div class="panel-header">
+    <div>
+      <h3>Project Workspace</h3>
+      <p>Provision project-scoped infrastructure assets.</p>
+    </div>
+  </div>
+
+  <div class="context-box">
+    <div id="selectedProjectName" class="context-name"></div>
+    <div id="selectedProjectId" class="context-id"></div>
+    <div id="selectedProjectEnvironment" class="badge"></div>
+  </div>
+
+  <form id="assetForm" class="inline">
+
+    <input
+      id="assetNameInput"
+      type="text"
+      maxlength="200"
+      required
+      placeholder="New project asset"
+    >
+
+    <button id="createAssetBtn" type="submit">
+      Create Asset
+    </button>
+
+  </form>
+
+  <div id="assetStatus" class="status"></div>
+
+</section>
+
+
+<section id="assetPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Infrastructure Control Plane</h3>
+      <p>Live project resources, security posture, service health and operational controls.</p>
+    </div>
+
+    <button id="refreshAssetsBtn" class="secondary" type="button">
+      Refresh Assets
+    </button>
+
+  </div>
+
+﻿<div
+  id="infrastructureControlPlane"
+  class="infra-control-shell"
+>
+
+  <div class="infra-control-context">
+
+    <div>
+      <div class="infra-control-title">
+        Project Control Plane
+      </div>
+
+      <div
+        id="infraControlProject"
+        class="infra-control-subtitle"
+      >
+        —
+      </div>
+    </div>
+
+    <button
+      id="infraRefreshBtn"
+      class="secondary"
+      type="button"
+    >
+      Refresh Control Plane
+    </button>
+
+  </div>
+
+
+  <div class="infra-control-grid">
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Environment
+      </div>
+
+      <div
+        id="infraEnvironment"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div class="infra-control-detail">
+        Project deployment boundary
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Assets
+      </div>
+
+      <div
+        id="infraAssets"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div class="infra-control-detail">
+        Project-scoped resources
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Data Models
+      </div>
+
+      <div
+        id="infraModels"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div class="infra-control-detail">
+        Managed PostgreSQL models
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Relationships
+      </div>
+
+      <div
+        id="infraRelationships"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div class="infra-control-detail">
+        Physical foreign keys
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        RLS Coverage
+      </div>
+
+      <div
+        id="infraRlsCoverage"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div
+        id="infraRlsDetail"
+        class="infra-control-detail"
+      >
+        Model security
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Platform Health
+      </div>
+
+      <div
+        id="infraHealth"
+        class="infra-control-value infra-health-state infra-health-unknown"
+      >
+        —
+      </div>
+
+      <div
+        id="infraHealthDetail"
+        class="infra-control-detail"
+      >
+        Service status
+      </div>
+    </div>
+
+
+    <div class="infra-control-card">
+      <div class="infra-control-label">
+        Recent Events
+      </div>
+
+      <div
+        id="infraEvents"
+        class="infra-control-value"
+      >
+        —
+      </div>
+
+      <div class="infra-control-detail">
+        Latest project telemetry
+      </div>
+    </div>
+
+
+    
+    <div class="infra-control-card">
+
+      <div class="infra-control-label">
+        Deployment State
+      </div>
+
+      <div
+        id="infraDeploymentState"
+        class="infra-control-value infra-deployment-state infra-deployment-draft"
+      >
+        ?
+      </div>
+
+      <div
+        id="infraDeploymentDetail"
+        class="infra-control-detail"
+      >
+        Checking readiness gate
+      </div>
+
+    </div>
+
+
+<div class="infra-control-card">
+      <div class="infra-control-label">
+        Data Boundary
+      </div>
+
+      <div
+        class="infra-control-value infra-control-value-small"
+      >
+        PRIVATE LOCAL
+      </div>
+
+      <div class="infra-control-detail">
+        FELTUS-controlled execution
+      </div>
+    </div>
+
+  </div>
+
+
+  <div class="infra-control-actions">
+
+    <button
+      id="infraAssetsBtn"
+      class="secondary"
+      type="button"
+    >
+      Manage Assets
+    </button>
+
+    <button
+      id="infraModelsBtn"
+      class="secondary"
+      type="button"
+    >
+      Manage Models
+    </button>
+
+    <button
+      id="infraRelationshipsBtn"
+      class="secondary"
+      type="button"
+    >
+      Relationships
+    </button>
+
+    
+    <button
+      id="infraDeploymentBtn"
+      class="secondary"
+      type="button"
+      disabled
+    >
+      Checking Deployment
+    </button>
+
+<button
+      id="infraLogsBtn"
+      class="secondary"
+      type="button"
+    >
+      Open Logs
+    </button>
+
+  </div>
+
+
+  <div
+    id="infraControlStatus"
+    class="status"
+  ></div>
+
+</div>
+
+﻿<div
+  id="projectDiagnostics"
+  class="project-diagnostics"
+>
+
+  <div class="diagnostics-header">
+
+    <div>
+
+      <div class="diagnostics-title">
+        Project Operational Diagnostics
+      </div>
+
+      <div class="diagnostics-subtitle">
+        Live readiness, security, relational integrity and runtime diagnostics.
+      </div>
+
+    </div>
+
+
+    <button
+      id="diagnosticsRefreshBtn"
+      class="secondary"
+      type="button"
+    >
+      Refresh Diagnostics
+    </button>
+
+  </div>
+
+
+  <div class="diagnostics-grid">
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Project Readiness
+      </div>
+
+      <div
+        id="diagnosticReadiness"
+        class="diagnostic-value diagnostic-readiness diagnostic-neutral"
+      >
+        CHECKING
+      </div>
+
+      <div
+        id="diagnosticReadinessDetail"
+        class="diagnostic-detail"
+      >
+        Evaluating project state
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Database / API
+      </div>
+
+      <div
+        id="diagnosticDatabaseLatency"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div class="diagnostic-detail">
+        Authenticated model-query round trip
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Platform Health Check
+      </div>
+
+      <div
+        id="diagnosticHealthLatency"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div
+        id="diagnosticHealthDetail"
+        class="diagnostic-detail"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        RLS Posture
+      </div>
+
+      <div
+        id="diagnosticRls"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div
+        id="diagnosticRlsDetail"
+        class="diagnostic-detail"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Relationship Integrity
+      </div>
+
+      <div
+        id="diagnosticRelationships"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div
+        id="diagnosticRelationshipsDetail"
+        class="diagnostic-detail"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Last AI Success
+      </div>
+
+      <div
+        id="diagnosticAI"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div
+        id="diagnosticAIDetail"
+        class="diagnostic-detail"
+      >
+        —
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Latest Warning / Error
+      </div>
+
+      <div
+        id="diagnosticIssue"
+        class="diagnostic-value"
+      >
+        NONE
+      </div>
+
+      <div
+        id="diagnosticIssueDetail"
+        class="diagnostic-detail"
+      >
+        No project issue detected
+      </div>
+
+    </div>
+
+
+    <div class="diagnostic-card">
+
+      <div class="diagnostic-label">
+        Last Diagnostic Refresh
+      </div>
+
+      <div
+        id="diagnosticRefreshTime"
+        class="diagnostic-value"
+      >
+        —
+      </div>
+
+      <div class="diagnostic-detail">
+        Local browser time
+      </div>
+
+    </div>
+
+
+  </div>
+
+
+  <div
+    id="diagnosticStatus"
+    class="status"
+  ></div>
+
+</div>
+
+
+<div class="infra-section-title">
+  Provisioned Infrastructure Assets
+</div>
+
+
+  <div class="table-wrap">
+
+    <table>
+
+      <thead>
+        <tr>
+          <th>Tracking ID</th>
+          <th>Resource</th>
+          <th>Payload</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+
+      <tbody id="assetRows"></tbody>
+
+    </table>
+
+  </div>
+
+</section>
+
+
+<section id="modelerPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Relational Workspace Modeler</h3>
+      <p>Create controlled PostgreSQL tables inside the selected FELTUS project.</p>
+    </div>
+
+  </div>
+
+  <form id="modelForm">
+
+    <div class="model-toolbar">
+
+      <input
+        id="modelNameInput"
+        type="text"
+        maxlength="40"
+        required
+        placeholder="Table name — e.g. invoices"
+      >
+
+      <label class="rls-control">
+        <input id="modelRlsInput" type="checkbox" checked>
+        Enable RLS
+      </label>
+
+      <button id="addColumnBtn" class="secondary" type="button">
+        + Add Column
+      </button>
+
+      <button id="createModelBtn" type="submit">
+        Create Table
+      </button>
+
+    </div>
+
+    <div id="columnBuilder" class="column-builder"></div>
+
+  </form>
+
+  <div id="modelStatus" class="status"></div>
+
+</section>
+
+
+<section id="modelsPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Project Data Models</h3>
+      <p>Physical PostgreSQL tables managed by FELTUS.</p>
+    </div>
+
+    <button id="refreshModelsBtn" class="secondary" type="button">
+      Refresh Models
+    </button>
+
+  </div>
+
+  <div id="modelGrid" class="model-grid"></div>
+
+</section>
+
+
+﻿﻿<section id="relationshipsPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Schema Relationships</h3>
+      <p>
+        Define and inspect PostgreSQL foreign-key relationships
+        for the selected FELTUS project.
+      </p>
+    </div>
+
+    <button
+      id="refreshRelationshipsBtn"
+      class="secondary"
+      type="button"
+    >
+      Refresh Relationships
+    </button>
+
+  </div>
+
+
+  <div class="relationship-layout">
+
+    <div class="relationship-builder">
+
+      <h4>Create Relationship</h4>
+
+      <p>
+        Connect a UUID column in one FELTUS model to another
+        model's primary key.
+      </p>
+
+
+      <form id="relationshipForm">
+
+        <div class="relationship-grid">
+
+          <div class="relationship-field">
+
+            <label for="relationshipSourceModel">
+              Source Model
+            </label>
+
+            <select
+              id="relationshipSourceModel"
+            ></select>
+
+          </div>
+
+
+          <div class="relationship-field">
+
+            <label for="relationshipSourceColumn">
+              Source Column
+            </label>
+
+            <select
+              id="relationshipSourceColumn"
+            ></select>
+
+          </div>
+
+
+          <div class="relationship-arrow">
+            ↓ references
+          </div>
+
+
+          <div class="relationship-field">
+
+            <label for="relationshipTargetModel">
+              Target Model
+            </label>
+
+            <select
+              id="relationshipTargetModel"
+            ></select>
+
+          </div>
+
+
+          <div class="relationship-field">
+
+            <label for="relationshipTargetColumn">
+              Target Column
+            </label>
+
+            <select
+              id="relationshipTargetColumn"
+            >
+              <option value="id">
+                id · uuid · primary key
+              </option>
+            </select>
+
+          </div>
+
+
+          <div class="relationship-field">
+
+            <label for="relationshipDeleteAction">
+              ON DELETE
+            </label>
+
+            <select id="relationshipDeleteAction">
+              <option value="RESTRICT">RESTRICT</option>
+              <option value="CASCADE">CASCADE</option>
+              <option value="SET NULL">SET NULL</option>
+              <option value="NO ACTION">NO ACTION</option>
+            </select>
+
+          </div>
+
+        </div>
+
+
+        <div class="relationship-actions">
+
+          <button
+            id="createRelationshipBtn"
+            type="submit"
+          >
+            Create Foreign Key
+          </button>
+
+        </div>
+
+      </form>
+
+
+      <div
+        id="relationshipStatus"
+        class="status"
+      ></div>
+
+    </div>
+
+
+    <div class="er-map">
+
+      <h4>Project ER Map</h4>
+
+      <p>
+        Live representation of the selected project's
+        relational models and connections.
+      </p>
+
+
+      <div
+        id="erNodes"
+        class="er-nodes"
+      ></div>
+
+
+      <div
+        id="erEdges"
+        class="er-edges"
+      ></div>
+
+    </div>
+
+  </div>
+
+
+  <div
+    id="relationshipList"
+    class="relationship-list"
+  ></div>
+
+</section>
+
+
+
+<section id="documentsPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Private Project Documents</h3>
+
+      <p>
+        Project-scoped private files for local parsing,
+        deterministic retrieval, and FELTUS AI grounding.
+      </p>
+    </div>
+
+    <button
+      id="refreshDocumentsBtn"
+      class="secondary"
+      type="button"
+    >
+      Refresh Documents
+    </button>
+
+  </div>
+
+  <div class="documents-grid">
+
+    <div class="document-metric">
+      <div class="document-metric-label">
+        Documents
+      </div>
+
+      <div
+        id="documentCount"
+        class="document-metric-value"
+      >
+        ?
+      </div>
+    </div>
+
+    <div class="document-metric">
+      <div class="document-metric-label">
+        AI Ready
+      </div>
+
+      <div
+        id="documentReadyCount"
+        class="document-metric-value"
+      >
+        ?
+      </div>
+    </div>
+
+    <div class="document-metric">
+      <div class="document-metric-label">
+        Stored
+      </div>
+
+      <div
+        id="documentStoredCount"
+        class="document-metric-value"
+      >
+        ?
+      </div>
+    </div>
+
+    <div class="document-metric">
+      <div class="document-metric-label">
+        Failed
+      </div>
+
+      <div
+        id="documentFailedCount"
+        class="document-metric-value"
+      >
+        ?
+      </div>
+    </div>
+
+  </div>
+
+  <div
+    id="documentDropZone"
+    class="document-upload-zone"
+  >
+
+    <div class="document-upload-copy">
+
+      <strong>
+        Add project knowledge
+      </strong>
+
+      <span>
+        Drop a document here or choose a file.
+        Maximum file size: 20 MB.
+      </span>
+
+      <span>
+        TXT, MD, CSV, and JSON are parsed immediately.
+        PDF, DOCX, and XLSX are securely stored while
+        dedicated parsers remain pending.
+      </span>
+
+      <div
+        id="documentSelectedFile"
+        class="document-selected-file"
+      >
+        No file selected
+      </div>
+
+    </div>
+
+    <div class="document-upload-actions">
+
+      <input
+        id="documentFileInput"
+        class="document-file-input"
+        type="file"
+        accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx"
+      >
+
+      <button
+        id="chooseDocumentBtn"
+        class="secondary"
+        type="button"
+      >
+        Choose File
+      </button>
+
+      <button
+        id="uploadDocumentBtn"
+        class="primary"
+        type="button"
+        disabled
+      >
+        Upload & Process
+      </button>
+
+    </div>
+
+  </div>
+
+  <div
+    id="documentStatus"
+    class="status"
+  >
+    Private local project storage ready.
+  </div>
+
+  <div class="document-table-wrap">
+
+    <table class="document-table">
+
+      <thead>
+        <tr>
+          <th>Filename</th>
+          <th>Type</th>
+          <th>Size</th>
+          <th>Status</th>
+          <th>Chunks</th>
+          <th>Added</th>
+        </tr>
+      </thead>
+
+      <tbody id="documentRows">
+
+        <tr>
+          <td
+            class="document-empty"
+            colspan="6"
+          >
+            Select a project to load documents.
+          </td>
+        </tr>
+
+      </tbody>
+
+    </table>
+
+  </div>
+
+  <div class="document-footer-note">
+    AI Context:
+    <strong id="documentAIContext">
+      0 ready documents
+    </strong>
+    ? File contents remain in FELTUS private local storage.
+  </div>
+
+</section>
+
+<section id="aiHubPanel" class="panel hidden">
+
+  <div class="panel-header">
+    <div>
+      <h3>Private AI Hub</h3>
+      <p>
+        Local AI grounded in the selected FELTUS project's real infrastructure.
+      </p>
+    </div>
+
+    <button id="refreshAIButton" class="secondary" type="button">
+      Refresh AI
+    </button>
+  </div>
+
+
+  <div class="ai-status-grid">
+
+    <div class="ai-status-card">
+      <div class="ai-status-label">AI Engine</div>
+      <div id="aiEngineStatus" class="ai-status-value">Checking</div>
+    </div>
+
+    <div class="ai-status-card">
+      <div class="ai-status-label">Active Project</div>
+      <div id="aiProjectName" class="ai-status-value">—</div>
+    </div>
+
+    <div class="ai-status-card">
+      <div class="ai-status-label">Project Assets</div>
+      <div id="aiAssetCount" class="ai-status-value">—</div>
+    </div>
+
+    <div class="ai-status-card">
+      <div class="ai-status-label">Relational Models</div>
+      <div id="aiModelCount" class="ai-status-value">—</div>
+    </div>
+
+    <div class="ai-status-card">
+      <div class="ai-status-label">AI Ready Documents</div>
+      <div id="aiDocumentCount" class="ai-status-value">?</div>
+    </div>
+
+  </div>
+
+
+  <div class="ai-layout">
+
+    <div class="ai-chat">
+
+      <div class="ai-chat-header">
+        <div>
+          <strong>FELTUS AI Assistant</strong>
+          <div class="project-meta">
+            Private project-aware local inference
+          </div>
+        </div>
+
+        <button id="clearAIChatButton" class="secondary" type="button">
+          Clear Chat
+        </button>
+      </div>
+
+
+      <div id="aiConversation" class="ai-conversation">
+        <div id="aiEmptyState" class="ai-empty">
+          Ask FELTUS AI about this project's schema, assets,
+          models, security, or architecture.
+        </div>
+      </div>
+
+
+      <div class="ai-composer">
+
+        <textarea
+          id="aiPromptInput"
+          maxlength="8000"
+          placeholder="Ask a question about this FELTUS project..."
+        ></textarea>
+
+        <div class="ai-suggestions">
+
+          <button
+            class="secondary ai-suggestion"
+            type="button"
+            data-ai-prompt="Explain the relational schema configured for this project."
+          >
+            Explain Schema
+          </button>
+
+          <button
+            class="secondary ai-suggestion"
+            type="button"
+            data-ai-prompt="Which relational tables have RLS enabled or disabled?"
+          >
+            Check RLS
+          </button>
+
+          <button
+            class="secondary ai-suggestion"
+            type="button"
+            data-ai-prompt="Review this project's backend architecture and suggest the next useful data model."
+          >
+            Suggest Next Model
+          </button>
+
+        </div>
+
+
+        <div class="ai-composer-actions">
+
+          <div id="aiChatStatus" class="status"></div>
+
+          <button id="sendAIButton" type="button">
+            Send to Local AI
+          </button>
+
+        </div>
+
+      </div>
+
+    </div>
+
+
+    <aside class="ai-side">
+
+      <div class="ai-side-card">
+
+        <h4>Model & Runtime</h4>
+
+        
+        <select id="aiModelSelect"></select>
+
+        <label
+          class="project-meta"
+          for="aiCapabilitySelect"
+        >
+          Task Profile
+        </label>
+
+        <select
+          id="aiCapabilitySelect"
+          aria-label="AI task profile"
+        >
+          <option value="general">
+            Auto / General
+          </option>
+
+          <option value="fast">
+            Fast
+          </option>
+
+          <option value="reasoning">
+            Reasoning
+          </option>
+
+          <option value="coding">
+            Coding
+          </option>
+
+          <option value="document-analysis">
+            Document Analysis
+          </option>
+
+          <option value="structured-output">
+            Structured Output
+          </option>
+
+          <option value="vision">
+            Vision
+          </option>
+        </select>
+
+        <div class="ai-detail">
+          <span>Runtime</span>
+          <strong>Ollama</strong>
+        </div>
+
+        <div class="ai-detail">
+          <span>Execution</span>
+          <strong>Local</strong>
+        </div>
+
+        <div class="ai-detail">
+          <span>Cloud Provider</span>
+          <strong class="ai-private">None</strong>
+        </div>
+
+      </div>
+
+
+      <div class="ai-side-card">
+
+        <h4>Project Context</h4>
+
+        <div class="ai-detail">
+          <span>Project</span>
+          <strong id="aiContextProject">—</strong>
+        </div>
+
+        <div class="ai-detail">
+          <span>Assets</span>
+          <strong id="aiContextAssets">—</strong>
+        </div>
+
+        <div class="ai-detail">
+          <span>Models</span>
+          <strong id="aiContextModels">—</strong>
+        </div>
+
+      </div>
+
+
+      <div class="ai-side-card">
+
+        <h4>Privacy & Security</h4>
+
+        <p class="project-meta">
+          FELTUS sends inference only to the locally running
+          Ollama service and supplies context through its
+          authenticated backend.
+        </p>
+
+        <div class="badge ai-private">
+          PRIVATE LOCAL AI
+        </div>
+
+      </div>
+
+    </aside>
+
+  </div>
+
+</section>
+
+﻿<section id="activityPanel" class="panel hidden">
+
+  <div class="panel-header">
+
+    <div>
+      <h3>Logs & Observability</h3>
+
+      <p>
+        Read-only operational history from the FELTUS control plane,
+        PostgreSQL relationship engine, RLS controls, and local AI runtime.
+      </p>
+    </div>
+
+    <button
+      id="refreshActivityBtn"
+      class="secondary"
+      type="button"
+    >
+      Refresh Logs
+    </button>
+
+  </div>
+
+
+  ﻿<div class="system-health-shell">
+
+  <div class="system-health-header">
+
+    <div class="system-health-title">
+      Live Infrastructure
+    </div>
+
+    <div class="system-health-summary">
+      Overall:
+      <span
+        id="systemHealthOverall"
+        class="system-health-overall"
+      >
+        checking
+      </span>
+
+      ·
+
+      <span id="systemHealthCheckedAt">
+        —
+      </span>
+    </div>
+
+  </div>
+
+
+  <div
+    id="systemHealthGrid"
+    class="system-health-grid"
+  ></div>
+
+</div>
+
+
+<div class="activity-toolbar">
+
+    <div class="activity-filter">
+      <label for="activityScopeSelect">
+        Project Scope
+      </label>
+
+      <select id="activityScopeSelect">
+        <option value="current">
+          Current Project
+        </option>
+
+        <option value="all">
+          All Projects
+        </option>
+      </select>
+    </div>
+
+
+    <div class="activity-filter">
+      <label for="activitySeveritySelect">
+        Severity
+      </label>
+
+      <select id="activitySeveritySelect">
+        <option value="">All Severities</option>
+        <option value="success">Success</option>
+        <option value="info">Info</option>
+        <option value="warning">Warning</option>
+        <option value="error">Error</option>
+      </select>
+    </div>
+
+
+    <div class="activity-filter">
+      <label for="activityTypeSelect">
+        Event Type
+      </label>
+
+      <select id="activityTypeSelect">
+        <option value="">All Event Types</option>
+        <option value="model.created">model.created</option>
+        <option value="model.rls_changed">model.rls_changed</option>
+        <option value="relationship.created">relationship.created</option>
+        <option value="relationship.deleted">relationship.deleted</option>
+        <option value="ai.inference.completed">ai.inference.completed</option>
+        <option value="ai.inference.failed">ai.inference.failed</option>
+        <option value="database.rpc_failed">database.rpc_failed</option>
+        <option value="infrastructure.database.failed">infrastructure.database.failed</option>
+        <option value="infrastructure.ai_unavailable">infrastructure.ai_unavailable</option>
+        <option value="server.request.failed">server.request.failed</option>
+        <option value="project.deployed">project.deployed</option>
+        <option value="project.draft_restored">project.draft_restored</option>
+      </select>
+    </div>
+
+
+    <div class="activity-filter">
+      <label for="activityLimitSelect">
+        Limit
+      </label>
+
+      <select id="activityLimitSelect">
+        <option value="50">50</option>
+        <option value="100" selected>100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
+
+  </div>
+
+
+  <div class="activity-metrics">
+
+    <div class="activity-metric">
+      <div class="activity-metric-label">
+        Events Loaded
+      </div>
+
+      <div
+        id="activityTotalMetric"
+        class="activity-metric-value"
+      >
+        0
+      </div>
+    </div>
+
+
+    <div class="activity-metric">
+      <div class="activity-metric-label">
+        Errors
+      </div>
+
+      <div
+        id="activityErrorMetric"
+        class="activity-metric-value"
+      >
+        0
+      </div>
+    </div>
+
+
+    <div class="activity-metric">
+      <div class="activity-metric-label">
+        AI Runs
+      </div>
+
+      <div
+        id="activityAIMetric"
+        class="activity-metric-value"
+      >
+        0
+      </div>
+    </div>
+
+
+    <div class="activity-metric">
+      <div class="activity-metric-label">
+        Avg AI Duration
+      </div>
+
+      <div
+        id="activityDurationMetric"
+        class="activity-metric-value"
+      >
+        —
+      </div>
+    </div>
+
+  </div>
+
+
+  <div
+    id="activityStatus"
+    class="status"
+  ></div>
+
+
+  <div class="activity-table-wrap">
+
+    <table class="activity-table">
+
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Severity</th>
+          <th>Event</th>
+          <th>Resource</th>
+          <th>Details</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+
+      <tbody id="activityTableBody"></tbody>
+
+    </table>
+
+    <div
+      id="activityEmpty"
+      class="activity-empty hidden"
+    >
+      No operational events match the current filters.
+    </div>
+
+  </div>
+
+</section>
+
+
+
+<footer>
+  FELTUS LABS · Private Development Platform
+</footer>
+
+</main>
+
+
+<script>
+"use strict";
+
+const $ = id =>
+  document.getElementById(id);
+
+let projects = [];
+let selectedProject = null;
+let models = [];
+let aiRuntime = null;
+let relationships = [];
+let relationshipSourceColumns = [];
+const relationshipColumnCache = new Map();
+let activityEvents = [];
+
+
+function setStatus(
+  element,
+  message,
+  error = false
+) {
+  element.textContent = message;
+
+  element.className =
+    "status " +
+    (error ? "error" : "success");
+}
+
+
+async function requestJson(
+  url,
+  options = {}
+) {
+  const response =
+    await fetch(
+      url,
+      {
+        ...options,
+
+        headers: {
+          Accept: "application/json",
+
+          ...(options.body
+            ? {
+                "Content-Type":
+                  "application/json"
+              }
+            : {}),
+
+          ...(options.headers || {})
+        }
+      }
+    );
+
+  const text =
+    await response.text();
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(text);
+  } catch {
+    data = {};
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data.error ||
+      data.message ||
+      `HTTP ${response.status}`
+    );
+  }
+
+  return data;
+}
+
+
+async function loadHealth() {
+  try {
+    const health =
+      await requestJson(
+        "/api/health"
+      );
+
+    $("engineMetric").textContent =
+      health.status === "online"
+        ? "Online"
+        : "Offline";
+
+  } catch {
+    $("engineMetric").textContent =
+      "Offline";
+  }
+}
+
+
+function projectCard(project) {
+  const card =
+    document.createElement("div");
+
+  card.className =
+    "project-card" +
+    (
+      selectedProject?.id ===
+      project.id
+        ? " active"
+        : ""
+    );
+
+
+  const name =
+    document.createElement("div");
+
+  name.className =
+    "project-name";
+
+  name.textContent =
+    project.app_name;
+
+
+  const meta =
+    document.createElement("div");
+
+  meta.className =
+    "project-meta";
+
+  meta.textContent =
+    `Created ${new Date(
+      project.created_at
+    ).toLocaleString()}`;
+
+
+  const badge =
+    document.createElement("div");
+
+  badge.className =
+    "badge";
+
+  badge.textContent =
+    project.environment;
+
+
+  card.append(
+    name,
+    meta,
+    badge
+  );
+
+
+  card.addEventListener(
+    "click",
+    async () => {
+      selectedProject =
+        project;
+
+      renderProjects();
+
+      await openProject(
+        project
+      );
+    }
+  );
+
+
+  return card;
+}
+
+
+function renderProjects() {
+  const grid =
+    $("projectGrid");
+
+  grid.replaceChildren();
+
+  $("projectMetric").textContent =
+    String(projects.length);
+
+
+  if (!projects.length) {
+    const empty =
+      document.createElement("div");
+
+    empty.className =
+      "empty";
+
+    empty.textContent =
+      "No FELTUS projects have been deployed.";
+
+    grid.appendChild(empty);
+
+    return;
+  }
+
+
+  for (const project of projects) {
+    grid.appendChild(
+      projectCard(project)
+    );
+  }
+}
+
+
+async function loadProjects() {
+  setStatus(
+    $("projectStatus"),
+    "Synchronizing project registry..."
+  );
+
+  try {
+    projects =
+      await requestJson(
+        "/api/apps"
+      );
+
+
+    if (
+      !Array.isArray(projects)
+    ) {
+      throw new Error(
+        "Invalid project response."
+      );
+    }
+
+
+    renderProjects();
+
+
+    setStatus(
+      $("projectStatus"),
+      `${projects.length} project(s) synchronized`
+    );
+
+  } catch (error) {
+    setStatus(
+      $("projectStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+async function openProject(project) {
+  $("workspacePanel")
+    .classList
+    .remove("hidden");
+
+  $("assetPanel")
+    .classList
+    .remove("hidden");
+
+  $("modelerPanel")
+    .classList
+    .remove("hidden");
+
+  $("modelsPanel")
+    .classList
+    .remove("hidden");
+
+  $("documentsPanel")
+    .classList
+    .remove("hidden");
+
+
+  $("selectedProjectName")
+    .textContent =
+    project.app_name;
+
+  $("selectedProjectId")
+    .textContent =
+    project.id;
+
+  $("selectedProjectEnvironment")
+    .textContent =
+    project.environment;
+
+
+  await Promise.all([
+    loadAssets(),
+    loadModels(),
+    loadDocuments()
+  ]);
+}
+
+
+async function loadAssets() {
+  if (!selectedProject) {
+    return;
+  }
+
+
+  setStatus(
+    $("assetStatus"),
+    "Loading project assets..."
+  );
+
+
+  try {
+    const assets =
+      await requestJson(
+        `/api/assets?app_id=${encodeURIComponent(
+          selectedProject.id
+        )}`
+      );
+
+
+    if (
+      !Array.isArray(assets)
+    ) {
+      throw new Error(
+        "Invalid asset response."
+      );
+    }
+
+
+    $("assetMetric").textContent =
+      String(assets.length);
+
+
+    const rows =
+      $("assetRows");
+
+    rows.replaceChildren();
+
+
+    if (!assets.length) {
+      const row =
+        document.createElement("tr");
+
+      const cell =
+        document.createElement("td");
+
+      cell.colSpan = 4;
+      cell.className =
+        "empty";
+
+      cell.textContent =
+        "No assets exist for this project.";
+
+      row.appendChild(cell);
+      rows.appendChild(row);
+    }
+
+
+    for (const asset of assets) {
+      const row =
+        document.createElement("tr");
+
+
+      const idCell =
+        document.createElement("td");
+
+      idCell.textContent =
+        asset.id || "";
+
+
+      const nameCell =
+        document.createElement("td");
+
+      nameCell.textContent =
+        asset.asset_name || "";
+
+
+      const payloadCell =
+        document.createElement("td");
+
+      const pre =
+        document.createElement("pre");
+
+      pre.textContent =
+        JSON.stringify(
+          asset.payload || {},
+          null,
+          2
+        );
+
+      payloadCell.appendChild(
+        pre
+      );
+
+
+      const createdCell =
+        document.createElement("td");
+
+      createdCell.textContent =
+        asset.created_at
+          ? new Date(
+              asset.created_at
+            ).toLocaleString()
+          : "";
+
+
+      row.append(
+        idCell,
+        nameCell,
+        payloadCell,
+        createdCell
+      );
+
+      rows.appendChild(row);
+    }
+
+
+    setStatus(
+      $("assetStatus"),
+      `${assets.length} project asset(s) synchronized`
+    );
+
+  } catch (error) {
+    setStatus(
+      $("assetStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+function createColumnRow({
+  name = "",
+  type = "text",
+  nullable = true
+} = {}) {
+  const row =
+    document.createElement("div");
+
+  row.className =
+    "column-row";
+
+
+  const nameInput =
+    document.createElement("input");
+
+  nameInput.type =
+    "text";
+
+  nameInput.maxLength =
+    40;
+
+  nameInput.placeholder =
+    "column_name";
+
+  nameInput.value =
+    name;
+
+  nameInput.dataset.role =
+    "column-name";
+
+
+  const typeSelect =
+    document.createElement("select");
+
+  typeSelect.dataset.role =
+    "column-type";
+
+
+  const types = [
+    "text",
+    "integer",
+    "bigint",
+    "numeric",
+    "boolean",
+    "date",
+    "timestamptz",
+    "uuid",
+    "jsonb"
+  ];
+
+
+  for (const value of types) {
+    const option =
+      document.createElement("option");
+
+    option.value =
+      value;
+
+    option.textContent =
+      value;
+
+    option.selected =
+      value === type;
+
+    typeSelect.appendChild(
+      option
+    );
+  }
+
+
+  const nullableLabel =
+    document.createElement("label");
+
+  nullableLabel.className =
+    "nullable-control";
+
+
+  const nullableInput =
+    document.createElement("input");
+
+  nullableInput.type =
+    "checkbox";
+
+  nullableInput.checked =
+    nullable;
+
+  nullableInput.dataset.role =
+    "column-nullable";
+
+
+  nullableLabel.append(
+    nullableInput,
+    document.createTextNode(
+      "Nullable"
+    )
+  );
+
+
+  const removeButton =
+    document.createElement("button");
+
+  removeButton.type =
+    "button";
+
+  removeButton.className =
+    "secondary";
+
+  removeButton.textContent =
+    "Remove";
+
+
+  removeButton.addEventListener(
+    "click",
+    () => {
+      row.remove();
+    }
+  );
+
+
+  row.append(
+    nameInput,
+    typeSelect,
+    nullableLabel,
+    removeButton
+  );
+
+
+  $("columnBuilder")
+    .appendChild(row);
+}
+
+
+function readColumns() {
+  const rows = [
+    ...$("columnBuilder")
+      .querySelectorAll(
+        ".column-row"
+      )
+  ];
+
+
+  const columns = [];
+
+
+  for (const row of rows) {
+    const name =
+      row
+        .querySelector(
+          '[data-role="column-name"]'
+        )
+        .value
+        .trim();
+
+
+    const type =
+      row
+        .querySelector(
+          '[data-role="column-type"]'
+        )
+        .value;
+
+
+    const nullable =
+      row
+        .querySelector(
+          '[data-role="column-nullable"]'
+        )
+        .checked;
+
+
+    if (!name) {
+      throw new Error(
+        "Every column requires a name."
+      );
+    }
+
+
+    if (
+      !/^[a-z][a-z0-9_]{0,39}$/.test(
+        name
+      )
+    ) {
+      throw new Error(
+        "Column names must use lowercase letters, numbers and underscores."
+      );
+    }
+
+
+    columns.push({
+      name,
+      type,
+      nullable
+    });
+  }
+
+
+  const names =
+    columns.map(
+      item =>
+        item.name
+    );
+
+
+  if (
+    new Set(names).size !==
+    names.length
+  ) {
+    throw new Error(
+      "Duplicate column names are not allowed."
+    );
+  }
+
+
+  return columns;
+}
+
+
+function renderModels() {
+  const grid =
+    $("modelGrid");
+
+  grid.replaceChildren();
+
+  $("modelMetric").textContent =
+    String(models.length);
+
+
+  if (!models.length) {
+    const empty =
+      document.createElement("div");
+
+    empty.className =
+      "empty";
+
+    empty.textContent =
+      "No relational models exist for this project.";
+
+    grid.appendChild(empty);
+
+    return;
+  }
+
+
+  for (const model of models) {
+    const card =
+      document.createElement("div");
+
+    card.className =
+      "model-card";
+
+
+    const name =
+      document.createElement("div");
+
+    name.className =
+      "model-name";
+
+    name.textContent =
+      model.logical_name;
+
+
+    const physical =
+      document.createElement("div");
+
+    physical.className =
+      "model-table";
+
+    physical.textContent =
+      model.physical_table_name;
+
+
+    const actions =
+      document.createElement("div");
+
+    actions.className =
+      "model-actions";
+
+
+    const status =
+      document.createElement("span");
+
+    status.className =
+      model.rls_enabled
+        ? "rls-on"
+        : "rls-off";
+
+    status.textContent =
+      model.rls_enabled
+        ? "RLS ENABLED"
+        : "RLS DISABLED";
+
+
+    const toggle =
+      document.createElement("button");
+
+    toggle.type =
+      "button";
+
+    toggle.className =
+      model.rls_enabled
+        ? "danger"
+        : "secondary";
+
+    toggle.textContent =
+      model.rls_enabled
+        ? "Disable RLS"
+        : "Enable RLS";
+
+
+    toggle.addEventListener(
+      "click",
+      async () => {
+        toggle.disabled =
+          true;
+
+        try {
+          await requestJson(
+            "/api/models/rls",
+            {
+              method:
+                "POST",
+
+              body:
+                JSON.stringify({
+                  model_id:
+                    model.id,
+
+                  enabled:
+                    !model.rls_enabled
+                })
+            }
+          );
+
+
+          await loadModels();
+
+        } catch (error) {
+          setStatus(
+            $("modelStatus"),
+            error.message,
+            true
+          );
+
+        } finally {
+          toggle.disabled =
+            false;
+        }
+      }
+    );
+
+
+    actions.append(
+      status,
+      toggle
+    );
+
+
+    card.append(
+      name,
+      physical,
+      actions
+    );
+
+
+    grid.appendChild(
+      card
+    );
+  }
+}
+
+
+async function loadModels() {
+  if (!selectedProject) {
+    return;
+  }
+
+
+  setStatus(
+    $("modelStatus"),
+    "Loading relational models..."
+  );
+
+
+  try {
+    models =
+      await requestJson(
+        `/api/models?app_id=${encodeURIComponent(
+          selectedProject.id
+        )}`
+      );
+
+
+    if (
+      !Array.isArray(models)
+    ) {
+      throw new Error(
+        "Invalid model response."
+      );
+    }
+
+
+    renderModels();
+
+
+    setStatus(
+      $("modelStatus"),
+      `${models.length} relational model(s) synchronized`
+    );
+
+  } catch (error) {
+    setStatus(
+      $("modelStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+$("projectForm")
+  .addEventListener(
+    "submit",
+    async event => {
+      event.preventDefault();
+
+      const button =
+        $("createProjectBtn");
+
+      const name =
+        $("projectNameInput")
+          .value
+          .trim();
+
+      const environment =
+        $("environmentInput")
+          .value;
+
+
+      if (!name) {
+        return;
+      }
+
+
+      button.disabled =
+        true;
+
+
+      try {
+        const result =
+          await requestJson(
+            "/api/apps",
+            {
+              method:
+                "POST",
+
+              body:
+                JSON.stringify({
+                  app_name:
+                    name,
+
+                  environment
+                })
+            }
+          );
+
+
+        const created =
+          Array.isArray(result)
+            ? result[0]
+            : null;
+
+
+        $("projectNameInput")
+          .value = "";
+
+
+        await loadProjects();
+
+
+        if (created) {
+          selectedProject =
+            created;
+
+          renderProjects();
+
+          await openProject(
+            created
+          );
+        }
+
+
+        setStatus(
+          $("projectStatus"),
+          "Project successfully deployed."
+        );
+
+      } catch (error) {
+        setStatus(
+          $("projectStatus"),
+          error.message,
+          true
+        );
+
+      } finally {
+        button.disabled =
+          false;
+      }
+    }
+  );
+
+
+$("assetForm")
+  .addEventListener(
+    "submit",
+    async event => {
+      event.preventDefault();
+
+
+      if (!selectedProject) {
+        return;
+      }
+
+
+      const input =
+        $("assetNameInput");
+
+      const name =
+        input.value.trim();
+
+      const button =
+        $("createAssetBtn");
+
+
+      if (!name) {
+        return;
+      }
+
+
+      button.disabled =
+        true;
+
+
+      try {
+        await requestJson(
+          "/api/assets",
+          {
+            method:
+              "POST",
+
+            body:
+              JSON.stringify({
+                asset_name:
+                  name,
+
+                app_id:
+                  selectedProject.id
+              })
+          }
+        );
+
+
+        input.value = "";
+
+        await loadAssets();
+
+
+        setStatus(
+          $("assetStatus"),
+          "Project asset successfully provisioned."
+        );
+
+      } catch (error) {
+        setStatus(
+          $("assetStatus"),
+          error.message,
+          true
+        );
+
+      } finally {
+        button.disabled =
+          false;
+      }
+    }
+  );
+
+
+$("addColumnBtn")
+  .addEventListener(
+    "click",
+    () => {
+      createColumnRow();
+    }
+  );
+
+
+$("modelForm")
+  .addEventListener(
+    "submit",
+    async event => {
+      event.preventDefault();
+
+
+      if (!selectedProject) {
+        return;
+      }
+
+
+      const tableName =
+        $("modelNameInput")
+          .value
+          .trim();
+
+
+      if (
+        !/^[a-z][a-z0-9_]{0,39}$/.test(
+          tableName
+        )
+      ) {
+        setStatus(
+          $("modelStatus"),
+          "Invalid table name. Use lowercase letters, numbers and underscores.",
+          true
+        );
+
+        return;
+      }
+
+
+      let columns;
+
+
+      try {
+        columns =
+          readColumns();
+
+      } catch (error) {
+        setStatus(
+          $("modelStatus"),
+          error.message,
+          true
+        );
+
+        return;
+      }
+
+
+      const button =
+        $("createModelBtn");
+
+      button.disabled =
+        true;
+
+
+      setStatus(
+        $("modelStatus"),
+        "Creating PostgreSQL table..."
+      );
+
+
+      try {
+        const result =
+          await requestJson(
+            "/api/models",
+            {
+              method:
+                "POST",
+
+              body:
+                JSON.stringify({
+                  app_id:
+                    selectedProject.id,
+
+                  table_name:
+                    tableName,
+
+                  columns,
+
+                  enable_rls:
+                    $("modelRlsInput")
+                      .checked
+                })
+            }
+          );
+
+
+        $("modelNameInput")
+          .value = "";
+
+
+        $("columnBuilder")
+          .replaceChildren();
+
+
+        createColumnRow({
+          name:
+            "name",
+
+          type:
+            "text",
+
+          nullable:
+            false
+        });
+
+
+        await loadModels();
+
+
+        setStatus(
+          $("modelStatus"),
+          `Table created: ${result.physical_table_name}`
+        );
+
+      } catch (error) {
+        setStatus(
+          $("modelStatus"),
+          error.message,
+          true
+        );
+
+      } finally {
+        button.disabled =
+          false;
+      }
+    }
+  );
+
+
+$("refreshAssetsBtn")
+  .addEventListener(
+    "click",
+    loadAssets
+  );
+
+
+$("refreshModelsBtn")
+  .addEventListener(
+    "click",
+    loadModels
+  );
+
+
+$("refreshAllBtn")
+  .addEventListener(
+    "click",
+    async () => {
+      await loadHealth();
+      await loadProjects();
+
+      if (
+        selectedProject
+      ) {
+        await Promise.all([
+          loadAssets(),
+          loadModels()
+        ]);
+      }
+    }
+  );
+
+
+async function initialize() {
+  createColumnRow({
+    name:
+      "name",
+
+    type:
+      "text",
+
+    nullable:
+      false
+  });
+
+
+  await loadHealth();
+  await loadProjects();
+
+
+  if (
+    projects.length > 0
+  ) {
+    selectedProject =
+      projects[0];
+
+    renderProjects();
+
+    await openProject(
+      selectedProject
+    );
+  }
+}
+
+
+
+﻿function clearAIConversation() {
+  const conversation =
+    $("aiConversation");
+
+  conversation.replaceChildren();
+
+  const empty =
+    document.createElement("div");
+
+  empty.id =
+    "aiEmptyState";
+
+  empty.className =
+    "ai-empty";
+
+  empty.textContent =
+    "Ask FELTUS AI about this project's schema, assets, models, security, or architecture.";
+
+  conversation.appendChild(
+    empty
+  );
+}
+
+
+function appendAIMessage(
+  role,
+  text
+) {
+  const conversation =
+    $("aiConversation");
+
+  const empty =
+    $("aiEmptyState");
+
+  if (empty) {
+    empty.remove();
+  }
+
+
+  const message =
+    document.createElement("div");
+
+  message.className =
+    role === "user"
+      ? "ai-message ai-message-user"
+      : "ai-message ai-message-assistant";
+
+
+  const label =
+    document.createElement("span");
+
+  label.className =
+    "ai-message-label";
+
+  label.textContent =
+    role === "user"
+      ? "You"
+      : "FELTUS AI · Local";
+
+
+  const content =
+    document.createElement("div");
+
+  content.textContent =
+    text;
+
+
+  message.append(
+    label,
+    content
+  );
+
+  conversation.appendChild(
+    message
+  );
+
+  conversation.scrollTop =
+    conversation.scrollHeight;
+}
+
+
+async function loadAIHubStatus() {
+  if (!selectedProject) {
+    return;
+  }
+
+
+  $("aiHubPanel")
+    .classList
+    .remove("hidden");
+
+
+  $("aiProjectName")
+    .textContent =
+    selectedProject.app_name;
+
+  $("aiContextProject")
+    .textContent =
+    selectedProject.app_name;
+
+
+  $("aiAssetCount")
+    .textContent =
+    $("assetMetric").textContent;
+
+  $("aiModelCount")
+    .textContent =
+    String(models.length);
+
+  $("aiContextAssets")
+    .textContent =
+    $("assetMetric").textContent;
+
+  $("aiContextModels")
+    .textContent =
+    String(models.length);
+
+
+  try {
+    aiRuntime =
+      await requestJson(
+        "/api/ai/status"
+      );
+
+
+    $("aiEngineStatus")
+      .textContent =
+      aiRuntime.status === "online"
+        ? "Online"
+        : "Offline";
+
+
+    const select =
+      $("aiModelSelect");
+
+    const previousModel =
+      select.value;
+
+    select.replaceChildren();
+
+
+    const autoModelOption =
+      document.createElement(
+        "option"
+      );
+
+    autoModelOption.value =
+      "__auto__";
+
+    autoModelOption.textContent =
+      "Auto ? Best Available";
+
+    select.appendChild(
+      autoModelOption
+    );
+
+
+
+    const installed =
+      Array.isArray(
+        aiRuntime.models
+      )
+        ? aiRuntime.models
+        : [];
+
+
+    for (const model of installed) {
+      const option =
+        document.createElement("option");
+
+      option.value =
+        model.name;
+
+      option.textContent =
+        model.name;
+
+      select.appendChild(
+        option
+      );
+    }
+
+
+    if (
+      previousModel &&
+      installed.some(
+        model =>
+          model.name === previousModel
+      )
+    ) {
+      select.value =
+        previousModel;
+
+    } else if (
+      aiRuntime.default_model &&
+      installed.some(
+        model =>
+          model.name ===
+          aiRuntime.default_model
+      )
+    ) {
+      select.value =
+        aiRuntime.default_model;
+    }
+
+
+    setStatus(
+      $("aiChatStatus"),
+      installed.length +
+      " local model(s) available"
+    );
+
+  
+
+    /*
+     * FELTUS AI CORE v2:
+     * router-controlled model selection is the default.
+     */
+    if (
+      !previousModel ||
+      previousModel === "__auto__"
+    ) {
+
+      select.value =
+        "__auto__";
+    }
+
+
+} catch (error) {
+    $("aiEngineStatus")
+      .textContent =
+      "Offline";
+
+    setStatus(
+      $("aiChatStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+﻿async function sendAIMessage() {
+  if (!selectedProject) {
+    setStatus(
+      $("aiChatStatus"),
+      "Select a project first.",
+      true
+    );
+
+    return;
+  }
+
+
+  const prompt =
+    $("aiPromptInput")
+      .value
+      .trim();
+
+
+  if (!prompt) {
+    return;
+  }
+
+
+  const selectedModel =
+    $("aiModelSelect")
+      .value;
+
+
+  const model =
+    selectedModel ===
+      "__auto__"
+      ? ""
+      : selectedModel;
+
+
+  const capability =
+    $("aiCapabilitySelect")
+      ?.value ||
+    "general";
+
+
+  
+
+
+  const button =
+    $("sendAIButton");
+
+  button.disabled =
+    true;
+
+
+  appendAIMessage(
+    "user",
+    prompt
+  );
+
+
+  $("aiPromptInput")
+    .value = "";
+
+
+  setStatus(
+    $("aiChatStatus"),
+    "Connecting to local AI..."
+  );
+
+
+  let assistantContent =
+    null;
+
+
+  try {
+    const response =
+      await fetch(
+        "/api/ai/chat/stream",
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+
+            Accept:
+              "application/x-ndjson"
+          },
+
+          body:
+            JSON.stringify({
+              capability,
+
+
+              app_id:
+                selectedProject.id,
+
+              model,
+
+              prompt
+            })
+        }
+      );
+
+
+    if (!response.ok) {
+      const errorText =
+        await response.text();
+
+      throw new Error(
+        errorText ||
+        "Streaming AI request failed."
+      );
+    }
+
+
+    if (!response.body) {
+      throw new Error(
+        "Streaming response body unavailable."
+      );
+    }
+
+
+    const conversation =
+      $("aiConversation");
+
+
+    const empty =
+      $("aiEmptyState");
+
+    if (empty) {
+      empty.remove();
+    }
+
+
+    const message =
+      document.createElement(
+        "div"
+      );
+
+    message.className =
+      "ai-message ai-message-assistant";
+
+
+    const label =
+      document.createElement(
+        "span"
+      );
+
+    label.className =
+      "ai-message-label";
+
+    label.textContent =
+      "FELTUS AI · Local";
+
+
+    assistantContent =
+      document.createElement(
+        "div"
+      );
+
+
+    message.append(
+      label,
+      assistantContent
+    );
+
+
+    conversation.appendChild(
+      message
+    );
+
+
+    const reader =
+      response.body.getReader();
+
+    const decoder =
+      new TextDecoder();
+
+    let buffer = "";
+
+
+    const processLine =
+      line => {
+        if (!line.trim()) {
+          return;
+        }
+
+
+        const event =
+          JSON.parse(line);
+
+
+        if (
+          event.type === "meta"
+        ) {
+          if (event.context) {
+            const assets =
+              String(
+                event.context.assets ??
+                0
+              );
+
+            const modelCount =
+              String(
+                event.context.models ??
+                0
+              );
+
+
+            $("aiAssetCount")
+              .textContent =
+              assets;
+
+            $("aiContextAssets")
+              .textContent =
+              assets;
+
+            $("aiModelCount")
+              .textContent =
+              modelCount;
+
+            $("aiContextModels")
+              .textContent =
+              modelCount;
+          }
+
+
+          setStatus(
+            $("aiChatStatus"),
+            "Generating locally..."
+          );
+
+          return;
+        }
+
+
+        if (
+          event.type === "token"
+        ) {
+          assistantContent.textContent +=
+            event.text || "";
+
+
+          conversation.scrollTop =
+            conversation.scrollHeight;
+
+          return;
+        }
+
+
+        if (
+          event.type === "done"
+        ) {
+          setStatus(
+            $("aiChatStatus"),
+            "Local inference complete."
+          );
+
+          return;
+        }
+
+
+        if (
+          event.type === "error"
+        ) {
+          throw new Error(
+            event.error ||
+            "Local AI stream failed."
+          );
+        }
+      };
+
+
+    while (true) {
+      const {
+        done,
+        value
+      } =
+        await reader.read();
+
+
+      if (done) {
+        break;
+      }
+
+
+      buffer +=
+        decoder.decode(
+          value,
+          {
+            stream: true
+          }
+        );
+
+
+      let newlineIndex;
+
+
+      while (
+        (
+          newlineIndex =
+            buffer.indexOf("\n")
+        ) >= 0
+      ) {
+        const line =
+          buffer.slice(
+            0,
+            newlineIndex
+          );
+
+
+        buffer =
+          buffer.slice(
+            newlineIndex + 1
+          );
+
+
+        processLine(
+          line
+        );
+      }
+    }
+
+
+    buffer +=
+      decoder.decode();
+
+
+    if (buffer.trim()) {
+      processLine(
+        buffer
+      );
+    }
+
+
+    if (
+      !assistantContent.textContent.trim()
+    ) {
+      assistantContent.textContent =
+        "No response returned.";
+    }
+
+  } catch (error) {
+    if (assistantContent) {
+      assistantContent.textContent +=
+        "\n\nAI request failed: " +
+        error.message;
+
+    } else {
+      appendAIMessage(
+        "assistant",
+        "AI request failed: " +
+        error.message
+      );
+    }
+
+
+    setStatus(
+      $("aiChatStatus"),
+      error.message,
+      true
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+$("sendAIButton")
+  .addEventListener(
+    "click",
+    sendAIMessage
+  );
+
+
+$("aiPromptInput")
+  .addEventListener(
+    "keydown",
+    event => {
+      if (
+        event.key === "Enter" &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+
+        sendAIMessage();
+      }
+    }
+  );
+
+
+$("clearAIChatButton")
+  .addEventListener(
+    "click",
+    clearAIConversation
+  );
+
+
+$("refreshAIButton")
+  .addEventListener(
+    "click",
+    loadAIHubStatus
+  );
+
+
+document
+  .querySelectorAll(
+    "[data-ai-prompt]"
+  )
+  .forEach(
+    button => {
+      button.addEventListener(
+        "click",
+        () => {
+          $("aiPromptInput")
+            .value =
+            button.dataset.aiPrompt;
+
+          $("aiPromptInput")
+            .focus();
+        }
+      );
+    }
+  );
+
+
+
+/* =========================================================
+   FELTUS PRIVATE AI PROJECT HOOK
+========================================================= */
+
+const __feltusOriginalOpenProject =
+  openProject;
+
+openProject =
+  async function(project) {
+    await __feltusOriginalOpenProject(
+      project
+    );
+
+    await loadAIHubStatus();
+  };
+
+
+
+﻿function relationshipModelById(id) {
+  return models.find(
+    model =>
+      model.id === id
+  ) || null;
+}
+
+
+async function relationshipColumns(
+  modelId
+) {
+  if (
+    relationshipColumnCache.has(
+      modelId
+    )
+  ) {
+    return relationshipColumnCache.get(
+      modelId
+    );
+  }
+
+
+  const result =
+    await requestJson(
+      "/api/model-columns?model_id=" +
+      encodeURIComponent(
+        modelId
+      )
+    );
+
+
+  const columns =
+    Array.isArray(
+      result.columns
+    )
+      ? result.columns
+      : [];
+
+
+  relationshipColumnCache.set(
+    modelId,
+    columns
+  );
+
+
+  return columns;
+}
+
+
+async function loadRelationshipSourceColumns() {
+  const modelId =
+    $("relationshipSourceModel")
+      .value;
+
+
+  const select =
+    $("relationshipSourceColumn");
+
+
+  select.replaceChildren();
+
+
+  if (!modelId) {
+    return;
+  }
+
+
+  const columns =
+    await relationshipColumns(
+      modelId
+    );
+
+
+  const uuidColumns =
+    columns
+      .filter(
+        column =>
+          column.data_type ===
+          "uuid"
+      )
+      .sort(
+        (a, b) => {
+          if (
+            a.system ===
+            b.system
+          ) {
+            return 0;
+          }
+
+          return a.system
+            ? 1
+            : -1;
+        }
+      );
+
+
+  relationshipSourceColumns =
+    uuidColumns;
+
+
+  for (
+    const column
+    of uuidColumns
+  ) {
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value =
+      column.column_name;
+
+    option.textContent =
+      column.column_name +
+      " · uuid" +
+      (
+        column.system
+          ? " · system"
+          : ""
+      );
+
+    select.appendChild(
+      option
+    );
+  }
+
+
+  const preferred =
+    uuidColumns.find(
+      column =>
+        column.column_name ===
+        "customer_id"
+    );
+
+
+  if (preferred) {
+    select.value =
+      preferred.column_name;
+  }
+}
+
+
+async function populateRelationshipModels() {
+  const source =
+    $("relationshipSourceModel");
+
+  const target =
+    $("relationshipTargetModel");
+
+
+  const previousSource =
+    source.value;
+
+  const previousTarget =
+    target.value;
+
+
+  source.replaceChildren();
+  target.replaceChildren();
+
+
+  for (const model of models) {
+    const sourceOption =
+      document.createElement(
+        "option"
+      );
+
+    sourceOption.value =
+      model.id;
+
+    sourceOption.textContent =
+      model.logical_name;
+
+    source.appendChild(
+      sourceOption
+    );
+  }
+
+
+  const preferredSource =
+    models.find(
+      model =>
+        model.logical_name ===
+        "orders"
+    );
+
+
+  source.value =
+    (
+      models.some(
+        model =>
+          model.id ===
+          previousSource
+      )
+        ? previousSource
+        : preferredSource?.id
+    ) ||
+    models[0]?.id ||
+    "";
+
+
+  const sourceId =
+    source.value;
+
+
+  for (
+    const model
+    of models.filter(
+      model =>
+        model.id !== sourceId
+    )
+  ) {
+    const targetOption =
+      document.createElement(
+        "option"
+      );
+
+    targetOption.value =
+      model.id;
+
+    targetOption.textContent =
+      model.logical_name;
+
+    target.appendChild(
+      targetOption
+    );
+  }
+
+
+  const preferredTarget =
+    models.find(
+      model =>
+        model.logical_name ===
+        "customers_375328" &&
+        model.id !== sourceId
+    );
+
+
+  if (
+    previousTarget &&
+    models.some(
+      model =>
+        model.id ===
+        previousTarget &&
+        model.id !== sourceId
+    )
+  ) {
+    target.value =
+      previousTarget;
+
+  } else if (
+    preferredTarget
+  ) {
+    target.value =
+      preferredTarget.id;
+  }
+
+
+  await loadRelationshipSourceColumns();
+}
+
+
+function renderRelationships() {
+  const nodes =
+    $("erNodes");
+
+  const edges =
+    $("erEdges");
+
+  const list =
+    $("relationshipList");
+
+
+  nodes.replaceChildren();
+  edges.replaceChildren();
+  list.replaceChildren();
+
+
+  for (const model of models) {
+    const node =
+      document.createElement(
+        "div"
+      );
+
+    node.className =
+      "er-node";
+
+
+    const name =
+      document.createElement(
+        "div"
+      );
+
+    name.className =
+      "er-node-name";
+
+    name.textContent =
+      model.logical_name;
+
+
+    const physical =
+      document.createElement(
+        "div"
+      );
+
+    physical.className =
+      "er-node-table";
+
+    physical.textContent =
+      model.physical_table_name;
+
+
+    node.append(
+      name,
+      physical
+    );
+
+    nodes.appendChild(
+      node
+    );
+  }
+
+
+  if (!relationships.length) {
+    const empty =
+      document.createElement(
+        "div"
+      );
+
+    empty.className =
+      "empty";
+
+    empty.textContent =
+      "No foreign-key relationships exist for this project.";
+
+    edges.appendChild(
+      empty
+    );
+
+    return;
+  }
+
+
+  for (
+    const relationship
+    of relationships
+  ) {
+    const sourceModel =
+      relationshipModelById(
+        relationship.source_model_id
+      );
+
+    const targetModel =
+      relationshipModelById(
+        relationship.target_model_id
+      );
+
+
+    const sourceName =
+      sourceModel?.logical_name ||
+      relationship.source_model_id;
+
+    const targetName =
+      targetModel?.logical_name ||
+      relationship.target_model_id;
+
+
+    const edge =
+      document.createElement(
+        "div"
+      );
+
+    edge.className =
+      "er-edge";
+
+    edge.textContent =
+      sourceName +
+      "." +
+      relationship.source_column +
+      " ";
+
+    const arrow =
+      document.createElement(
+        "span"
+      );
+
+    arrow.className =
+      "er-edge-arrow";
+
+    arrow.textContent =
+      "→";
+
+    edge.appendChild(
+      arrow
+    );
+
+    edge.appendChild(
+      document.createTextNode(
+        " " +
+        targetName +
+        "." +
+        relationship.target_column +
+        " · ON DELETE " +
+        relationship.on_delete_action
+      )
+    );
+
+
+    edges.appendChild(
+      edge
+    );
+
+
+    const card =
+      document.createElement(
+        "div"
+      );
+
+    card.className =
+      "relationship-card";
+
+
+    const info =
+      document.createElement(
+        "div"
+      );
+
+
+    const path =
+      document.createElement(
+        "div"
+      );
+
+    path.className =
+      "relationship-path";
+
+    path.textContent =
+      sourceName +
+      "." +
+      relationship.source_column +
+      " → " +
+      targetName +
+      "." +
+      relationship.target_column;
+
+
+    const meta =
+      document.createElement(
+        "div"
+      );
+
+    meta.className =
+      "relationship-meta";
+
+    meta.textContent =
+      relationship.constraint_name +
+      " · ON DELETE " +
+      relationship.on_delete_action;
+
+
+    info.append(
+      path,
+      meta
+    );
+
+
+    const remove =
+      document.createElement(
+        "button"
+      );
+
+    remove.type =
+      "button";
+
+    remove.className =
+      "danger";
+
+    remove.textContent =
+      "Remove";
+
+
+    remove.addEventListener(
+      "click",
+      async () => {
+        remove.disabled =
+          true;
+
+        try {
+          await requestJson(
+            "/api/relationships/delete",
+            {
+              method:
+                "POST",
+
+              body:
+                JSON.stringify({
+                  relationship_id:
+                    relationship.id
+                })
+            }
+          );
+
+
+          await loadRelationships();
+
+
+          setStatus(
+            $("relationshipStatus"),
+            "Foreign key removed."
+          );
+
+        } catch (error) {
+          setStatus(
+            $("relationshipStatus"),
+            error.message,
+            true
+          );
+
+        } finally {
+          remove.disabled =
+            false;
+        }
+      }
+    );
+
+
+    card.append(
+      info,
+      remove
+    );
+
+
+    list.appendChild(
+      card
+    );
+  }
+}
+
+
+async function loadRelationships() {
+  if (!selectedProject) {
+    return;
+  }
+
+
+  $("relationshipsPanel")
+    .classList
+    .remove("hidden");
+
+
+  try {
+    relationships =
+      await requestJson(
+        "/api/relationships?app_id=" +
+        encodeURIComponent(
+          selectedProject.id
+        )
+      );
+
+
+    if (
+      !Array.isArray(
+        relationships
+      )
+    ) {
+      throw new Error(
+        "Invalid relationship response."
+      );
+    }
+
+
+    await populateRelationshipModels();
+
+    renderRelationships();
+
+
+    setStatus(
+      $("relationshipStatus"),
+      relationships.length +
+      " relationship(s) synchronized"
+    );
+
+  } catch (error) {
+    setStatus(
+      $("relationshipStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+$("relationshipSourceModel")
+  .addEventListener(
+    "change",
+    async () => {
+      await populateRelationshipModels();
+    }
+  );
+
+
+$("refreshRelationshipsBtn")
+  .addEventListener(
+    "click",
+    loadRelationships
+  );
+
+
+$("relationshipForm")
+  .addEventListener(
+    "submit",
+    async event => {
+      event.preventDefault();
+
+
+      if (!selectedProject) {
+        return;
+      }
+
+
+      const sourceModelId =
+        $("relationshipSourceModel")
+          .value;
+
+      const sourceColumn =
+        $("relationshipSourceColumn")
+          .value;
+
+      const targetModelId =
+        $("relationshipTargetModel")
+          .value;
+
+      const onDelete =
+        $("relationshipDeleteAction")
+          .value;
+
+
+      if (
+        !sourceModelId ||
+        !sourceColumn ||
+        !targetModelId
+      ) {
+        setStatus(
+          $("relationshipStatus"),
+          "Select source and target relationship fields.",
+          true
+        );
+
+        return;
+      }
+
+
+      const selectedColumn =
+        relationshipSourceColumns.find(
+          column =>
+            column.column_name ===
+            sourceColumn
+        );
+
+
+      if (
+        onDelete ===
+          "SET NULL" &&
+        selectedColumn &&
+        selectedColumn.is_nullable !==
+          true
+      ) {
+        setStatus(
+          $("relationshipStatus"),
+          "SET NULL requires a nullable source column.",
+          true
+        );
+
+        return;
+      }
+
+
+      const button =
+        $("createRelationshipBtn");
+
+      button.disabled =
+        true;
+
+
+      setStatus(
+        $("relationshipStatus"),
+        "Creating PostgreSQL foreign key..."
+      );
+
+
+      try {
+        await requestJson(
+          "/api/relationships",
+          {
+            method:
+              "POST",
+
+            body:
+              JSON.stringify({
+                app_id:
+                  selectedProject.id,
+
+                source_model_id:
+                  sourceModelId,
+
+                source_column:
+                  sourceColumn,
+
+                target_model_id:
+                  targetModelId,
+
+                target_column:
+                  "id",
+
+                on_delete:
+                  onDelete
+              })
+          }
+        );
+
+
+        relationshipColumnCache.clear();
+
+        await loadRelationships();
+
+
+        setStatus(
+          $("relationshipStatus"),
+          "Foreign key successfully created."
+        );
+
+      } catch (error) {
+        setStatus(
+          $("relationshipStatus"),
+          error.message,
+          true
+        );
+
+      } finally {
+        button.disabled =
+          false;
+      }
+    }
+  );
+
+
+const __feltusOpenProjectWithRelationships = openProject;
+
+openProject = async function(project) {
+  relationshipColumnCache.clear();
+
+  await __feltusOpenProjectWithRelationships(project);
+
+  await loadRelationships();
+};
+
+
+/* =========================================================
+   FELTUS AI CONTEXT COUNT SYNC
+========================================================= */
+
+function syncAIContextCounts() {
+  const assetValue =
+    $("assetMetric")
+      ?.textContent ||
+    "0";
+
+  const modelValue =
+    $("modelMetric")
+      ?.textContent ||
+    String(
+      models.length
+    );
+
+
+  if ($("aiAssetCount")) {
+    $("aiAssetCount")
+      .textContent =
+      assetValue;
+  }
+
+
+  if ($("aiContextAssets")) {
+    $("aiContextAssets")
+      .textContent =
+      assetValue;
+  }
+
+
+  if ($("aiModelCount")) {
+    $("aiModelCount")
+      .textContent =
+      modelValue;
+  }
+
+
+  if ($("aiContextModels")) {
+    $("aiContextModels")
+      .textContent =
+      modelValue;
+  }
+}
+
+
+const __feltusLoadModelsContextSync =
+  loadModels;
+
+loadModels =
+  async function() {
+    const result =
+      await __feltusLoadModelsContextSync();
+
+    syncAIContextCounts();
+
+    return result;
+  };
+
+
+const __feltusLoadAssetsContextSync =
+  loadAssets;
+
+loadAssets =
+  async function() {
+    const result =
+      await __feltusLoadAssetsContextSync();
+
+    syncAIContextCounts();
+
+    return result;
+  };
+
+
+syncAIContextCounts();
+
+
+
+﻿function formatActivityTime(value) {
+  if (!value) {
+    return "—";
+  }
+
+  const date =
+    new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
+
+
+function formatActivityDuration(value) {
+  if (
+    typeof value !== "number"
+  ) {
+    return "—";
+  }
+
+  if (value < 1000) {
+    return value + " ms";
+  }
+
+  return (
+    value / 1000
+  ).toFixed(2) + " s";
+}
+
+
+function renderActivityMetrics() {
+  $("activityTotalMetric")
+    .textContent =
+    String(
+      activityEvents.length
+    );
+
+
+  const errors =
+    activityEvents.filter(
+      event =>
+        event.severity ===
+        "error"
+    ).length;
+
+
+  $("activityErrorMetric")
+    .textContent =
+    String(errors);
+
+
+  const aiEvents =
+    activityEvents.filter(
+      event =>
+        event.event_type ===
+          "ai.inference.completed" ||
+        event.event_type ===
+          "ai.inference.failed"
+    );
+
+
+  $("activityAIMetric")
+    .textContent =
+    String(
+      aiEvents.length
+    );
+
+
+  const timedAI =
+    aiEvents.filter(
+      event =>
+        typeof event.duration_ms ===
+        "number"
+    );
+
+
+  if (!timedAI.length) {
+    $("activityDurationMetric")
+      .textContent =
+      "—";
+
+    return;
+  }
+
+
+  const average =
+    timedAI.reduce(
+      (
+        total,
+        event
+      ) =>
+        total +
+        event.duration_ms,
+      0
+    ) /
+    timedAI.length;
+
+
+  $("activityDurationMetric")
+    .textContent =
+    formatActivityDuration(
+      Math.round(
+        average
+      )
+    );
+}
+
+
+function activityBadge(
+  severity
+) {
+  const span =
+    document.createElement(
+      "span"
+    );
+
+  span.className =
+    "activity-badge " +
+    "activity-badge-" +
+    (
+      severity ||
+      "info"
+    );
+
+  span.textContent =
+    severity ||
+    "info";
+
+  return span;
+}
+
+
+function renderActivityEvents() {
+  const body =
+    $("activityTableBody");
+
+  const empty =
+    $("activityEmpty");
+
+
+  body.replaceChildren();
+
+
+  if (
+    !activityEvents.length
+  ) {
+    empty.classList
+      .remove("hidden");
+
+    renderActivityMetrics();
+
+    return;
+  }
+
+
+  empty.classList
+    .add("hidden");
+
+
+  for (
+    const event
+    of activityEvents
+  ) {
+
+    const row =
+      document.createElement(
+        "tr"
+      );
+
+
+    const timeCell =
+      document.createElement(
+        "td"
+      );
+
+    timeCell.className =
+      "activity-time";
+
+    timeCell.textContent =
+      formatActivityTime(
+        event.created_at
+      );
+
+
+    const severityCell =
+      document.createElement(
+        "td"
+      );
+
+    severityCell.appendChild(
+      activityBadge(
+        event.severity
+      )
+    );
+
+
+    const eventCell =
+      document.createElement(
+        "td"
+      );
+
+    eventCell.className =
+      "activity-event";
+
+    eventCell.textContent =
+      event.event_type ||
+      "—";
+
+
+    const resourceCell =
+      document.createElement(
+        "td"
+      );
+
+    resourceCell.className =
+      "activity-resource";
+
+    resourceCell.textContent =
+      [
+        event.resource_type,
+        event.resource_id
+      ]
+        .filter(Boolean)
+        .join(": ") ||
+      "—";
+
+
+    const detailsCell =
+      document.createElement(
+        "td"
+      );
+
+
+    const message =
+      document.createElement(
+        "div"
+      );
+
+    message.className =
+      "activity-message";
+
+    message.textContent =
+      event.message ||
+      "—";
+
+
+    detailsCell.appendChild(
+      message
+    );
+
+
+    if (
+      event.metadata &&
+      typeof event.metadata ===
+        "object" &&
+      Object.keys(
+        event.metadata
+      ).length
+    ) {
+      const metadata =
+        document.createElement(
+          "div"
+        );
+
+      metadata.className =
+        "activity-meta";
+
+      metadata.textContent =
+        JSON.stringify(
+          event.metadata
+        );
+
+      detailsCell.appendChild(
+        metadata
+      );
+    }
+
+
+    const durationCell =
+      document.createElement(
+        "td"
+      );
+
+    durationCell.className =
+      "activity-duration";
+
+    durationCell.textContent =
+      formatActivityDuration(
+        event.duration_ms
+      );
+
+
+    row.append(
+      timeCell,
+      severityCell,
+      eventCell,
+      resourceCell,
+      detailsCell,
+      durationCell
+    );
+
+
+    body.appendChild(
+      row
+    );
+  }
+
+
+  renderActivityMetrics();
+}
+
+
+﻿function systemHealthDetail(
+  name,
+  service
+) {
+
+  if (
+    service.status !==
+    "online"
+  ) {
+    return (
+      service.error ||
+      "Service unavailable"
+    );
+  }
+
+
+  if (
+    name === "runtime"
+  ) {
+    return (
+      service.detail ||
+      "FELTUS Node runtime"
+    );
+  }
+
+
+  if (
+    name === "gateway"
+  ) {
+    return (
+      "HTTP " +
+      (
+        service.http_status ??
+        "—"
+      )
+    );
+  }
+
+
+  if (
+    name === "auth"
+  ) {
+    return (
+      service.authenticated
+        ? "Authenticated session active"
+        : "Authentication unavailable"
+    );
+  }
+
+
+  if (
+    name === "database"
+  ) {
+    return (
+      "PostgreSQL / PostgREST · HTTP " +
+      (
+        service.http_status ??
+        "—"
+      )
+    );
+  }
+
+
+  if (
+    name === "ai"
+  ) {
+    const count =
+      service.model_count ??
+      0;
+
+    const models =
+      Array.isArray(
+        service.models
+      )
+        ? service.models.join(", ")
+        : "";
+
+    return (
+      "Ollama · " +
+      count +
+      " model(s)" +
+      (
+        models
+          ? " · " + models
+          : ""
+      )
+    );
+  }
+
+
+  return "Online";
+}
+
+
+function renderSystemHealth(
+  health
+) {
+
+  const grid =
+    $("systemHealthGrid");
+
+
+  grid.replaceChildren();
+
+
+  const labels = {
+    runtime:
+      "FELTUS Runtime",
+
+    gateway:
+      "API Gateway",
+
+    auth:
+      "Authentication",
+
+    database:
+      "Database",
+
+    ai:
+      "Local AI"
+  };
+
+
+  const order = [
+    "runtime",
+    "gateway",
+    "auth",
+    "database",
+    "ai"
+  ];
+
+
+  for (
+    const name
+    of order
+  ) {
+
+    const service =
+      health.services?.[name] ||
+      {
+        status:
+          "offline"
+      };
+
+
+    const card =
+      document.createElement(
+        "div"
+      );
+
+    card.className =
+      "system-health-card";
+
+
+    const head =
+      document.createElement(
+        "div"
+      );
+
+    head.className =
+      "system-health-card-head";
+
+
+    const title =
+      document.createElement(
+        "div"
+      );
+
+    title.className =
+      "system-health-name";
+
+    title.textContent =
+      labels[name] ||
+      name;
+
+
+    const status =
+      document.createElement(
+        "span"
+      );
+
+    const statusValue =
+      service.status ||
+      "offline";
+
+    status.className =
+      "system-health-status " +
+      (
+        statusValue === "online"
+          ? "system-health-online"
+          : statusValue === "checking"
+            ? "system-health-checking"
+            : "system-health-offline"
+      );
+
+    status.textContent =
+      statusValue;
+
+
+    const detail =
+      document.createElement(
+        "div"
+      );
+
+    detail.className =
+      "system-health-detail";
+
+    detail.textContent =
+      systemHealthDetail(
+        name,
+        service
+      );
+
+
+    head.append(
+      title,
+      status
+    );
+
+
+    card.append(
+      head,
+      detail
+    );
+
+
+    grid.appendChild(
+      card
+    );
+  }
+
+
+  $("systemHealthOverall")
+    .textContent =
+    health.status ||
+    "unknown";
+
+
+  const checked =
+    health.checked_at
+      ? new Date(
+          health.checked_at
+        )
+      : null;
+
+
+  $("systemHealthCheckedAt")
+    .textContent =
+    checked &&
+    !Number.isNaN(
+      checked.getTime()
+    )
+      ? checked.toLocaleTimeString()
+      : "—";
+}
+
+
+async function loadSystemHealth() {
+
+  const grid =
+    $("systemHealthGrid");
+
+
+  $("systemHealthOverall")
+    .textContent =
+    "checking";
+
+
+  try {
+
+    const health =
+      await requestJson(
+        "/api/system-health"
+      );
+
+
+    renderSystemHealth(
+      health
+    );
+
+
+  } catch (error) {
+
+    grid.replaceChildren();
+
+
+    const card =
+      document.createElement(
+        "div"
+      );
+
+    card.className =
+      "system-health-card";
+
+
+    const title =
+      document.createElement(
+        "div"
+      );
+
+    title.className =
+      "system-health-name";
+
+    title.textContent =
+      "Health Check Failed";
+
+
+    const detail =
+      document.createElement(
+        "div"
+      );
+
+    detail.className =
+      "system-health-detail";
+
+    detail.textContent =
+      error.message;
+
+
+    card.append(
+      title,
+      detail
+    );
+
+
+    grid.appendChild(
+      card
+    );
+
+
+    $("systemHealthOverall")
+      .textContent =
+      "unavailable";
+  }
+}
+
+
+async function loadActivity() {
+  $("activityPanel")
+    .classList
+    .remove("hidden");
+
+  await loadSystemHealth();
+
+
+  setStatus(
+    $("activityStatus"),
+    "Loading operational activity..."
+  );
+
+
+  try {
+
+    const params =
+      new URLSearchParams();
+
+
+    params.set(
+      "limit",
+      $("activityLimitSelect")
+        .value ||
+        "100"
+    );
+
+
+    if (
+      $("activityScopeSelect")
+        .value ===
+        "current" &&
+      selectedProject
+    ) {
+      params.set(
+        "app_id",
+        selectedProject.id
+      );
+    }
+
+
+    const severity =
+      $("activitySeveritySelect")
+        .value;
+
+
+    if (severity) {
+      params.set(
+        "severity",
+        severity
+      );
+    }
+
+
+    const eventType =
+      $("activityTypeSelect")
+        .value;
+
+
+    if (eventType) {
+      params.set(
+        "event_type",
+        eventType
+      );
+    }
+
+
+    activityEvents =
+      await requestJson(
+        "/api/activity?" +
+        params.toString()
+      );
+
+
+    if (
+      !Array.isArray(
+        activityEvents
+      )
+    ) {
+      throw new Error(
+        "Invalid activity response."
+      );
+    }
+
+
+    renderActivityEvents();
+
+
+    setStatus(
+      $("activityStatus"),
+      activityEvents.length +
+      " event(s) loaded"
+    );
+
+
+  } catch (error) {
+
+    activityEvents = [];
+
+    renderActivityEvents();
+
+
+    setStatus(
+      $("activityStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+function wireLogsNavigation() {
+  const candidates =
+    Array.from(
+      document.querySelectorAll(
+        [
+          "nav a",
+          "nav button",
+          "nav [role='button']",
+          "aside a",
+          "aside button",
+          "aside [role='button']",
+          "[class*='nav'] a",
+          "[class*='nav'] button",
+          "[class*='nav'] [role='button']",
+          "[class*='nav'] span",
+          "[class*='nav'] div"
+        ].join(",")
+      )
+    );
+
+
+  const label =
+    candidates.find(
+      element =>
+        element.textContent
+          ?.trim()
+          .toLowerCase() ===
+        "logs"
+    );
+
+
+  if (!label) {
+    return;
+  }
+
+
+  const clickable =
+    label.closest(
+      "a,button,[role='button']"
+    ) ||
+    label;
+
+
+  clickable.style.cursor =
+    "pointer";
+
+
+  clickable.addEventListener(
+    "click",
+    async event => {
+
+      event.preventDefault();
+
+
+      await loadActivity();
+
+
+      $("activityPanel")
+        .scrollIntoView({
+          behavior:
+            "smooth",
+
+          block:
+            "start"
+        });
+    }
+  );
+}
+
+
+$("refreshActivityBtn")
+  .addEventListener(
+    "click",
+    loadActivity
+  );
+
+
+$("activityScopeSelect")
+  .addEventListener(
+    "change",
+    loadActivity
+  );
+
+
+$("activitySeveritySelect")
+  .addEventListener(
+    "change",
+    loadActivity
+  );
+
+
+$("activityTypeSelect")
+  .addEventListener(
+    "change",
+    loadActivity
+  );
+
+
+$("activityLimitSelect")
+  .addEventListener(
+    "change",
+    loadActivity
+  );
+
+
+wireLogsNavigation();
+
+
+const __feltusOpenProjectActivity = openProject;
+
+openProject = async function(project) {
+  await __feltusOpenProjectActivity(project);
+  await loadActivity();
+};
+
+﻿function scrollToFeltusPanel(
+  id
+) {
+  const panel =
+    $(id);
+
+  if (!panel) {
+    return;
+  }
+
+  panel.classList
+    .remove("hidden");
+
+  panel.scrollIntoView({
+    behavior:
+      "smooth",
+
+    block:
+      "start"
+  });
+}
+
+
+function setInfrastructureHealth(
+  health
+) {
+  const element =
+    $("infraHealth");
+
+  const state =
+    health?.status ||
+    "unknown";
+
+  element.textContent =
+    state;
+
+  element.classList.remove(
+    "infra-health-healthy",
+    "infra-health-degraded",
+    "infra-health-unhealthy",
+    "infra-health-unknown"
+  );
+
+  element.classList.add(
+    "infra-health-" +
+    (
+      [
+        "healthy",
+        "degraded",
+        "unhealthy"
+      ].includes(state)
+        ? state
+        : "unknown"
+    )
+  );
+
+
+  const online =
+    health?.summary?.online;
+
+  const total =
+    health?.summary?.total;
+
+
+  $("infraHealthDetail")
+    .textContent =
+    typeof online === "number" &&
+    typeof total === "number"
+      ? online +
+        "/" +
+        total +
+        " services online"
+      : "Service state unavailable";
+}
+
+
+async function loadInfrastructureControlPlane() {
+
+  if (!selectedProject) {
+    return;
+  }
+
+
+  setStatus(
+    $("infraControlStatus"),
+    "Synchronizing infrastructure control plane..."
+  );
+
+
+  $("infraControlProject")
+    .textContent =
+    selectedProject.app_name +
+    " · " +
+    selectedProject.id;
+
+
+  $("infraEnvironment")
+    .textContent =
+    selectedProject.environment ||
+    "development";
+
+
+  try {
+
+    const appId =
+      encodeURIComponent(
+        selectedProject.id
+      );
+
+
+    const [
+      assetsResult,
+      modelsResult,
+      relationshipsResult,
+      activityResult
+    ] =
+      await Promise.all([
+        requestJson(
+          "/api/assets?app_id=" +
+          appId
+        ),
+
+        requestJson(
+          "/api/models?app_id=" +
+          appId
+        ),
+
+        requestJson(
+          "/api/relationships?app_id=" +
+          appId
+        ),
+
+        requestJson(
+          "/api/activity?app_id=" +
+          appId +
+          "&limit=20"
+        )
+      ]);
+
+
+    const infraAssets =
+      Array.isArray(
+        assetsResult
+      )
+        ? assetsResult
+        : [];
+
+
+    const infraModels =
+      Array.isArray(
+        modelsResult
+      )
+        ? modelsResult
+        : [];
+
+
+    const infraRelationships =
+      Array.isArray(
+        relationshipsResult
+      )
+        ? relationshipsResult
+        : [];
+
+
+    const infraEvents =
+      Array.isArray(
+        activityResult
+      )
+        ? activityResult
+        : [];
+
+
+    $("infraAssets")
+      .textContent =
+      String(
+        infraAssets.length
+      );
+
+
+    $("infraModels")
+      .textContent =
+      String(
+        infraModels.length
+      );
+
+
+    $("infraRelationships")
+      .textContent =
+      String(
+        infraRelationships.length
+      );
+
+
+    $("infraEvents")
+      .textContent =
+      String(
+        infraEvents.length
+      );
+
+
+    const rlsEnabled =
+      infraModels.filter(
+        model =>
+          model.rls_enabled ===
+          true
+      ).length;
+
+
+    $("infraRlsCoverage")
+      .textContent =
+      rlsEnabled +
+      "/" +
+      infraModels.length;
+
+
+    $("infraRlsDetail")
+      .textContent =
+      infraModels.length === 0
+        ? "No relational models"
+        : rlsEnabled ===
+            infraModels.length
+          ? "All models protected"
+          : (
+              infraModels.length -
+              rlsEnabled
+            ) +
+            " model(s) require review";
+
+
+    /*
+     * System health is intentionally fetched
+     * directly because an unhealthy stack may
+     * correctly return HTTP 503 while still
+     * providing structured health details.
+     */
+
+    try {
+
+      const response =
+        await fetch(
+          "/api/system-health",
+          {
+            headers: {
+              Accept:
+                "application/json"
+            }
+          }
+        );
+
+
+      const health =
+        await response.json();
+
+
+      setInfrastructureHealth(
+        health
+      );
+
+
+    } catch {
+
+      setInfrastructureHealth({
+        status:
+          "unknown"
+      });
+    }
+
+
+    setStatus(
+      $("infraControlStatus"),
+      "Infrastructure synchronized."
+    );
+
+
+  } catch (error) {
+
+    setStatus(
+      $("infraControlStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+$("infraRefreshBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      await Promise.all([
+        loadAssets(),
+        loadModels(),
+        loadRelationships()
+      ]);
+
+
+      await loadInfrastructureControlPlane();
+    }
+  );
+
+
+$("infraAssetsBtn")
+  .addEventListener(
+    "click",
+    () =>
+      scrollToFeltusPanel(
+        "workspacePanel"
+      )
+  );
+
+
+$("infraModelsBtn")
+  .addEventListener(
+    "click",
+    () =>
+      scrollToFeltusPanel(
+        "modelerPanel"
+      )
+  );
+
+
+$("infraRelationshipsBtn")
+  .addEventListener(
+    "click",
+    () =>
+      scrollToFeltusPanel(
+        "relationshipsPanel"
+      )
+  );
+
+
+$("infraLogsBtn")
+  .addEventListener(
+    "click",
+    () =>
+      scrollToFeltusPanel(
+        "activityPanel"
+      )
+  );
+
+
+/*
+ * Extend the final existing project-opening
+ * pipeline rather than replacing it.
+ */
+
+const __feltusOpenProjectInfrastructure =
+  openProject;
+
+
+openProject =
+  async function(project) {
+
+    await __feltusOpenProjectInfrastructure(
+      project
+    );
+
+
+    await loadInfrastructureControlPlane();
+  };
+
+
+/*
+ * Keep the platform-wide refresh synchronized.
+ */
+
+$("refreshAllBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      if (
+        selectedProject
+      ) {
+        await loadInfrastructureControlPlane();
+      }
+    }
+  );
+
+
+﻿function diagnosticTime(
+  value
+) {
+
+  if (!value) {
+    return "—";
+  }
+
+
+  const date =
+    new Date(value);
+
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "—";
+  }
+
+
+  return date.toLocaleString();
+}
+
+
+function diagnosticDuration(
+  value
+) {
+
+  if (
+    typeof value !== "number"
+  ) {
+    return "—";
+  }
+
+
+  if (value < 1000) {
+    return (
+      Math.round(value) +
+      " ms"
+    );
+  }
+
+
+  return (
+    value / 1000
+  ).toFixed(2) +
+  " s";
+}
+
+
+function setDiagnosticReadiness(
+  state,
+  detail
+) {
+
+  const element =
+    $("diagnosticReadiness");
+
+
+  element.textContent =
+    state;
+
+
+  element.classList.remove(
+    "diagnostic-ready",
+    "diagnostic-attention",
+    "diagnostic-blocked",
+    "diagnostic-neutral"
+  );
+
+
+  if (
+    state === "READY"
+  ) {
+    element.classList.add(
+      "diagnostic-ready"
+    );
+
+  } else if (
+    state === "ATTENTION"
+  ) {
+    element.classList.add(
+      "diagnostic-attention"
+    );
+
+  } else if (
+    state === "BLOCKED"
+  ) {
+    element.classList.add(
+      "diagnostic-blocked"
+    );
+
+  } else {
+    element.classList.add(
+      "diagnostic-neutral"
+    );
+  }
+
+
+  $("diagnosticReadinessDetail")
+    .textContent =
+    detail;
+}
+
+
+async function loadProjectDiagnostics() {
+
+  if (!selectedProject) {
+    return;
+  }
+
+
+  setDiagnosticReadiness(
+    "CHECKING",
+    "Evaluating live project state"
+  );
+
+
+  setStatus(
+    $("diagnosticStatus"),
+    "Running project diagnostics..."
+  );
+
+
+  try {
+
+    const appId =
+      encodeURIComponent(
+        selectedProject.id
+      );
+
+
+    /*
+     * Database/API latency.
+     *
+     * This request traverses:
+     * browser -> FELTUS Node ->
+     * PostgREST -> PostgreSQL/RLS.
+     */
+
+    const databaseStarted =
+      performance.now();
+
+
+    const diagnosticModels =
+      await requestJson(
+        "/api/models?app_id=" +
+        appId
+      );
+
+
+    const databaseLatency =
+      performance.now() -
+      databaseStarted;
+
+
+    if (
+      !Array.isArray(
+        diagnosticModels
+      )
+    ) {
+      throw new Error(
+        "Invalid model diagnostic response."
+      );
+    }
+
+
+    $("diagnosticDatabaseLatency")
+      .textContent =
+      diagnosticDuration(
+        databaseLatency
+      );
+
+
+    /*
+     * Project relationships and activity.
+     */
+
+    const [
+      diagnosticRelationships,
+      diagnosticEvents
+    ] =
+      await Promise.all([
+
+        requestJson(
+          "/api/relationships?app_id=" +
+          appId
+        ),
+
+        requestJson(
+          "/api/activity?app_id=" +
+          appId +
+          "&limit=100"
+        )
+
+      ]);
+
+
+    if (
+      !Array.isArray(
+        diagnosticRelationships
+      ) ||
+      !Array.isArray(
+        diagnosticEvents
+      )
+    ) {
+      throw new Error(
+        "Invalid project diagnostic response."
+      );
+    }
+
+
+    /*
+     * Platform health.
+     *
+     * Raw fetch is deliberate because
+     * unhealthy status may legitimately
+     * return HTTP 503 with useful JSON.
+     */
+
+    const healthStarted =
+      performance.now();
+
+
+    let health;
+
+
+    try {
+
+      const healthResponse =
+        await fetch(
+          "/api/system-health",
+          {
+            headers: {
+              Accept:
+                "application/json"
+            }
+          }
+        );
+
+
+      health =
+        await healthResponse.json();
+
+
+    } catch (error) {
+
+      health = {
+        status:
+          "unhealthy",
+
+        services:
+          {},
+
+        summary: {
+          online:
+            0,
+
+          total:
+            5
+        },
+
+        error:
+          error.message
+      };
+    }
+
+
+    const healthLatency =
+      performance.now() -
+      healthStarted;
+
+
+    $("diagnosticHealthLatency")
+      .textContent =
+      diagnosticDuration(
+        healthLatency
+      );
+
+
+    $("diagnosticHealthDetail")
+      .textContent =
+      (
+        health.status ||
+        "unknown"
+      ).toUpperCase() +
+      " · " +
+      (
+        health.summary?.online ??
+        0
+      ) +
+      "/" +
+      (
+        health.summary?.total ??
+        5
+      ) +
+      " services online";
+
+
+    /*
+     * RLS posture.
+     */
+
+    const securedModels =
+      diagnosticModels.filter(
+        model =>
+          model.rls_enabled ===
+          true
+      ).length;
+
+
+    const allModelsSecured =
+      diagnosticModels.length === 0 ||
+      securedModels ===
+        diagnosticModels.length;
+
+
+    $("diagnosticRls")
+      .textContent =
+      diagnosticModels.length
+        ? securedModels +
+          "/" +
+          diagnosticModels.length
+        : "N/A";
+
+
+    $("diagnosticRlsDetail")
+      .textContent =
+      diagnosticModels.length === 0
+        ? "No managed models"
+        : allModelsSecured
+          ? "All managed models protected"
+          : (
+              diagnosticModels.length -
+              securedModels
+            ) +
+            " model(s) without RLS";
+
+
+    /*
+     * Relationship registry integrity.
+     */
+
+    const modelIds =
+      new Set(
+        diagnosticModels.map(
+          model =>
+            model.id
+        )
+      );
+
+
+    const brokenRelationships =
+      diagnosticRelationships.filter(
+        relationship =>
+          !modelIds.has(
+            relationship.source_model_id
+          ) ||
+          !modelIds.has(
+            relationship.target_model_id
+          )
+      );
+
+
+    const relationshipsValid =
+      brokenRelationships.length ===
+      0;
+
+
+    $("diagnosticRelationships")
+      .textContent =
+      relationshipsValid
+        ? "VALID"
+        : "REVIEW";
+
+
+    $("diagnosticRelationshipsDetail")
+      .textContent =
+      diagnosticRelationships.length ===
+      0
+        ? "No registered relationships"
+        : relationshipsValid
+          ? diagnosticRelationships.length +
+            "/" +
+            diagnosticRelationships.length +
+            " registry references valid"
+          : brokenRelationships.length +
+            " invalid relationship reference(s)";
+
+
+    /*
+     * Sort telemetry newest first regardless
+     * of transport ordering.
+     */
+
+    const sortedEvents =
+      [...diagnosticEvents]
+        .sort(
+          (
+            left,
+            right
+          ) =>
+            new Date(
+              right.created_at
+            ).getTime() -
+            new Date(
+              left.created_at
+            ).getTime()
+        );
+
+
+    /*
+     * Last successful AI inference.
+     */
+
+    const lastAI =
+      sortedEvents.find(
+        event =>
+          event.event_type ===
+            "ai.inference.completed" &&
+          event.severity ===
+            "success"
+      );
+
+
+    if (lastAI) {
+
+      $("diagnosticAI")
+        .textContent =
+        diagnosticDuration(
+          lastAI.duration_ms
+        );
+
+
+      $("diagnosticAIDetail")
+        .textContent =
+        (
+          lastAI.resource_id ||
+          lastAI.metadata?.model ||
+          "local model"
+        ) +
+        " · " +
+        diagnosticTime(
+          lastAI.created_at
+        );
+
+    } else {
+
+      $("diagnosticAI")
+        .textContent =
+        "NONE";
+
+
+      $("diagnosticAIDetail")
+        .textContent =
+        "No completed AI inference recorded";
+    }
+
+
+    /*
+     * Latest warning or error.
+     */
+
+    const latestIssue =
+      sortedEvents.find(
+        event =>
+          event.severity ===
+            "warning" ||
+          event.severity ===
+            "error"
+      );
+
+
+    let recentIssue =
+      false;
+
+
+    if (latestIssue) {
+
+      $("diagnosticIssue")
+        .textContent =
+        latestIssue.severity
+          .toUpperCase();
+
+
+      $("diagnosticIssueDetail")
+        .textContent =
+        latestIssue.event_type +
+        " · " +
+        diagnosticTime(
+          latestIssue.created_at
+        );
+
+
+      const issueTime =
+        new Date(
+          latestIssue.created_at
+        ).getTime();
+
+
+      recentIssue =
+        Number.isFinite(
+          issueTime
+        ) &&
+        (
+          Date.now() -
+          issueTime
+        ) <=
+        24 * 60 * 60 * 1000;
+
+    } else {
+
+      $("diagnosticIssue")
+        .textContent =
+        "NONE";
+
+
+      $("diagnosticIssueDetail")
+        .textContent =
+        "No warning or error in project telemetry";
+    }
+
+
+    /*
+     * Deterministic readiness rules.
+     */
+
+    const gatewayStatus =
+      health.services
+        ?.gateway
+        ?.status;
+
+
+    const authStatus =
+      health.services
+        ?.auth
+        ?.status;
+
+
+    const databaseStatus =
+      health.services
+        ?.database
+        ?.status;
+
+
+    const criticalOffline =
+      [
+        gatewayStatus,
+        authStatus,
+        databaseStatus
+      ].some(
+        status =>
+          status ===
+          "offline"
+      );
+
+
+    const slowDatabase =
+      databaseLatency >
+      1500;
+
+
+    if (
+      health.status ===
+        "unhealthy" ||
+      criticalOffline
+    ) {
+
+      setDiagnosticReadiness(
+        "BLOCKED",
+        "A critical platform dependency is unavailable."
+      );
+
+    } else if (
+      health.status ===
+        "degraded" ||
+      !allModelsSecured ||
+      !relationshipsValid ||
+      recentIssue ||
+      slowDatabase
+    ) {
+
+      const reasons = [];
+
+
+      if (
+        health.status ===
+        "degraded"
+      ) {
+        reasons.push(
+          "platform degraded"
+        );
+      }
+
+
+      if (
+        !allModelsSecured
+      ) {
+        reasons.push(
+          "RLS review required"
+        );
+      }
+
+
+      if (
+        !relationshipsValid
+      ) {
+        reasons.push(
+          "relationship review required"
+        );
+      }
+
+
+      if (
+        recentIssue
+      ) {
+        reasons.push(
+          "recent warning/error"
+        );
+      }
+
+
+      if (
+        slowDatabase
+      ) {
+        reasons.push(
+          "database/API latency elevated"
+        );
+      }
+
+
+      setDiagnosticReadiness(
+        "ATTENTION",
+        reasons.join(" · ")
+      );
+
+    } else {
+
+      setDiagnosticReadiness(
+        "READY",
+        "Critical services online, security posture valid and no active diagnostic blockers."
+      );
+    }
+
+
+    $("diagnosticRefreshTime")
+      .textContent =
+      new Date()
+        .toLocaleTimeString();
+
+
+    setStatus(
+      $("diagnosticStatus"),
+      "Diagnostics complete."
+    );
+
+
+  } catch (error) {
+
+    setDiagnosticReadiness(
+      "BLOCKED",
+      "Diagnostic execution failed."
+    );
+
+
+    $("diagnosticRefreshTime")
+      .textContent =
+      new Date()
+        .toLocaleTimeString();
+
+
+    setStatus(
+      $("diagnosticStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+$("diagnosticsRefreshBtn")
+  .addEventListener(
+    "click",
+    loadProjectDiagnostics
+  );
+
+
+/*
+ * Extend Phase 5F-1's existing control-plane
+ * synchronization rather than creating a
+ * competing project lifecycle.
+ */
+
+const __feltusLoadInfrastructureWithDiagnostics =
+  loadInfrastructureControlPlane;
+
+
+loadInfrastructureControlPlane =
+  async function() {
+
+    const result =
+      await __feltusLoadInfrastructureWithDiagnostics();
+
+
+    await loadProjectDiagnostics();
+
+
+    return result;
+  };
+
+
+
+let deploymentControlState =
+  "draft";
+
+
+function renderDeploymentControl(
+  result
+) {
+
+  const project =
+    result?.project ||
+    {};
+
+
+  const readiness =
+    result?.readiness ||
+    {};
+
+
+  const state =
+    project.deployment_state ||
+    "draft";
+
+
+  deploymentControlState =
+    state;
+
+
+  const stateElement =
+    $("infraDeploymentState");
+
+
+  stateElement.textContent =
+    state.toUpperCase();
+
+
+  stateElement.classList.remove(
+    "infra-deployment-draft",
+    "infra-deployment-deployed",
+    "infra-deployment-blocked"
+  );
+
+
+  stateElement.classList.add(
+    state === "deployed"
+      ? "infra-deployment-deployed"
+      : readiness.state ===
+          "BLOCKED"
+        ? "infra-deployment-blocked"
+        : "infra-deployment-draft"
+  );
+
+
+  const reasons =
+    Array.isArray(
+      readiness.reasons
+    )
+      ? readiness.reasons
+      : [];
+
+
+  if (
+    state === "deployed"
+  ) {
+
+    $("infraDeploymentDetail")
+      .textContent =
+      project.deployed_at
+        ? "Deployed " +
+          new Date(
+            project.deployed_at
+          ).toLocaleString() +
+          " ? Gate " +
+          (
+            readiness.state ||
+            "UNKNOWN"
+          )
+        : "Deployment active ? Gate " +
+          (
+            readiness.state ||
+            "UNKNOWN"
+          );
+
+  } else {
+
+    $("infraDeploymentDetail")
+      .textContent =
+      readiness.state === "READY"
+        ? "Gate READY ? Eligible for deployment"
+        : (
+            readiness.state ||
+            "UNKNOWN"
+          ) +
+          (
+            reasons.length
+              ? " ? " +
+                reasons.join(" ? ")
+              : ""
+          );
+  }
+
+
+  const button =
+    $("infraDeploymentBtn");
+
+
+  if (
+    state === "deployed"
+  ) {
+
+    button.textContent =
+      "Return to Draft";
+
+    button.disabled =
+      false;
+
+  } else {
+
+    button.textContent =
+      readiness.state === "READY"
+        ? "Deploy Project"
+        : "Deployment Blocked";
+
+    button.disabled =
+      readiness.state !==
+      "READY";
+  }
+}
+
+
+async function loadDeploymentControl() {
+
+  if (!selectedProject) {
+    return;
+  }
+
+
+  try {
+
+    const result =
+      await requestJson(
+        "/api/deployment?app_id=" +
+        encodeURIComponent(
+          selectedProject.id
+        )
+      );
+
+
+    renderDeploymentControl(
+      result
+    );
+
+
+  } catch (error) {
+
+    $("infraDeploymentState")
+      .textContent =
+      "UNKNOWN";
+
+
+    $("infraDeploymentDetail")
+      .textContent =
+      error.message;
+
+
+    $("infraDeploymentBtn")
+      .disabled =
+      true;
+  }
+}
+
+
+$("infraDeploymentBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      if (!selectedProject) {
+        return;
+      }
+
+
+      const button =
+        $("infraDeploymentBtn");
+
+
+      const desiredState =
+        deploymentControlState ===
+          "deployed"
+          ? "draft"
+          : "deployed";
+
+
+      button.disabled =
+        true;
+
+
+      setStatus(
+        $("infraControlStatus"),
+        desiredState ===
+          "deployed"
+          ? "Running server readiness gate..."
+          : "Returning project to draft..."
+      );
+
+
+      try {
+
+        const response =
+          await fetch(
+            "/api/deployment",
+            {
+              method:
+                "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+
+                Accept:
+                  "application/json"
+              },
+
+              body:
+                JSON.stringify({
+                  app_id:
+                    selectedProject.id,
+
+                  state:
+                    desiredState
+                })
+            }
+          );
+
+
+        const result =
+          await response.json();
+
+
+        if (!response.ok) {
+
+          if (
+            result.readiness
+          ) {
+            renderDeploymentControl({
+              project: {
+                deployment_state:
+                  deploymentControlState
+              },
+
+              readiness:
+                result.readiness
+            });
+          }
+
+
+          throw new Error(
+            result.error ||
+            "Deployment state change failed."
+          );
+        }
+
+
+        renderDeploymentControl(
+          result
+        );
+
+
+        selectedProject.deployment_state =
+          result.project
+            ?.deployment_state ||
+          desiredState;
+
+
+        selectedProject.deployed_at =
+          result.project
+            ?.deployed_at ||
+          null;
+
+
+        setStatus(
+          $("infraControlStatus"),
+          desiredState ===
+            "deployed"
+            ? "Project deployed after server readiness verification."
+            : "Project returned to draft."
+        );
+
+
+        /*
+         * Refresh project telemetry,
+         * metrics and diagnostics after
+         * the deployment transition.
+         */
+
+        await Promise.all([
+          loadActivity(),
+          loadProjectDiagnostics()
+        ]);
+
+
+        await loadDeploymentControl();
+
+
+      } catch (error) {
+
+        setStatus(
+          $("infraControlStatus"),
+          error.message,
+          true
+        );
+
+
+        await loadDeploymentControl();
+      }
+    }
+  );
+
+
+/*
+ * Extend the final infrastructure refresh
+ * chain without replacing prior phases.
+ */
+
+const __feltusLoadInfrastructureWithDeployment =
+  loadInfrastructureControlPlane;
+
+
+loadInfrastructureControlPlane =
+  async function() {
+
+    const result =
+      await __feltusLoadInfrastructureWithDeployment();
+
+
+    await loadDeploymentControl();
+
+
+    return result;
+  };
+
+
+
+/* ============================================================
+   FELTUS PROJECT DOCUMENTS UI CONTROLLER
+============================================================ */
+
+let projectDocuments = [];
+let pendingDocumentFile = null;
+
+
+function documentBytes(bytes) {
+
+  const value =
+    Number(bytes);
+
+  if (
+    !Number.isFinite(value) ||
+    value < 0
+  ) {
+    return "?";
+  }
+
+  if (value < 1024) {
+    return value + " B";
+  }
+
+  if (
+    value <
+    1024 * 1024
+  ) {
+    return (
+      (value / 1024)
+        .toFixed(1) +
+      " KB"
+    );
+  }
+
+  return (
+    (
+      value /
+      (1024 * 1024)
+    ).toFixed(1) +
+    " MB"
+  );
+}
+
+
+function documentDate(value) {
+
+  if (!value) {
+    return "?";
+  }
+
+  const date =
+    new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "?";
+  }
+
+  return date
+    .toLocaleString();
+}
+
+
+function updateDocumentMetrics() {
+
+  const ready =
+    projectDocuments.filter(
+      item =>
+        item.processing_status ===
+        "ready"
+    ).length;
+
+  const stored =
+    projectDocuments.filter(
+      item =>
+        item.processing_status ===
+          "stored" ||
+        item.processing_status ===
+          "processing"
+    ).length;
+
+  const failed =
+    projectDocuments.filter(
+      item =>
+        item.processing_status ===
+        "failed"
+    ).length;
+
+
+  $("documentCount")
+    .textContent =
+    String(
+      projectDocuments.length
+    );
+
+  $("documentReadyCount")
+    .textContent =
+    String(ready);
+
+  $("documentStoredCount")
+    .textContent =
+    String(stored);
+
+  $("documentFailedCount")
+    .textContent =
+    String(failed);
+
+  $("documentAIContext")
+    .textContent =
+    ready +
+    (
+      ready === 1
+        ? " ready document"
+        : " ready documents"
+    );
+
+
+  const aiDocumentCount =
+    $("aiDocumentCount");
+
+  if (
+    aiDocumentCount
+  ) {
+    aiDocumentCount
+      .textContent =
+      String(ready);
+  }
+}
+
+
+function renderDocuments() {
+
+  const rows =
+    $("documentRows");
+
+  rows.textContent =
+    "";
+
+
+  if (
+    projectDocuments.length ===
+    0
+  ) {
+
+    const row =
+      document.createElement(
+        "tr"
+      );
+
+    const cell =
+      document.createElement(
+        "td"
+      );
+
+    cell.colSpan =
+      6;
+
+    cell.className =
+      "document-empty";
+
+    cell.textContent =
+      "No private project documents have been uploaded.";
+
+    row.appendChild(
+      cell
+    );
+
+    rows.appendChild(
+      row
+    );
+
+    updateDocumentMetrics();
+
+    return;
+  }
+
+
+  for (
+    const item of
+    projectDocuments
+  ) {
+
+    const row =
+      document.createElement(
+        "tr"
+      );
+
+    const nameCell =
+      document.createElement(
+        "td"
+      );
+
+    const name =
+      document.createElement(
+        "div"
+      );
+
+    name.className =
+      "document-name";
+
+    name.textContent =
+      item.original_name ||
+      "Unnamed document";
+
+    name.title =
+      item.original_name ||
+      "";
+
+    nameCell.appendChild(
+      name
+    );
+
+
+    const typeCell =
+      document.createElement(
+        "td"
+      );
+
+    typeCell.textContent =
+      item.mime_type ||
+      "application/octet-stream";
+
+
+    const sizeCell =
+      document.createElement(
+        "td"
+      );
+
+    sizeCell.textContent =
+      documentBytes(
+        item.size_bytes
+      );
+
+
+    const statusCell =
+      document.createElement(
+        "td"
+      );
+
+    const status =
+      document.createElement(
+        "span"
+      );
+
+    const state =
+      String(
+        item.processing_status ||
+        "stored"
+      )
+        .toLowerCase();
+
+    status.className =
+      "document-state " +
+      state;
+
+    status.textContent =
+      state;
+
+    statusCell.appendChild(
+      status
+    );
+
+
+    const chunksCell =
+      document.createElement(
+        "td"
+      );
+
+    chunksCell.textContent =
+      Number.isInteger(
+        item.metadata?.chunk_count
+      )
+        ? String(
+            item.metadata.chunk_count
+          )
+        : "?";
+
+
+    const dateCell =
+      document.createElement(
+        "td"
+      );
+
+    dateCell.textContent =
+      documentDate(
+        item.created_at
+      );
+
+
+    row.append(
+      nameCell,
+      typeCell,
+      sizeCell,
+      statusCell,
+      chunksCell,
+      dateCell
+    );
+
+    rows.appendChild(
+      row
+    );
+  }
+
+
+  updateDocumentMetrics();
+}
+
+
+async function loadDocuments() {
+
+  if (
+    !selectedProject
+  ) {
+
+    projectDocuments =
+      [];
+
+    renderDocuments();
+
+    return;
+  }
+
+
+  try {
+
+    const result =
+      await requestJson(
+        "/api/documents?app_id=" +
+        encodeURIComponent(
+          selectedProject.id
+        )
+      );
+
+
+    projectDocuments =
+      Array.isArray(result)
+        ? result
+        : [];
+
+
+    renderDocuments();
+
+
+    setStatus(
+      $("documentStatus"),
+      projectDocuments.length
+        ? projectDocuments.length +
+          " private project document" +
+          (
+            projectDocuments.length === 1
+              ? " loaded."
+              : "s loaded."
+          )
+        : "Private local project storage ready."
+    );
+
+
+  } catch (error) {
+
+    projectDocuments =
+      [];
+
+    renderDocuments();
+
+
+    setStatus(
+      $("documentStatus"),
+      error.message,
+      true
+    );
+  }
+}
+
+
+function selectDocumentFile(file) {
+
+  pendingDocumentFile =
+    file ||
+    null;
+
+
+  $("documentSelectedFile")
+    .textContent =
+    pendingDocumentFile
+      ? pendingDocumentFile.name +
+        " ? " +
+        documentBytes(
+          pendingDocumentFile.size
+        )
+      : "No file selected";
+
+
+  $("uploadDocumentBtn")
+    .disabled =
+    !pendingDocumentFile;
+}
+
+
+async function uploadProjectDocument() {
+
+  if (
+    !selectedProject
+  ) {
+
+    setStatus(
+      $("documentStatus"),
+      "Select a FELTUS project first.",
+      true
+    );
+
+    return;
+  }
+
+
+  if (
+    !pendingDocumentFile
+  ) {
+
+    setStatus(
+      $("documentStatus"),
+      "Choose a document first.",
+      true
+    );
+
+    return;
+  }
+
+
+  if (
+    pendingDocumentFile.size >
+    20 * 1024 * 1024
+  ) {
+
+    setStatus(
+      $("documentStatus"),
+      "Document exceeds the 20 MB limit.",
+      true
+    );
+
+    return;
+  }
+
+
+  const button =
+    $("uploadDocumentBtn");
+
+  button.disabled =
+    true;
+
+
+  try {
+
+    setStatus(
+      $("documentStatus"),
+      "Uploading to private FELTUS storage..."
+    );
+
+
+    const uploadResponse =
+      await fetch(
+        "/api/documents/upload" +
+        "?app_id=" +
+        encodeURIComponent(
+          selectedProject.id
+        ) +
+        "&name=" +
+        encodeURIComponent(
+          pendingDocumentFile.name
+        ),
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              pendingDocumentFile.type ||
+              "application/octet-stream"
+          },
+
+          body:
+            pendingDocumentFile
+        }
+      );
+
+
+    const uploadResult =
+      await uploadResponse
+        .json()
+        .catch(
+          () => ({})
+        );
+
+
+    if (
+      !uploadResponse.ok
+    ) {
+
+      throw new Error(
+        uploadResult.error ||
+        uploadResult.message ||
+        (
+          "Document upload failed: " +
+          uploadResponse.status
+        )
+      );
+    }
+
+
+    setStatus(
+      $("documentStatus"),
+      "Upload complete. Processing document..."
+    );
+
+
+    const processResponse =
+      await fetch(
+        "/api/documents/process",
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body:
+            JSON.stringify({
+              document_id:
+                uploadResult.id
+            })
+        }
+      );
+
+
+    const processResult =
+      await processResponse
+        .json()
+        .catch(
+          () => ({})
+        );
+
+
+    if (
+      processResponse.ok
+    ) {
+
+      setStatus(
+        $("documentStatus"),
+        "Document ready for FELTUS AI context."
+      );
+
+
+    } else if (
+      processResponse.status ===
+      415
+    ) {
+
+      setStatus(
+        $("documentStatus"),
+        "Document stored privately. Parser for this file type is pending."
+      );
+
+
+    } else {
+
+      throw new Error(
+        processResult.error ||
+        processResult.message ||
+        (
+          "Document processing failed: " +
+          processResponse.status
+        )
+      );
+    }
+
+
+    selectDocumentFile(
+      null
+    );
+
+
+    $("documentFileInput")
+      .value =
+      "";
+
+
+    await loadDocuments();
+
+
+  } catch (error) {
+
+    setStatus(
+      $("documentStatus"),
+      error.message,
+      true
+    );
+
+
+  } finally {
+
+    button.disabled =
+      !pendingDocumentFile;
+  }
+}
+
+
+$("chooseDocumentBtn")
+  .addEventListener(
+    "click",
+    () => {
+
+      $("documentFileInput")
+        .click();
+    }
+  );
+
+
+$("documentFileInput")
+  .addEventListener(
+    "change",
+    event => {
+
+      selectDocumentFile(
+        event.target.files?.[0] ||
+        null
+      );
+    }
+  );
+
+
+$("uploadDocumentBtn")
+  .addEventListener(
+    "click",
+    uploadProjectDocument
+  );
+
+
+$("refreshDocumentsBtn")
+  .addEventListener(
+    "click",
+    loadDocuments
+  );
+
+
+const documentDropZone =
+  $("documentDropZone");
+
+
+for (
+  const eventName of
+  [
+    "dragenter",
+    "dragover"
+  ]
+) {
+
+  documentDropZone
+    .addEventListener(
+      eventName,
+      event => {
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+        documentDropZone
+          .classList
+          .add(
+            "drag-active"
+          );
+      }
+    );
+}
+
+
+for (
+  const eventName of
+  [
+    "dragleave",
+    "drop"
+  ]
+) {
+
+  documentDropZone
+    .addEventListener(
+      eventName,
+      event => {
+
+        event.preventDefault();
+
+        event.stopPropagation();
+
+        documentDropZone
+          .classList
+          .remove(
+            "drag-active"
+          );
+      }
+    );
+}
+
+
+documentDropZone
+  .addEventListener(
+    "drop",
+    event => {
+
+      selectDocumentFile(
+        event.dataTransfer
+          ?.files?.[0] ||
+        null
+      );
+    }
+  );
+
+
+$("refreshAllBtn")
+  .addEventListener(
+    "click",
+    async () => {
+
+      if (
+        selectedProject
+      ) {
+        await loadDocuments();
+      }
+    }
+  );
+
+
+initialize();
+</script>
+
+
+
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "feltus-labs-v1",
+  "version": "1.0.0",
+  "description": "Feltus Labs Private Cloud and Core Engine Workspace",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:types": "supabase gen types typescript local > src/types/supabase.ts",
+    "ai:ingest": "node src/ai-ingest.js",
+    "ui:start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "Feltus Labs",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

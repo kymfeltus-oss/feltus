@@ -1,0 +1,213 @@
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const directory = path.dirname(fileURLToPath(import.meta.url));
+const gateway = "http://127.0.0.1:54321";
+const apiKey = process.env.FELTUS_PUBLISHABLE_KEY;
+
+if (!apiKey) {
+  throw new Error("FELTUS_PUBLISHABLE_KEY is required.");
+}
+
+function send(res, status, data) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff"
+  });
+  res.end(JSON.stringify(data));
+}
+
+async function readBody(req) {
+  let body = "";
+  for await (const chunk of req) {
+    body += chunk.toString();
+    if (body.length > 16384) {
+      const error = new Error("Request too large");
+      error.status = 413;
+      throw error;
+    }
+  }
+  try {
+    return JSON.parse(body || "{}");
+  } catch {
+    const error = new Error("Invalid JSON");
+    error.status = 400;
+    throw error;
+  }
+}
+
+async function upstream(url, options = {}) {
+  const response = await fetch(gateway + url, {
+    ...options,
+    headers: {
+      apikey: apiKey,
+      Accept: "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { message: "Unexpected upstream response" };
+  }
+
+  return { status: response.status, data };
+}
+
+function bearer(req) {
+  const match = /^Bearer (.+)$/i.exec(
+    req.headers.authorization || ""
+  );
+  return match?.[1] || null;
+}
+
+async function authenticate(token) {
+  const result = await upstream("/auth/v1/user", {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  return result.status === 200 && result.data?.id
+    ? result.data
+    : null;
+}
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(req.url, "http://127.0.0.1:8080");
+
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      if (req.method !== "GET") {
+        return send(res, 405, { error: "Method not allowed" });
+      }
+
+      const file = path.join(directory, "../index.html");
+      return fs.readFile(file, (error, content) => {
+        if (error) {
+          return send(res, 500, { error: "Dashboard unavailable" });
+        }
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff"
+        });
+        res.end(content);
+      });
+    }
+
+    if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      const body = await readBody(req);
+
+      if (typeof body.email !== "string" ||
+          typeof body.password !== "string") {
+        return send(res, 400, { error: "Email and password required" });
+      }
+
+      const result = await upstream(
+        "/auth/v1/token?grant_type=password",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: body.email,
+            password: body.password
+          })
+        }
+      );
+
+      return send(res, result.status, result.data);
+    }
+
+    if (url.pathname === "/api/auth/refresh" && req.method === "POST") {
+      const body = await readBody(req);
+
+      if (typeof body.refresh_token !== "string" ||
+          !body.refresh_token) {
+        return send(res, 400, { error: "Refresh token required" });
+      }
+
+      const result = await upstream(
+        "/auth/v1/token?grant_type=refresh_token",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            refresh_token: body.refresh_token
+          })
+        }
+      );
+
+      return send(res, result.status, result.data);
+    }
+
+    if (url.pathname === "/api/assets" &&
+        (req.method === "GET" || req.method === "POST")) {
+
+      const token = bearer(req);
+
+      if (!token) {
+        return send(res, 401, { error: "Authentication required" });
+      }
+
+      const user = await authenticate(token);
+
+      if (!user) {
+        return send(res, 401, { error: "Invalid or expired session" });
+      }
+
+      if (req.method === "GET") {
+        const result = await upstream(
+          "/rest/v1/user_assets?select=*&order=created_at.desc",
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+
+        return send(res, result.status, result.data);
+      }
+
+      const body = await readBody(req);
+      const name = body.asset_name;
+
+      if (typeof name !== "string" ||
+          !name.trim() ||
+          name.length > 200) {
+        return send(res, 400, { error: "Invalid asset name" });
+      }
+
+      const result = await upstream("/rest/v1/user_assets", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Prefer: "return=representation"
+        },
+        body: JSON.stringify({
+          user_id: user.id,
+          asset_name: name.trim(),
+          payload: {
+            client_origin: "FELTUS LABS Dashboard"
+          }
+        })
+      });
+
+      return send(res, result.status, result.data);
+    }
+
+    return send(res, 404, { error: "Route not found" });
+  } catch (error) {
+    console.error("FELTUS proxy failure:", error.message);
+    return send(res, error.status || 502, {
+      error: error.status ? error.message : "Upstream request failed"
+    });
+  }
+});
+
+server.listen(8080, "127.0.0.1", () => {
+  console.log("FELTUS LABS proxy listening at http://127.0.0.1:8080");
+});
