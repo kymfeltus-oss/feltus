@@ -12,7 +12,7 @@ esac
 
 for entry in documents object-storage; do
   source="/data/$entry"
-  target="/backups/feltus-$entry-$stamp.tar.gz"
+  target="/backups/$stamp/feltus-$entry.tar.gz"
   if [ -e "$target" ]; then
     printf 'Storage archive already exists: %s\n' "$(basename "$target")" >&2
     exit 1

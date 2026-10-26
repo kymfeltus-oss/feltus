@@ -311,6 +311,26 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  restore-storage:
+    image: postgres:17-alpine
+    profiles: ["maintenance"]
+    entrypoint: ["/bin/sh", "/scripts/restore-storage.sh"]
+    restart: "no"
+    environment:
+      FELTUS_BACKUP_TIMESTAMP: ${FELTUS_BACKUP_TIMESTAMP:-}
+    volumes:
+      - feltus_documents:/data/documents
+      - feltus_object_storage:/data/object-storage
+      - type: bind
+        source: ${FELTUS_BACKUP_DIR:?set FELTUS_BACKUP_DIR}
+        target: /backups
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./scripts/restore-storage.sh:/scripts/restore-storage.sh:ro
+    security_opt:
+      - no-new-privileges:true
+
 volumes:
   feltus_postgres:
   feltus_documents:

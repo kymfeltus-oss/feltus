@@ -52,7 +52,7 @@ The browser receives an opaque, `HttpOnly`, `Secure`, `SameSite=Strict` session 
 
 Compose named volumes persist the Postgres database (`feltus_postgres`), FELTUS documents (`feltus_documents`), and Supabase-compatible Storage objects (`feltus_object_storage`) across container recreation and host restarts. Do not remove these volumes during upgrades. SQL migrations run in filename order and record applied migrations in a private ledger; each migration is executed in a transaction.
 
-Create and protect the host backup directory, then run `scripts/backup.sh` from the Compose checkout. It writes a custom-format Postgres dump and verified tar archives for both persistent file volumes. The host scheduler needs the same Compose variables as Coolify; keep a host-side `.env` with mode `0600` or use `FELTUS_ENV_FILE` to point at another protected file. Schedule the command daily with the host's scheduler and copy backups to a separate encrypted location with an appropriate retention policy. The script never deletes application data or prior backups.
+Create and protect the host backup directory, then run `scripts/backup.sh` from the Compose checkout. It creates a private timestamped directory containing a custom-format Postgres dump, verified tar archives for both persistent file volumes, and a permission-restricted `deployment.env` snapshot of the Compose configuration. The host scheduler needs the same Compose variables and project name as Coolify; keep a host-side `.env` with mode `0600` or use `FELTUS_ENV_FILE` to point at another protected file. If Coolify chose a project name other than `feltus`, set `COMPOSE_PROJECT_NAME` for the backup job. Schedule the command daily with the host's scheduler and copy backups to a separate encrypted location with an appropriate retention policy. The backup command never prints secrets or deletes application data or prior backups.
 
 For example, install a 0700 backup directory and run the backup at 03:15 UTC each day:
 
@@ -61,7 +61,23 @@ sudo install -d -m 700 /srv/backups/feltus
 15 3 * * * cd /path/to/feltus && /usr/bin/flock -n /run/lock/feltus-backup.lock ./scripts/backup.sh >> /var/log/feltus-backup.log 2>&1
 ```
 
-To update, deploy the reviewed Git revision through Coolify; retain the database and file volumes. Before a schema-changing update, take a backup and keep the prior Git revision available for rollback. Restore only as a deliberate disaster-recovery action after stopping writes and validating the selected backup; restoring a database dump replaces database state.
+To restore a selected snapshot, preserve the current volumes as a separate recovery point and create a new Compose project so its named volumes start empty. Set `snapshot` to the timestamped backup directory name, then run:
+
+```sh
+snapshot=20261026T031500Z-1234
+backup_dir=/srv/backups/feltus
+env_file="$backup_dir/$snapshot/deployment.env"
+restore_project="feltus-recovery-$(printf '%s' "$snapshot" | tr '[:upper:]' '[:lower:]')"
+
+docker compose --project-name "$restore_project" --env-file "$env_file" --file compose.production.yaml up -d db
+docker compose --project-name "$restore_project" --env-file "$env_file" --file compose.production.yaml exec -T db pg_restore --list - < "$backup_dir/$snapshot/postgres.dump"
+docker compose --project-name "$restore_project" --env-file "$env_file" --file compose.production.yaml exec -T db pg_restore --clean --if-exists --no-owner -U postgres -d postgres < "$backup_dir/$snapshot/postgres.dump"
+docker compose --project-name "$restore_project" --env-file "$env_file" --file compose.production.yaml --profile maintenance run --rm -e FELTUS_BACKUP_TIMESTAMP="$snapshot" restore-storage
+```
+
+After checking the restored database and files, stop writes on the old stack, configure the Coolify Compose resource to adopt that exact project name, and deploy the app and remaining services. This avoids extracting backup files into non-empty volumes. Database restoration replaces database objects; preserve the original volumes until recovery is confirmed.
+
+To update, deploy the reviewed Git revision through Coolify; retain the database and file volumes. Before a schema-changing update, take a backup and keep the prior Git revision available for rollback.
 
 ## Verification
 

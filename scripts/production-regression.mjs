@@ -29,6 +29,10 @@ async function liveCheck(name, fn) {
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const compose = fs.readFileSync(path.join(root, "compose.production.yaml"), "utf8");
+const backupScript = fs.readFileSync(path.join(root, "scripts/backup.sh"), "utf8");
+const storageBackupScript = fs.readFileSync(path.join(root, "scripts/backup-storage.sh"), "utf8");
+const storageRestoreScript = fs.readFileSync(path.join(root, "scripts/restore-storage.sh"), "utf8");
+const deployment = fs.readFileSync(path.join(root, "DEPLOYMENT.md"), "utf8");
 
 check("AI capability controls and auto model", () => {
   assert.equal((html.match(/id="aiCapabilitySelect"/g) || []).length, 1);
@@ -82,6 +86,18 @@ check("persistent storage and private service exposure", () => {
   assert.doesNotMatch(compose, /^\s+ports:/m);
   assert.match(compose, /read_only: true/);
   assert.match(compose, /cap_drop:[\s\S]{0,35}- ALL/);
+});
+
+check("timestamped database, file and configuration backups", () => {
+  assert.match(backupScript, /date -u/);
+  assert.match(backupScript, /deployment\.env/);
+  assert.match(backupScript, /pg_dump/);
+  assert.match(backupScript, /pg_restore --list/);
+  assert.match(storageBackupScript, /tar -tzf/);
+  assert.match(storageBackupScript, /for entry in documents object-storage/);
+  assert.match(storageRestoreScript, /tar -xzf/);
+  assert.match(deployment, /pg_restore --clean --if-exists/);
+  assert.match(deployment, /stop writes on the old stack/);
 });
 
 check("tracked and pending files contain no committed secret material", () => {
