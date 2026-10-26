@@ -28,7 +28,10 @@ async function liveCheck(name, fn) {
 
 const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const compose = fs.readFileSync(path.join(root, "compose.production.yaml"), "utf8");
+const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+const dockerignore = fs.readFileSync(path.join(root, ".dockerignore"), "utf8");
 const backupScript = fs.readFileSync(path.join(root, "scripts/backup.sh"), "utf8");
 const storageBackupScript = fs.readFileSync(path.join(root, "scripts/backup-storage.sh"), "utf8");
 const storageRestoreScript = fs.readFileSync(path.join(root, "scripts/restore-storage.sh"), "utf8");
@@ -41,7 +44,16 @@ check("AI capability controls and auto model", () => {
   for (const capability of AI_CAPABILITIES) {
     assert.match(html, new RegExp(`value="${capability}"`));
   }
+  assert.match(html, /autoModelOption\.value\s*=\s*"__auto__"/);
+  assert.match(html, /selectedModel\s*===\s*"__auto__"\s*\?\s*""\s*:\s*selectedModel/);
   assert.match(html, /capability\s*,[\s\S]{0,140}model\s*,/);
+});
+
+check("canonical cross-platform package entrypoints", () => {
+  assert.equal(packageJson.scripts.dev, "node scripts/dev.js");
+  assert.equal(packageJson.scripts.start, "node src/server.js");
+  assert.equal(packageJson.scripts.check, "node scripts/check.js");
+  assert.equal(packageJson.scripts.regression, "node scripts/production-regression.mjs");
 });
 
 check("AI capability and model routing", () => {
@@ -88,6 +100,17 @@ check("persistent storage and private service exposure", () => {
   assert.match(compose, /cap_drop:[\s\S]{0,35}- ALL/);
 });
 
+check("production Docker runtime and build-context exclusions", () => {
+  assert.match(dockerfile, /^FROM node:22-alpine/m);
+  assert.match(dockerfile, /npm ci --omit=dev/);
+  assert.match(dockerfile, /^USER node$/m);
+  assert.match(dockerfile, /^HEALTHCHECK /m);
+  assert.match(dockerfile, /CMD \["node", "src\/server\.js"\]/);
+  for (const pattern of ["node_modules", ".env", ".env.*", ".feltus-dev-auth.json", ".feltus-storage", ".feltus-runtime", "**/*.bak", "**/*.backup*", "**/*-backup", "**/*.pre-*"]) {
+    assert.ok(dockerignore.split(/\r?\n/).includes(pattern), `Docker build context does not exclude ${pattern}`);
+  }
+});
+
 check("timestamped database, file and configuration backups", () => {
   assert.match(backupScript, /date -u/);
   assert.match(backupScript, /deployment\.env/);
@@ -110,6 +133,8 @@ check("tracked and pending files contain no committed secret material", () => {
   const names = listed.stdout.toString("utf8").split("\0").filter(Boolean);
   const secretName = names.find(name => /(^|\/)(\.env(\..*)?|\.feltus-dev-auth\.json)$/i.test(name) && !name.endsWith(".env.example"));
   assert.equal(secretName, undefined, `secret-bearing file is tracked: ${secretName}`);
+  const backupName = names.find(name => /(?:\.bak(?:$|\.)|\.backup(?:$|[-.])|-backup$|\.pre-[^/]*)/i.test(name));
+  assert.equal(backupName, undefined, `local backup snapshot is tracked: ${backupName}`);
 
   const secretPatterns = [
     /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/,
@@ -197,7 +222,15 @@ try {
         : `production smoke server did not start${childError ? `: ${childError.trim()}` : ""}`
     );
     assert.equal(healthResponse.status, 200);
+    assert.equal(healthResponse.headers.get("cache-control"), "no-store");
+    assert.equal(healthResponse.headers.get("x-content-type-options"), "nosniff");
     assert.equal((await healthResponse.json()).auth_required, true);
+
+    const readinessResponse = await fetch(`${baseUrl}/api/ready`);
+    assert.equal(readinessResponse.status, 503);
+
+    const aiStatusResponse = await fetch(`${baseUrl}/api/ai/status`);
+    assert.equal(aiStatusResponse.status, 401, "AI model inventory is not protected by the production session gate");
 
     const sessionResponse = await fetch(`${baseUrl}/api/auth/session`);
     assert.equal(sessionResponse.status, 200);
@@ -205,6 +238,16 @@ try {
 
     const protectedResponse = await fetch(`${baseUrl}/api/apps`);
     assert.equal(protectedResponse.status, 401);
+
+    const rejectedOriginResponse = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://attacker.invalid"
+      },
+      body: "{}"
+    });
+    assert.equal(rejectedOriginResponse.status, 403);
 
     const pageResponse = await fetch(baseUrl);
     assert.equal(pageResponse.status, 200);
@@ -227,6 +270,130 @@ try {
   }
 }
 
+const localRegressionBase = process.env.FELTUS_LOCAL_REGRESSION_URL?.replace(/\/$/, "");
+const localRegressionAppId = process.env.FELTUS_LOCAL_REGRESSION_APP_ID || "";
+if (localRegressionBase || localRegressionAppId) {
+  if (
+    !localRegressionBase ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(localRegressionAppId)
+  ) {
+    results.push({
+      name: "local live regression configuration",
+      status: "FAIL",
+      message: "Set FELTUS_LOCAL_REGRESSION_URL and a valid existing FELTUS_LOCAL_REGRESSION_APP_ID."
+    });
+  } else {
+    async function localJson(pathname, timeoutMs = 15000) {
+      const response = await fetch(`${localRegressionBase}${pathname}`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        // Keep response content out of regression output.
+      }
+      return { response, body };
+    }
+
+    await liveCheck("local database and Auth readiness", async () => {
+      const ready = await localJson("/api/ready");
+      assert.equal(ready.response.status, 200, "local backend is not ready");
+      assert.equal(ready.body?.status, "ready", "local backend readiness did not report ready");
+    });
+
+    await liveCheck("local application, document, model and relationship retrieval", async () => {
+      const [apps, documents, models, relationships] = await Promise.all([
+        localJson("/api/apps"),
+        localJson(`/api/documents?app_id=${encodeURIComponent(localRegressionAppId)}`),
+        localJson(`/api/models?app_id=${encodeURIComponent(localRegressionAppId)}`),
+        localJson(`/api/relationships?app_id=${encodeURIComponent(localRegressionAppId)}`)
+      ]);
+      assert.equal(apps.response.status, 200, "application retrieval failed");
+      assert.ok(Array.isArray(apps.body), "application response was not a list");
+      assert.ok(apps.body.some(app => app.id === localRegressionAppId), "configured app ID is not an existing application");
+      assert.equal(documents.response.status, 200, "document retrieval failed");
+      assert.ok(Array.isArray(documents.body), "document response was not a list");
+      assert.equal(models.response.status, 200, "model retrieval failed");
+      assert.ok(Array.isArray(models.body), "model response was not a list");
+      assert.equal(relationships.response.status, 200, "relationship retrieval failed");
+      assert.ok(Array.isArray(relationships.body), "relationship response was not a list");
+    });
+
+    let localModels = [];
+    await liveCheck("local AI status", async () => {
+      const status = await localJson("/api/ai/status");
+      assert.equal(status.response.status, 200, "configured local AI endpoint is unavailable");
+      assert.ok(Array.isArray(status.body?.models) && status.body.models.length > 0, "local AI has no installed models");
+      localModels = status.body.models;
+    });
+
+    await liveCheck("local deterministic routes and fail-closed cases", async () => {
+      for (const capability of ["document-analysis", "reasoning", "coding"]) {
+        const result = await localJson(`/api/ai/route?capability=${capability}`);
+        assert.equal(result.response.status, 200, `${capability} route failed`);
+        assert.ok(localModels.some(model => model.name === result.body?.route?.model), `${capability} route selected an uninstalled model`);
+      }
+      if (localModels.length === 1 && localModels[0].name === "llama3:8b") {
+        for (const capability of ["reasoning", "coding"]) {
+          const result = await localJson(`/api/ai/route?capability=${capability}`);
+          assert.equal(result.body?.route?.model, "llama3:8b", `${capability} did not fall back to the general model`);
+          assert.equal(result.body?.route?.fallback, true, `${capability} fallback was not identified`);
+        }
+      }
+      const vision = await localJson("/api/ai/route?capability=vision");
+      if (vision.response.status !== 200) {
+        assert.equal(vision.response.status, 400, "vision returned an unexpected failure status");
+        assert.equal(vision.body?.code, "FELTUS_AI_CAPABILITY_UNAVAILABLE", "vision did not fail closed");
+      } else {
+        assert.ok(localModels.some(model => model.name === vision.body?.route?.model), "vision selected an uninstalled model");
+      }
+      const invalid = await localJson("/api/ai/route?capability=not-a-capability");
+      assert.equal(invalid.response.status, 400, "invalid capability was not rejected");
+      assert.equal(invalid.body?.code, "FELTUS_AI_INVALID_CAPABILITY", "invalid capability error code changed");
+      const unknownModel = await localJson("/api/ai/route?capability=general&model=not-installed-for-regression");
+      assert.equal(unknownModel.response.status, 400, "unknown explicit model was not rejected");
+      assert.equal(unknownModel.body?.code, "FELTUS_AI_MODEL_NOT_INSTALLED", "unknown model error code changed");
+    });
+
+    await liveCheck("local document-grounded NDJSON reconstruction", async () => {
+      const response = await fetch(`${localRegressionBase}/api/ai/chat/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
+          Origin: new URL(localRegressionBase).origin
+        },
+        body: JSON.stringify({
+          app_id: localRegressionAppId,
+          model: "",
+          capability: "document-analysis",
+          prompt: "Find the verification marker in this project's documents. Return the exact marker and nothing else."
+        }),
+        signal: AbortSignal.timeout(180000)
+      });
+      const raw = await response.text();
+      const events = raw.split(/\r?\n/).filter(Boolean).map(line => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+      const reconstructedAnswer = events
+        .filter(event => event.type === "token" && typeof event.text === "string")
+        .map(event => event.text)
+        .join("");
+      const errors = events.filter(event => event.type === "error").map(event => event.code || "error");
+      assert.equal(response.status, 200, "document-grounded stream failed");
+      assert.ok(events.length > 0, "stream did not contain NDJSON events");
+      assert.equal(errors.length, 0, `stream emitted error events: ${errors.join(",")}`);
+      assert.ok(reconstructedAnswer.includes("FELTUS-5G3-UI-PASS"), "reconstructed answer missed the existing document marker");
+    });
+  }
+}
+
 if (process.env.FELTUS_REGRESSION_BASE_URL) {
   await liveCheck("configured FELTUS deployment health and sign-in gate", async () => {
     const base = process.env.FELTUS_REGRESSION_BASE_URL.replace(/\/$/, "");
@@ -246,4 +413,5 @@ for (const result of results) {
 
 const failed = results.some(result => result.status === "FAIL");
 const blocked = results.some(result => result.status === "BLOCKED");
+process.stdout.write(`FELTUS PRODUCTION READINESS: ${failed || blocked ? "FAIL" : "PASS"}\n`);
 process.exitCode = failed ? 1 : blocked ? 2 : 0;

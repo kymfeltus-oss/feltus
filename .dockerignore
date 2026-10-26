@@ -10,5 +10,11 @@ node_modules
 *.log
 *.bak
 *.backup*
+*-backup
+*.pre-*
+**/*.bak
+**/*.backup*
+**/*-backup
+**/*.pre-*
 *.dump
 *.tar.gz
