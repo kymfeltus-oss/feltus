@@ -2,7 +2,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,11 +17,93 @@ const projectRoot = path.resolve(__dirname, "..");
    FELTUS PRIVATE DOCUMENT STORAGE
 ============================================================ */
 
-const STORAGE_ROOT =
-  path.join(
-    projectRoot,
-    ".feltus-storage"
+const FELTUS_ENV =
+  (process.env.FELTUS_ENV ||
+    (process.env.NODE_ENV === "development" ||
+    process.env.FELTUS_LOCAL_DEV_MODE === "1"
+      ? "development"
+      : "production"))
+    .trim()
+    .toLowerCase();
+
+if (!new Set(["development", "production"]).has(FELTUS_ENV)) {
+  throw new Error("FELTUS_ENV must be development or production.");
+}
+
+process.env.FELTUS_ENV = FELTUS_ENV;
+
+const IS_PRODUCTION = FELTUS_ENV === "production";
+const LOCAL_DEV_MODE =
+  !IS_PRODUCTION &&
+  process.env.FELTUS_LOCAL_DEV_MODE === "1";
+
+if (!IS_PRODUCTION && !LOCAL_DEV_MODE) {
+  throw new Error(
+    "Development mode requires FELTUS_LOCAL_DEV_MODE=1."
   );
+}
+
+if (IS_PRODUCTION && process.env.FELTUS_LOCAL_DEV_MODE === "1") {
+  throw new Error(
+    "FELTUS_LOCAL_DEV_MODE cannot be enabled in production."
+  );
+}
+
+const configuredPort = Number(
+  process.env.FELTUS_PORT ||
+  process.env.PORT ||
+  8080
+);
+
+if (
+  !Number.isInteger(configuredPort) ||
+  configuredPort < 1 ||
+  configuredPort > 65535
+) {
+  throw new Error("FELTUS_PORT must be a valid TCP port.");
+}
+
+const HOST =
+  process.env.FELTUS_HOST ||
+  (IS_PRODUCTION ? "0.0.0.0" : "127.0.0.1");
+const PORT = configuredPort;
+const PUBLIC_URL =
+  process.env.FELTUS_PUBLIC_URL ||
+  (IS_PRODUCTION ? "" : `http://${HOST}:${PORT}`);
+const GATEWAY =
+  (
+    process.env.FELTUS_GATEWAY_URL ||
+    (IS_PRODUCTION ? "" : "http://127.0.0.1:54321")
+  ).replace(/\/+$/, "");
+const API_KEY =
+  process.env.FELTUS_PUBLISHABLE_KEY ||
+  process.env.FELTUS_API_KEY;
+let apiKeyRole = null;
+
+try {
+  const payload = API_KEY?.split(".")[1];
+  apiKeyRole = payload
+    ? JSON.parse(
+        Buffer.from(payload, "base64url").toString("utf8")
+      ).role || null
+    : null;
+} catch {
+  apiKeyRole = null;
+}
+const OWNER_EMAIL =
+  (process.env.FELTUS_OWNER_EMAIL || "")
+    .trim()
+    .toLowerCase();
+const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const SESSION_COOKIE = "__Host-feltus_session";
+const ownerSessions = new Map();
+const loginFailures = new Map();
+const requestContext = new AsyncLocalStorage();
+
+const STORAGE_ROOT = path.resolve(
+  process.env.FELTUS_STORAGE_ROOT ||
+    path.join(projectRoot, ".feltus-storage")
+);
 
 const DOCUMENT_STORAGE_ROOT =
   path.join(
@@ -43,29 +130,53 @@ fs.mkdirSync(
   DOCUMENT_STORAGE_ROOT,
   {
     recursive:
-      true
+      true,
+    mode: 0o700
   }
 );
 
-
-const HOST = "127.0.0.1";
-const PORT = 8080;
-const GATEWAY = "http://127.0.0.1:54321";
-
-const API_KEY = process.env.FELTUS_PUBLISHABLE_KEY;
-const LOCAL_DEV_MODE =
-  process.env.FELTUS_LOCAL_DEV_MODE === "1";
+try {
+  fs.chmodSync(STORAGE_ROOT, 0o700);
+  fs.chmodSync(DOCUMENT_STORAGE_ROOT, 0o700);
+} catch {
+  // Windows does not support POSIX directory modes.
+}
 
 const DEV_AUTH_FILE = path.join(
   projectRoot,
   ".feltus-dev-auth.json"
 );
 
-const ALLOWED_ORIGINS = new Set([
-  "http://127.0.0.1:8080",
-  "http://localhost:8080",
-  "https://kyemba.tailb2f227.ts.net"
-]);
+function configuredOrigins() {
+  const configured =
+    process.env.FELTUS_ALLOWED_ORIGINS;
+
+  if (configured) {
+    return configured
+      .split(",")
+      .map(value => value.trim())
+      .filter(Boolean);
+  }
+
+  if (IS_PRODUCTION && PUBLIC_URL) {
+    const canonical = new URL(PUBLIC_URL);
+    const alternateHost = canonical.hostname.startsWith("www.")
+      ? canonical.hostname.slice(4)
+      : `www.${canonical.hostname}`;
+
+    return [
+      canonical.origin,
+      `${canonical.protocol}//${alternateHost}${canonical.port ? `:${canonical.port}` : ""}`
+    ];
+  }
+
+  return [
+    "http://127.0.0.1:8080",
+    "http://localhost:8080"
+  ];
+}
+
+const ALLOWED_ORIGINS = new Set(configuredOrigins());
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -73,22 +184,63 @@ const UUID_PATTERN =
 let devCredentials = null;
 let devSession = null;
 
-if (!LOCAL_DEV_MODE) {
+if (
+  (IS_PRODUCTION && !API_KEY) ||
+  API_KEY?.startsWith("sb_secret_") ||
+  API_KEY?.startsWith("sb_service_role_") ||
+  apiKeyRole === "service_role" ||
+  apiKeyRole === "supabase_admin"
+) {
   throw new Error(
-    "FELTUS_LOCAL_DEV_MODE=1 is required."
+    "FELTUS_PUBLISHABLE_KEY must be configured with a non-privileged backend key."
   );
 }
 
-if (
-  !API_KEY ||
-  !API_KEY.startsWith("sb_publishable_")
-) {
-  throw new Error(
-    "FELTUS_PUBLISHABLE_KEY is required."
-  );
+if (IS_PRODUCTION) {
+  let publicUrl;
+
+  try {
+    publicUrl = new URL(PUBLIC_URL);
+  } catch {
+    throw new Error("FELTUS_PUBLIC_URL must be an absolute HTTPS URL.");
+  }
+
+  if (publicUrl.protocol !== "https:") {
+    throw new Error("FELTUS_PUBLIC_URL must use HTTPS in production.");
+  }
+
+  if (!GATEWAY) {
+    throw new Error("FELTUS_GATEWAY_URL is required in production.");
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(OWNER_EMAIL)) {
+    throw new Error("FELTUS_OWNER_EMAIL must identify the production owner.");
+  }
+
+  for (const origin of ALLOWED_ORIGINS) {
+    if (new URL(origin).protocol !== "https:") {
+      throw new Error("Production allowed origins must use HTTPS.");
+    }
+  }
+}
+
+function activeSession() {
+  return requestContext.getStore()?.session ?? devSession;
 }
 
 function send(res, status, data) {
+  const responseData =
+    status >= 500 &&
+    data &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    typeof data.error === "string"
+      ? {
+          ...data,
+          error: "FELTUS service temporarily unavailable."
+        }
+      : data;
+
   res.writeHead(status, {
     "Content-Type":
       "application/json; charset=utf-8",
@@ -96,7 +248,7 @@ function send(res, status, data) {
     "X-Content-Type-Options": "nosniff"
   });
 
-  res.end(JSON.stringify(data));
+  res.end(JSON.stringify(responseData));
 }
 
 function isLocalRequest(req) {
@@ -110,12 +262,15 @@ function isLocalRequest(req) {
   );
 }
 
-function trustedOrigin(req) {
+function trustedOrigin(
+  req,
+  { requireOrigin = false } = {}
+) {
   const origin =
     req.headers.origin;
 
   if (!origin) {
-    return true;
+    return !requireOrigin;
   }
 
   return ALLOWED_ORIGINS.has(origin);
@@ -1052,8 +1207,12 @@ async function upstream(
       {
         ...options,
 
+        signal:
+          options.signal ||
+          AbortSignal.timeout(15000),
+
         headers: {
-          apikey: API_KEY,
+          ...(API_KEY ? { apikey: API_KEY } : {}),
           Accept: "application/json",
           ...(options.headers || {})
         }
@@ -1192,6 +1351,190 @@ async function login(
   return result.data;
 }
 
+function currentRequestContext() {
+  return requestContext.getStore();
+}
+
+function setActiveSession(session) {
+  const context = currentRequestContext();
+
+  if (context) {
+    context.session = session;
+  }
+
+  return session;
+}
+
+function sessionExpiry(sessionData) {
+  const explicitExpiry = Number(sessionData?.expires_at);
+
+  if (Number.isFinite(explicitExpiry) && explicitExpiry > 0) {
+    return explicitExpiry > 1e12
+      ? explicitExpiry
+      : explicitExpiry * 1000;
+  }
+
+  const expiresIn = Number(sessionData?.expires_in || 3600);
+  return Date.now() + Math.max(60, expiresIn) * 1000;
+}
+
+function parseCookie(req, name) {
+  const cookies = String(req.headers.cookie || "").split(";");
+
+  for (const cookie of cookies) {
+    const separator = cookie.indexOf("=");
+
+    if (separator < 0) {
+      continue;
+    }
+
+    if (cookie.slice(0, separator).trim() === name) {
+      return decodeURIComponent(cookie.slice(separator + 1).trim());
+    }
+  }
+
+  return null;
+}
+
+function setSessionCookie(res, sessionId, maxAgeSeconds) {
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE}=${sessionId || ""}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${Math.max(0, maxAgeSeconds)}`
+  );
+}
+
+function allowLoginAttempt(req, email = "") {
+  const key = loginAttemptKey(req, email);
+  const now = Date.now();
+  const current = loginFailures.get(key);
+
+  if (!current || current.resetAt <= now) {
+    if (loginFailures.size >= 10000) {
+      for (const [entryKey, entry] of loginFailures) {
+        if (entry.resetAt <= now) loginFailures.delete(entryKey);
+      }
+      while (loginFailures.size >= 10000) {
+        loginFailures.delete(loginFailures.keys().next().value);
+      }
+    }
+
+    loginFailures.set(key, {
+      count: 1,
+      resetAt: now + 15 * 60 * 1000
+    });
+
+    return true;
+  }
+
+  if (current.count >= 10) {
+    return false;
+  }
+
+  current.count += 1;
+  return true;
+}
+
+function clientAddress(req) {
+  if (IS_PRODUCTION && process.env.FELTUS_TRUST_PROXY === "1") {
+    const forwarded = String(req.headers["x-forwarded-for"] || "")
+      .split(",")
+      .map(value => value.trim())
+      .filter(Boolean);
+    const proxyReportedAddress = forwarded.at(-1);
+
+    if (proxyReportedAddress && isIP(proxyReportedAddress)) {
+      return proxyReportedAddress;
+    }
+  }
+
+  return req.socket.remoteAddress || "unknown";
+}
+
+function loginAttemptKey(req, email = "") {
+  return `${clientAddress(req)}:${String(email).trim().toLowerCase().slice(0, 320)}`;
+}
+
+async function authenticateOwnerSession(req) {
+  const sessionId = parseCookie(req, SESSION_COOKIE);
+
+  if (!sessionId || !/^[A-Za-z0-9_-]{40,}$/.test(sessionId)) {
+    return null;
+  }
+
+  const session = ownerSessions.get(sessionId);
+
+  if (!session || session.cookieExpiresAt <= Date.now()) {
+    ownerSessions.delete(sessionId);
+    return null;
+  }
+
+  if (session.expiresAt <= Date.now() + 60_000) {
+    try {
+      const result = await upstream(
+        "/auth/v1/token?grant_type=refresh_token",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            refresh_token: session.refresh_token
+          })
+        }
+      );
+
+      if (
+        result.status < 200 ||
+        result.status >= 300 ||
+        !result.data?.access_token ||
+        !result.data?.refresh_token
+      ) {
+        ownerSessions.delete(sessionId);
+        return null;
+      }
+
+      Object.assign(session, result.data, {
+        expiresAt: sessionExpiry(result.data),
+        cookieExpiresAt: session.cookieExpiresAt,
+        id: sessionId
+      });
+    } catch {
+      ownerSessions.delete(sessionId);
+      return null;
+    }
+  }
+
+  return session;
+}
+
+async function establishOwnerSession(credentials) {
+  const authenticated = await login(credentials);
+  const authenticatedEmail =
+    String(authenticated.user?.email || "")
+      .trim()
+      .toLowerCase();
+
+  if (
+    !authenticatedEmail ||
+    authenticatedEmail !== OWNER_EMAIL ||
+    !authenticated.refresh_token
+  ) {
+    throw new Error("Owner authentication failed.");
+  }
+
+  const id = crypto.randomBytes(32).toString("base64url");
+  const cookieExpiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
+  const session = {
+    ...authenticated,
+    id,
+    expiresAt: sessionExpiry(authenticated),
+    cookieExpiresAt
+  };
+
+  ownerSessions.set(id, session);
+  return session;
+}
+
 async function initializeDevIdentity() {
   const alreadyExists =
     fs.existsSync(
@@ -1228,10 +1571,51 @@ async function initializeDevIdentity() {
 }
 
 async function renewSession() {
-  devSession =
-    await login(
-      devCredentials
+  if (IS_PRODUCTION) {
+    const session = activeSession();
+
+    if (!session?.refresh_token) {
+      throw new Error("Authentication required.");
+    }
+
+    const result = await upstream(
+      "/auth/v1/token?grant_type=refresh_token",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          refresh_token: session.refresh_token
+        })
+      }
     );
+
+    if (
+      result.status < 200 ||
+      result.status >= 300 ||
+      !result.data?.access_token ||
+      !result.data?.refresh_token
+    ) {
+      ownerSessions.delete(session.id);
+      setActiveSession(null);
+      throw new Error("Authentication required.");
+    }
+
+    Object.assign(session, result.data, {
+      expiresAt: sessionExpiry(result.data),
+      cookieExpiresAt: session.cookieExpiresAt,
+      id: session.id
+    });
+
+    ownerSessions.set(session.id, session);
+    setActiveSession(session);
+    return session;
+  }
+
+  devSession = await login(devCredentials);
+  setActiveSession(devSession);
+  return devSession;
 }
 
 async function tableRequest(
@@ -1243,7 +1627,7 @@ async function tableRequest(
   } = {}
 ) {
   if (
-    !devSession?.access_token
+    !activeSession()?.access_token
   ) {
     await renewSession();
   }
@@ -1252,7 +1636,7 @@ async function tableRequest(
     async () => {
       const headers = {
         Authorization:
-          `Bearer ${devSession.access_token}`
+          `Bearer ${activeSession().access_token}`
       };
 
       if (
@@ -1379,7 +1763,7 @@ async function rpcRequest(
   functionName,
   body
 ) {
-  if (!devSession?.access_token) {
+  if (!activeSession()?.access_token) {
     await renewSession();
   }
 
@@ -1391,7 +1775,7 @@ async function rpcRequest(
 
         headers: {
           Authorization:
-            `Bearer ${devSession.access_token}`,
+            `Bearer ${activeSession().access_token}`,
 
           "Content-Type":
             "application/json",
@@ -1498,7 +1882,7 @@ async function logEvent({
   try {
 
     if (
-      !devSession?.access_token
+      !activeSession()?.access_token
     ) {
       await renewSession();
     }
@@ -1554,7 +1938,7 @@ async function logEvent({
 
             headers: {
               Authorization:
-                `Bearer ${devSession.access_token}`,
+                `Bearer ${activeSession().access_token}`,
 
               "Content-Type":
                 "application/json",
@@ -1603,8 +1987,7 @@ async function logEvent({
   } catch (error) {
 
     console.error(
-      "FELTUS activity log write failed:",
-      error.message
+      "FELTUS activity log write failed."
     );
 
     return false;
@@ -2062,7 +2445,7 @@ async function evaluateDeploymentReadiness(
   try {
 
     if (
-      !devSession?.access_token
+      !activeSession()?.access_token
     ) {
       await renewSession();
     }
@@ -2077,7 +2460,7 @@ async function evaluateDeploymentReadiness(
 
           headers: {
             Authorization:
-              `Bearer ${devSession.access_token}`
+              `Bearer ${activeSession().access_token}`
           }
         }
       );
@@ -2331,7 +2714,17 @@ async function evaluateDeploymentReadiness(
 
 const server =
   http.createServer(
-    async (req, res) => {
+    (req, res) => {
+      requestContext.run(
+        { session: null },
+        () => {
+          void handleHttpRequest(req, res);
+        }
+      );
+    }
+  );
+
+async function handleHttpRequest(req, res) {
 
       /* FELTUS INFRASTRUCTURE ERROR TELEMETRY */
 
@@ -2341,10 +2734,28 @@ const server =
       const requestTelemetryStartedAt =
         Date.now();
 
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Frame-Options", "DENY");
+      res.setHeader(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+      );
+      res.setHeader("Referrer-Policy", "no-referrer");
+      res.setHeader(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()"
+      );
+
+      if (IS_PRODUCTION) {
+        res.setHeader(
+          "Strict-Transport-Security",
+          "max-age=31536000; includeSubDomains"
+        );
+      }
+
       try {
-        if (
-          !isLocalRequest(req)
-        ) {
+        if (LOCAL_DEV_MODE && !isLocalRequest(req)) {
           return send(
             res,
             403,
@@ -2355,8 +2766,15 @@ const server =
           );
         }
 
+        const unsafeMethod =
+          !["GET", "HEAD", "OPTIONS"].includes(
+            String(req.method || "GET").toUpperCase()
+          );
+
         if (
-          !trustedOrigin(req)
+          !trustedOrigin(req, {
+            requireOrigin: IS_PRODUCTION && unsafeMethod
+          })
         ) {
           return send(
             res,
@@ -2373,6 +2791,127 @@ const server =
             req.url,
             `http://${HOST}:${PORT}`
           );
+
+        if (IS_PRODUCTION) {
+          const canonical = new URL(PUBLIC_URL);
+          const requestHost = String(
+            req.headers.host || ""
+          )
+            .split(":")[0]
+            .toLowerCase();
+          const canonicalHost = canonical.hostname.toLowerCase();
+
+          if (
+            !canonicalHost.startsWith("www.") &&
+            requestHost === `www.${canonicalHost}`
+          ) {
+            res.writeHead(308, {
+              Location: `${canonical.origin}${req.url}`,
+              "Cache-Control": "no-store"
+            });
+            return res.end();
+          }
+        }
+
+        if (
+          url.pathname === "/auth/v1" ||
+          url.pathname.startsWith("/auth/v1/")
+        ) {
+          const method = String(req.method || "GET").toUpperCase();
+          const allowedMethods = new Set([
+            "GET",
+            "HEAD",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS"
+          ]);
+
+          if (!allowedMethods.has(method)) {
+            res.setHeader("Allow", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
+            return send(res, 405, { error: "Method not allowed." });
+          }
+
+          if (method === "OPTIONS") {
+            res.statusCode = 204;
+            res.setHeader("Allow", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
+            if (req.headers.origin) {
+              res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+              res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
+              res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Apikey");
+              res.setHeader("Vary", "Origin");
+            }
+            return res.end();
+          }
+
+          const headers = {
+            Accept: req.headers.accept || "application/json",
+            ...(API_KEY ? { apikey: API_KEY } : {}),
+            ...(req.headers.authorization
+              ? { Authorization: req.headers.authorization }
+              : {})
+          };
+          const options = {
+            method,
+            headers,
+            signal: AbortSignal.timeout(15000)
+          };
+          let authLoginAttemptKey = null;
+
+          if (!["GET", "HEAD"].includes(method)) {
+            const body = await readBody(req);
+            headers["Content-Type"] = "application/json";
+            options.body = JSON.stringify(body);
+
+            if (
+              method === "POST" &&
+              url.pathname === "/auth/v1/token" &&
+              url.searchParams.get("grant_type") === "password"
+            ) {
+              const loginEmail =
+                body && typeof body === "object" ? body.email : "";
+              authLoginAttemptKey = loginAttemptKey(req, loginEmail);
+              if (!allowLoginAttempt(req, loginEmail)) {
+                return send(res, 429, {
+                  error: "Too many sign-in attempts. Try again later."
+                });
+              }
+            }
+          }
+
+          const authResponse = await fetch(
+            `${GATEWAY}${url.pathname}${url.search}`,
+            options
+          );
+          const responseHeaders = {
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff"
+          };
+          const contentType = authResponse.headers.get("content-type");
+          const setCookies = authResponse.headers.getSetCookie?.() || [];
+          const noBody =
+            method === "HEAD" ||
+            [204, 205, 304].includes(authResponse.status);
+          const responseBody = noBody ? "" : await authResponse.text();
+
+          if (contentType) responseHeaders["Content-Type"] = contentType;
+          if (setCookies.length) responseHeaders["Set-Cookie"] = setCookies;
+
+          if (
+            method === "POST" &&
+            url.pathname === "/auth/v1/token" &&
+            url.searchParams.get("grant_type") === "password" &&
+            authResponse.ok
+          ) {
+            if (authLoginAttemptKey) {
+              loginFailures.delete(authLoginAttemptKey);
+            }
+          }
+
+          res.writeHead(authResponse.status, responseHeaders);
+          return res.end(responseBody);
+        }
 
         if (
           (
@@ -2437,16 +2976,179 @@ const server =
                 "online",
 
               mode:
-                "local-development",
+                IS_PRODUCTION
+                  ? "production"
+                  : "local-development",
 
               authenticated:
-                Boolean(
-                  devSession
-                    ?.access_token
-                )
+                !IS_PRODUCTION &&
+                Boolean(devSession?.access_token),
+
+              auth_required:
+                IS_PRODUCTION
             }
           );
         }
+
+        if (
+          url.pathname === "/api/ready" &&
+          req.method === "GET"
+        ) {
+          let databaseOnline = false;
+          let authOnline = false;
+
+          try {
+            const [database, auth] = await Promise.all([
+              upstream("/rest/v1/"),
+              upstream("/auth/v1/health")
+            ]);
+
+            databaseOnline =
+              database.status >= 200 &&
+              database.status < 300;
+            authOnline =
+              auth.status >= 200 &&
+              auth.status < 300;
+          } catch {
+            // The response reports readiness without internal error details.
+          }
+
+          const ready = databaseOnline && authOnline;
+
+          return send(
+            res,
+            ready ? 200 : 503,
+            {
+              status: ready ? "ready" : "not_ready",
+              services: {
+                database: databaseOnline ? "online" : "offline",
+                auth: authOnline ? "online" : "offline"
+              },
+              ai_required: false
+            }
+          );
+        }
+
+        if (
+          url.pathname === "/api/auth/session" &&
+          req.method === "GET"
+        ) {
+          if (!IS_PRODUCTION) {
+            return send(res, 200, {
+              authenticated: Boolean(devSession?.access_token),
+              mode: "local-development"
+            });
+          }
+
+          const session = await authenticateOwnerSession(req);
+          setActiveSession(session);
+
+          if (!session) {
+            setSessionCookie(res, "", 0);
+          }
+
+          return send(res, 200, {
+            authenticated: Boolean(session),
+            mode: "production"
+          });
+        }
+
+        if (
+          url.pathname === "/api/auth/login" &&
+          req.method === "POST"
+        ) {
+          if (!IS_PRODUCTION) {
+            return send(res, 404, {
+              error: "Route not found."
+            });
+          }
+
+          const credentials = await readBody(req);
+          const email =
+            typeof credentials?.email === "string"
+              ? credentials.email.trim().toLowerCase()
+              : "";
+          const password =
+            typeof credentials?.password === "string"
+              ? credentials.password
+              : "";
+
+          if (
+            !email ||
+            email.length > 320 ||
+            !password ||
+            password.length > 1024
+          ) {
+            return send(res, 400, {
+              error: "Enter a valid owner email and password."
+            });
+          }
+
+          const attemptKey = loginAttemptKey(req, email);
+          if (!allowLoginAttempt(req, email)) {
+            return send(res, 429, {
+              error: "Too many sign-in attempts. Try again later."
+            });
+          }
+
+          try {
+            const session = await establishOwnerSession({
+              email,
+              password
+            });
+
+            loginFailures.delete(attemptKey);
+            setActiveSession(session);
+            setSessionCookie(
+              res,
+              session.id,
+              SESSION_TTL_SECONDS
+            );
+
+            return send(res, 200, {
+              authenticated: true
+            });
+          } catch {
+            return send(res, 401, {
+              error: "Owner sign-in failed. Check your credentials."
+            });
+          }
+        }
+
+        if (
+          url.pathname === "/api/auth/logout" &&
+          req.method === "POST"
+        ) {
+          if (!IS_PRODUCTION) {
+            return send(res, 404, {
+              error: "Route not found."
+            });
+          }
+
+          const sessionId = parseCookie(req, SESSION_COOKIE);
+          if (sessionId) {
+            ownerSessions.delete(sessionId);
+          }
+
+          setActiveSession(null);
+          setSessionCookie(res, "", 0);
+
+          return send(res, 200, {
+            authenticated: false
+          });
+        }
+
+        const session = IS_PRODUCTION
+          ? await authenticateOwnerSession(req)
+          : devSession;
+
+        if (IS_PRODUCTION && !session) {
+          return send(res, 401, {
+            error: "Authentication required."
+          });
+        }
+
+        setActiveSession(session);
 
         if (
           url.pathname ===
@@ -2523,7 +3225,7 @@ const server =
 
             const record = {
               owner_id:
-                devSession.user.id,
+                activeSession().user.id,
 
               app_name:
                 name.trim(),
@@ -2896,7 +3598,7 @@ const server =
                 415,
                 {
                   error:
-                    error.message,
+                    "No parser is available for this document type.",
 
                   processing_status:
                     document.processing_status,
@@ -2917,7 +3619,7 @@ const server =
                     document.id,
 
                   p_error:
-                    error.message,
+                    "Document processing failed.",
 
                   p_metadata: {
                     processing_failure:
@@ -2962,8 +3664,9 @@ const server =
                 processingStartedAt,
 
               metadata: {
-                error:
-                  error.message
+                failure_code:
+                  error.status ||
+                  "document_processing_failed"
               }
             });
 
@@ -2974,7 +3677,7 @@ const server =
                 500,
               {
                 error:
-                  error.message,
+                  "Document processing failed.",
 
                 processing_status:
                   "failed"
@@ -3800,7 +4503,9 @@ const server =
                   "FELTUS_AI_ROUTER_FAILURE",
 
                 error:
-                  error.message
+                  known
+                    ? error.message
+                    : "AI endpoint is unavailable."
               }
             );
           }
@@ -3905,7 +4610,7 @@ const server =
                   "ollama",
 
                 error:
-                  error.message
+                  "AI endpoint is unavailable."
               }
             });
 
@@ -3921,7 +4626,7 @@ const server =
                   "ollama",
 
                 error:
-                  error.message
+                  "AI endpoint is unavailable."
               }
             );
           }
@@ -4014,7 +4719,7 @@ const server =
                 "offline",
 
               error:
-                error.message
+                "Gateway unavailable."
             };
           }
 
@@ -4026,7 +4731,7 @@ const server =
           try {
 
             if (
-              !devSession?.access_token
+              !activeSession()?.access_token
             ) {
               await renewSession();
             }
@@ -4041,7 +4746,7 @@ const server =
 
                   headers: {
                     Authorization:
-                      `Bearer ${devSession.access_token}`
+                      `Bearer ${activeSession().access_token}`
                   }
                 }
               );
@@ -4072,7 +4777,7 @@ const server =
                 false,
 
               error:
-                error.message
+                "Authentication service unavailable."
             };
           }
 
@@ -4112,7 +4817,7 @@ const server =
                 "offline",
 
               error:
-                error.message
+                "Database service unavailable."
             };
           }
 
@@ -4170,7 +4875,7 @@ const server =
                 "ollama",
 
               error:
-                error.message
+                "AI endpoint is unavailable."
             };
           }
 
@@ -4848,7 +5553,7 @@ const server =
 
             res.setHeader(
               "Cache-Control",
-              "no-cache, no-transform"
+              "no-store, no-transform"
             );
 
             res.setHeader(
@@ -5067,7 +5772,7 @@ res.write(
                     "error",
 
                   error:
-                    error.message
+                    "AI endpoint is unavailable."
                 }) +
                 "\n"
               );
@@ -5083,7 +5788,7 @@ res.write(
               500,
               {
                 error:
-                  error.message
+                  "AI endpoint is unavailable."
               }
             );
           }
@@ -5667,7 +6372,7 @@ res.write(
                   "ollama",
 
                 error:
-                  error.message
+                  "AI endpoint is unavailable."
               }
             });
 
@@ -5677,7 +6382,7 @@ res.write(
               500,
               {
                 error:
-                  error.message
+                  "AI endpoint is unavailable."
               }
             );
           }
@@ -6479,7 +7184,7 @@ res.write(
 
             const record = {
               user_id:
-                devSession.user.id,
+                activeSession().user.id,
 
               asset_name:
                 name.trim(),
@@ -6581,14 +7286,14 @@ res.write(
               responseStatus,
 
             error:
-              error.message
+              "request_failed"
           }
         });
 
 
         console.error(
-          "FELTUS local proxy failure:",
-          error.message
+          "FELTUS request failed.",
+          requestTelemetryId
         );
 
         return send(
@@ -6596,14 +7301,13 @@ res.write(
           error.status || 502,
           {
             error:
-              error.status
+              error.status && error.status < 500
                 ? error.message
-                : "Local FELTUS service unavailable."
+                : "FELTUS service temporarily unavailable."
           }
         );
       }
-    }
-  );
+}
 
 server.on(
   "error",
@@ -6626,8 +7330,6 @@ server.on(
 );
 
 async function start() {
-  await initializeDevIdentity();
-
   server.listen(
     PORT,
     HOST,
@@ -6638,15 +7340,17 @@ async function start() {
       );
 
       console.log(
-        `Console: http://${HOST}:${PORT}`
+        `Listening on ${HOST}:${PORT}`
       );
 
       console.log(
-        "Mode: LOCAL DEVELOPMENT"
+        `Mode: ${FELTUS_ENV.toUpperCase()}`
       );
 
       console.log(
-        "Manual Login: DISABLED"
+        IS_PRODUCTION
+          ? "Owner authentication: ENABLED"
+          : "Manual Login: DISABLED"
       );
 
       console.log(
@@ -6660,12 +7364,20 @@ async function start() {
       console.log("");
     }
   );
+
+  if (LOCAL_DEV_MODE) {
+    initializeDevIdentity().catch(() => {
+      console.error(
+        "Local development authentication is not ready; verify the local backend."
+      );
+    });
+  }
 }
 
 start().catch(
   error => {
     console.error(
-      "FELTUS startup failure:",
+      "FELTUS startup configuration failed.",
       error.message
     );
 

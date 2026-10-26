@@ -411,6 +411,72 @@ footer {
     width: 100%;
   }
 }
+
+#feltus-auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 13, 24, 0.9);
+  backdrop-filter: blur(8px);
+}
+
+#feltus-auth-gate[hidden],
+#feltus-signout[hidden] {
+  display: none;
+}
+
+.feltus-auth-card {
+  width: min(100%, 420px);
+  padding: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 16px;
+  background: #111827;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.feltus-auth-card h2 {
+  margin: 0 0 8px;
+}
+
+.feltus-auth-card p {
+  color: #aebbd0;
+}
+
+.feltus-auth-card label {
+  display: block;
+  margin: 14px 0 6px;
+}
+
+.feltus-auth-card input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  color: #f8fafc;
+  background: #0b1220;
+}
+
+.feltus-auth-card button {
+  width: 100%;
+  margin-top: 18px;
+}
+
+#feltus-auth-status {
+  min-height: 1.4em;
+  margin-bottom: 0;
+}
+
+#feltus-signout {
+  position: fixed;
+  z-index: 100;
+  top: 12px;
+  right: 16px;
+  padding: 8px 12px;
+}
 ﻿.ai-status-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1454,6 +1520,19 @@ footer {
 
 <body>
 
+<div id="feltus-auth-gate" role="dialog" aria-modal="true" aria-labelledby="feltus-auth-title">
+  <form id="feltus-auth-form" class="feltus-auth-card">
+    <h2 id="feltus-auth-title">Sign in to FELTUS</h2>
+    <p>Use the owner account configured for this private instance.</p>
+    <label for="feltus-auth-email">Owner email</label>
+    <input id="feltus-auth-email" name="email" type="email" autocomplete="username" required maxlength="320">
+    <label for="feltus-auth-password">Password</label>
+    <input id="feltus-auth-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    <button id="feltus-auth-submit" type="submit">Sign in</button>
+    <p id="feltus-auth-status" role="status" aria-live="polite"></p>
+  </form>
+</div>
+
 <header>
   <div class="brand">
     <h1>FELTUS LABS</h1>
@@ -1461,9 +1540,97 @@ footer {
   </div>
 
   <div class="mode">
-    PRIVATE LOCAL DEVELOPMENT
+    PRIVATE FELTUS INSTANCE
   </div>
+
+  <button id="feltus-signout" class="secondary" type="button" hidden>
+    Sign out
+  </button>
 </header>
+
+<script>
+(() => {
+  const gate = document.getElementById("feltus-auth-gate");
+  const form = document.getElementById("feltus-auth-form");
+  const status = document.getElementById("feltus-auth-status");
+  const signout = document.getElementById("feltus-signout");
+  const submit = document.getElementById("feltus-auth-submit");
+
+  const showGate = message => {
+    gate.hidden = false;
+    signout.hidden = true;
+    if (message) status.textContent = message;
+  };
+
+  const checkSession = async () => {
+    try {
+      const response = await fetch("/api/auth/session", {
+        headers: { Accept: "application/json" },
+        cache: "no-store"
+      });
+      const session = await response.json();
+
+      if (session.mode === "local-development" || session.authenticated) {
+        gate.hidden = true;
+        signout.hidden = session.mode !== "production";
+        return;
+      }
+
+      showGate("Sign in to continue.");
+    } catch {
+      showGate("FELTUS could not verify the session. Try again shortly.");
+    }
+  };
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    status.textContent = "Signing in…";
+    submit.disabled = true;
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          email: document.getElementById("feltus-auth-email").value,
+          password: document.getElementById("feltus-auth-password").value
+        })
+      });
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || "Owner sign-in failed.");
+      }
+
+      window.location.reload();
+    } catch (error) {
+      status.textContent = error.message || "Owner sign-in failed.";
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  signout.addEventListener("click", async () => {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { Accept: "application/json" }
+      });
+    } finally {
+      window.location.reload();
+    }
+  });
+
+  window.addEventListener("feltus-auth-required", () => {
+    showGate("Your session ended. Sign in again to continue.");
+  });
+
+  checkSession();
+})();
+</script>
 
 <main>
 
@@ -2662,7 +2829,7 @@ footer {
           <div id="aiChatStatus" class="status"></div>
 
           <button id="sendAIButton" type="button">
-            Send to Local AI
+            Send to AI
           </button>
 
         </div>
@@ -2723,12 +2890,12 @@ footer {
 
         <div class="ai-detail">
           <span>Runtime</span>
-          <strong>Ollama</strong>
+          <strong>Ollama-compatible</strong>
         </div>
 
         <div class="ai-detail">
           <span>Execution</span>
-          <strong>Local</strong>
+          <strong>Private endpoint</strong>
         </div>
 
         <div class="ai-detail">
@@ -3086,6 +3253,12 @@ async function requestJson(
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      window.dispatchEvent(
+        new Event("feltus-auth-required")
+      );
+    }
+
     throw new Error(
       data.error ||
       data.message ||
@@ -4382,7 +4555,7 @@ async function loadAIHubStatus() {
       "__auto__";
 
     autoModelOption.textContent =
-      "Auto ? Best Available";
+      "Auto - Best Available";
 
     select.appendChild(
       autoModelOption
@@ -4440,7 +4613,7 @@ async function loadAIHubStatus() {
     setStatus(
       $("aiChatStatus"),
       installed.length +
-      " local model(s) available"
+      " model(s) available"
     );
 
   
@@ -4536,7 +4709,7 @@ async function loadAIHubStatus() {
 
   setStatus(
     $("aiChatStatus"),
-    "Connecting to local AI..."
+    "Connecting to AI endpoint..."
   );
 
 
@@ -4577,6 +4750,12 @@ async function loadAIHubStatus() {
 
 
     if (!response.ok) {
+      if (response.status === 401) {
+        window.dispatchEvent(
+          new Event("feltus-auth-required")
+        );
+      }
+
       const errorText =
         await response.text();
 
@@ -8573,6 +8752,11 @@ async function uploadProjectDocument() {
     if (
       !uploadResponse.ok
     ) {
+      if (uploadResponse.status === 401) {
+        window.dispatchEvent(
+          new Event("feltus-auth-required")
+        );
+      }
 
       throw new Error(
         uploadResult.error ||
@@ -8642,6 +8826,12 @@ async function uploadProjectDocument() {
 
 
     } else {
+
+      if (processResponse.status === 401) {
+        window.dispatchEvent(
+          new Event("feltus-auth-required")
+        );
+      }
 
       throw new Error(
         processResult.error ||

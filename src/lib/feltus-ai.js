@@ -1,8 +1,11 @@
 ﻿export class FeltusAI {
   constructor({
     baseUrl =
+      process.env.FELTUS_AI_BASE_URL ||
       process.env.FELTUS_OLLAMA_URL ||
-      "http://127.0.0.1:11434",
+      (process.env.FELTUS_ENV === "production"
+        ? ""
+        : "http://127.0.0.1:11434"),
 
     model =
       process.env.FELTUS_AI_MODEL ||
@@ -11,7 +14,7 @@
     timeoutMs = 600000
   } = {}) {
     this.baseUrl =
-      baseUrl.replace(/\/+$/, "");
+      String(baseUrl || "").replace(/\/+$/, "");
 
     this.model = model;
     this.timeoutMs = timeoutMs;
@@ -25,6 +28,10 @@
       body = null
     } = {}
   ) {
+    if (!this.baseUrl) {
+      throw new Error("AI endpoint is not configured.");
+    }
+
     const controller =
       new AbortController();
 
@@ -176,6 +183,10 @@
       keepAlive = "10m"
     } = {}
   ) {
+    if (!this.baseUrl) {
+      throw new Error("AI endpoint is not configured.");
+    }
+
     if (
       typeof prompt !== "string" ||
       !prompt.trim()

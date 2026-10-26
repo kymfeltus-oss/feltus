@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+.feltus-dev-auth.json
+.feltus-storage
+.feltus-runtime
+node_modules
+*.zip
+*.log
+*.bak
+*.backup*
+*.dump
+*.tar.gz

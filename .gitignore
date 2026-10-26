@@ -32,3 +32,6 @@ Thumbs.db
 *.backup
 *.bak.*
 *.backup.*
+*.dump
+*.tar.gz
+.feltus-backups/

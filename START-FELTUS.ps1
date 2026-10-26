@@ -171,8 +171,44 @@ $env:FELTUS_PUBLISHABLE_KEY =
 $env:FELTUS_LOCAL_DEV_MODE =
     "1"
 
+$env:FELTUS_ENV =
+    "development"
+
+$env:NODE_ENV =
+    "development"
+
+$env:FELTUS_HOST =
+    "127.0.0.1"
+
+$env:FELTUS_PORT =
+    "8080"
+
+$env:FELTUS_PUBLIC_URL =
+    "http://127.0.0.1:8080"
+
+$env:FELTUS_GATEWAY_URL =
+    if ($env:FELTUS_LOCAL_GATEWAY_URL) {
+        $env:FELTUS_LOCAL_GATEWAY_URL
+    }
+    else {
+        "http://127.0.0.1:54321"
+    }
+
+$env:FELTUS_API_KEY = ""
+
+$env:FELTUS_ALLOWED_ORIGINS =
+    "http://127.0.0.1:8080,http://localhost:8080,https://kyemba.tailb2f227.ts.net"
+
 $env:FELTUS_AI_MODEL =
     "llama3:8b"
+
+$env:FELTUS_AI_BASE_URL =
+    if ($env:FELTUS_LOCAL_AI_BASE_URL) {
+        $env:FELTUS_LOCAL_AI_BASE_URL
+    }
+    else {
+        "http://127.0.0.1:11434"
+    }
 
 Write-Host "      READY" -ForegroundColor Green
 
