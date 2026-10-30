@@ -30,6 +30,10 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const compose = fs.readFileSync(path.join(root, "compose.production.yaml"), "utf8");
+const productionWorkflow = fs.readFileSync(
+  path.join(root, ".github/workflows/production-regression.yml"),
+  "utf8"
+);
 const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
 const dockerignore = fs.readFileSync(path.join(root, ".dockerignore"), "utf8");
 const backupScript = fs.readFileSync(path.join(root, "scripts/backup.sh"), "utf8");
@@ -70,6 +74,14 @@ check("canonical cross-platform package entrypoints", () => {
   assert.equal(packageJson.scripts.start, "node src/server.js");
   assert.equal(packageJson.scripts.check, "node scripts/check.js");
   assert.equal(packageJson.scripts.regression, "node scripts/production-regression.mjs");
+});
+
+check("CI runs production checks on every branch update", () => {
+  assert.match(productionWorkflow, /^on:\s*\r?\n\s+push:\s*\r?\n\s+pull_request:/m);
+  assert.match(productionWorkflow, /node-version: 22/);
+  assert.match(productionWorkflow, /npm run regression/);
+  assert.match(productionWorkflow, /python -m unittest discover/);
+  assert.match(productionWorkflow, /docker compose .* build app evidence-extractor/);
 });
 
 check("AI capability and model routing", () => {
