@@ -23,9 +23,23 @@ process.env.FELTUS_STORAGE_ROOT =
 process.env.FELTUS_GATEWAY_URL =
   process.env.FELTUS_LOCAL_GATEWAY_URL ||
   "http://127.0.0.1:54321";
-process.env.FELTUS_AI_BASE_URL =
+process.env.FELTUS_AI_ENDPOINT =
+  process.env.FELTUS_AI_ENDPOINT ||
   process.env.FELTUS_LOCAL_AI_BASE_URL ||
+  process.env.FELTUS_AI_BASE_URL ||
   "http://127.0.0.1:11434";
+process.env.FELTUS_AI_ENDPOINT_TRUST =
+  process.env.FELTUS_AI_ENDPOINT_TRUST ||
+  "local_private";
+process.env.FELTUS_AI_SEND_HISTORY =
+  process.env.FELTUS_AI_SEND_HISTORY ||
+  "false";
+process.env.FELTUS_AI_SEND_PROJECT_CONTEXT =
+  process.env.FELTUS_AI_SEND_PROJECT_CONTEXT ||
+  "true";
+process.env.FELTUS_AI_MAX_HISTORY_MESSAGES =
+  process.env.FELTUS_AI_MAX_HISTORY_MESSAGES ||
+  "20";
 
 let localPublishableKey = process.env.FELTUS_LOCAL_PUBLISHABLE_KEY || "";
 

@@ -30,7 +30,7 @@ The app's uploaded documents and immutable PDF evidence sidecars use `feltus_doc
 
 `npm run dev` is the approved Windows-local path. It selects the local Supabase-compatible gateway at `127.0.0.1:54321` and native Windows Ollama at `127.0.0.1:11434`; it does not start a Docker Ollama service or point at hosted Supabase. Local data remains under `.feltus-storage` and Supabase's local data directories.
 
-`npm start` and the production Docker image require production-mode configuration. Coolify supplies the self-hosted gateway address, publishable JWT, owner email, allowed origins, AI endpoint/model, storage path, and private evidence-extractor settings. Database, JWT, Auth, and extractor secrets belong in Coolify's secret fields and are not committed. `FELTUS_AI_BASE_URL` can target a private or remote Ollama-compatible endpoint; this production option is separate from the native Windows development default.
+`npm start` and the production Docker image require production-mode configuration. Coolify supplies the self-hosted gateway address, publishable JWT, owner email, allowed origins, AI endpoint/model and trust classification, storage path, and private evidence-extractor settings. Database, JWT, Auth, and extractor secrets belong in Coolify's secret fields and are not committed. The production endpoint uses `FELTUS_AI_ENDPOINT` (with `FELTUS_AI_BASE_URL` as a compatibility alias) and is separate from the native Windows development default. Private endpoints require private DNS/IP validation and an exact private host allowlist; trusted external endpoints require HTTPS and an exact trusted-host allowlist.
 
 ## Authentication and authorization
 
@@ -40,9 +40,9 @@ Database tables use authenticated access and row-level security policies tied to
 
 ## AI and document data flow
 
-Browser AI requests go to the FELTUS server. The server selects the configured model/capability, verifies the requested project belongs to the authenticated owner, obtains project/document grounding, and sends the current request to the configured Ollama-compatible endpoint. Project document text used for grounding can therefore leave the FELTUS host if the operator configures an external AI endpoint; production should use an endpoint approved for that data.
+Browser AI requests go to the FELTUS server. The server selects the configured model/capability, validates the AI endpoint trust policy, verifies the requested project belongs to the authenticated owner, and conditionally sends project/document grounding. The current user prompt is sent to the configured endpoint. Stored project context defaults off in production Compose and is sent only when `FELTUS_AI_SEND_PROJECT_CONTEXT=true`; external endpoints require explicit opt-in. Redirects from the configured AI endpoint are blocked.
 
-Conversations are saved in Postgres and restored in the project UI. In this revision, saved prior turns are **not** sent to the model; only the current request and project grounding are sent. PDF extraction remains inside the Compose network, checks a private bearer token, reads the document volume read-only, limits document size, and returns page-aware text/evidence to the app.
+Conversations are saved in Postgres and restored in the project UI. Prior turns remain excluded by default because `FELTUS_AI_SEND_HISTORY=false`; if explicitly enabled for a verified trust class, the server loads at most 20 recent turns after rechecking the authenticated owner, `app_id`, active `conversation_id`, and message row scope. Browser-supplied history is ignored. `external_unverified` never receives stored prior turns. Payload order is system instructions, optional project context, optional authorized recent turns, retrieved project/document context, and the current prompt. PDF extraction remains inside the Compose network, checks a private bearer token, reads the document volume read-only, limits document size, and returns page-aware text/evidence to the app.
 
 ## Health, observability, and persistence boundaries
 

@@ -1,6 +1,7 @@
 ﻿export class FeltusAI {
   constructor({
     baseUrl =
+      process.env.FELTUS_AI_ENDPOINT ||
       process.env.FELTUS_AI_BASE_URL ||
       process.env.FELTUS_OLLAMA_URL ||
       (process.env.FELTUS_ENV === "production"
@@ -65,6 +66,10 @@
                 ? JSON.stringify(body)
                 : undefined,
 
+            // AI trust is bound to this configured origin. Never follow a
+            // redirect that could move prompts or stored context elsewhere.
+            redirect: "manual",
+
             signal:
               controller.signal
           }
@@ -73,6 +78,10 @@
 
       const text =
         await response.text();
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new Error("AI endpoint redirects are not allowed.");
+      }
 
       let data;
 
@@ -243,11 +252,17 @@
                 }
               }),
 
+            redirect: "manual",
+
             signal:
               controller.signal
           }
         );
 
+
+      if (response.status >= 300 && response.status < 400) {
+        throw new Error("AI endpoint redirects are not allowed.");
+      }
 
       if (!response.ok) {
         const errorText =

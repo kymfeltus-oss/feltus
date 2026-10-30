@@ -4,6 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AI_CAPABILITIES, routeModel } from "../src/lib/feltus-ai-router.js";
+import { resolveAIEndpointPolicy } from "../src/lib/feltus-ai-policy.js";
+import { loadAuthorizedAIHistory } from "../src/lib/feltus-ai-history.js";
+import { composeAIPrompt } from "../src/lib/feltus-ai-prompt.js";
+import { FeltusAI } from "../src/lib/feltus-ai.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = [];
@@ -11,6 +15,15 @@ const results = [];
 function check(name, fn) {
   try {
     fn();
+    results.push({ name, status: "PASS" });
+  } catch (error) {
+    results.push({ name, status: "FAIL", message: error.message });
+  }
+}
+
+async function checkAsync(name, fn) {
+  try {
+    await fn();
     results.push({ name, status: "PASS" });
   } catch (error) {
     results.push({ name, status: "FAIL", message: error.message });
@@ -53,6 +66,8 @@ const aiConversationMigration = fs.readFileSync(
   path.join(root, "supabase/migrations/20261030100000_project_scoped_ai_conversations.sql"),
   "utf8"
 );
+
+const aiClient = fs.readFileSync(path.join(root, "src/lib/feltus-ai.js"), "utf8");
 
 check("AI capability controls and auto model", () => {
   assert.equal((html.match(/id="aiCapabilitySelect"/g) || []).length, 1);
@@ -172,6 +187,196 @@ check("project switch aborts and isolates in-flight AI streams", () => {
   assert.match(html, /selectedProject\?\.id === requestProjectId/);
   assert.match(html, /signal:\s*controller\.signal/);
   assert.match(html, /if \(!requestIsCurrent\(\)\)/);
+  const switchProject = html.match(/function selectActiveProject\(project\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  const clearConversation = html.match(/function clearAIConversation\(\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  const cancelRequest = html.match(/function cancelActiveAIRequest\([^)]*\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(switchProject, /clearAIConversation\(\)/);
+  assert.match(clearConversation, /cancelActiveAIRequest\(\)/);
+  assert.match(cancelRequest, /activeAIRequestGeneration\s*\+=\s*1/);
+  assert.match(cancelRequest, /request\.abort\(\)/);
+});
+
+await checkAsync("trusted local AI endpoint is validated and history stays opt-in", async () => {
+  const policy = await resolveAIEndpointPolicy({
+    FELTUS_ENV: "development",
+    FELTUS_AI_ENDPOINT: "http://127.0.0.1:11434",
+    FELTUS_AI_ENDPOINT_TRUST: "local_private",
+    FELTUS_AI_SEND_HISTORY: "false",
+    FELTUS_AI_SEND_PROJECT_CONTEXT: "true",
+    FELTUS_AI_MAX_HISTORY_MESSAGES: "20"
+  });
+  assert.equal(policy.trust, "local_private");
+  assert.equal(policy.sendProjectContext, true);
+  assert.equal(policy.sendHistory, false);
+  assert.equal(policy.maxHistoryMessages, 20);
+  const servicePolicy = await resolveAIEndpointPolicy({
+    FELTUS_ENV: "production",
+    FELTUS_AI_ENDPOINT: "http://ollama:11434",
+    FELTUS_AI_ENDPOINT_TRUST: "private_managed",
+    FELTUS_AI_ALLOWED_PRIVATE_HOSTS: "ollama"
+  }, { lookup: async () => [{ address: "172.21.0.5", family: 4 }] });
+  assert.equal(servicePolicy.trust, "private_managed");
+  assert.equal(servicePolicy.sendProjectContext, true);
+  assert.equal(servicePolicy.sendHistory, false);
+  const optedInServicePolicy = await resolveAIEndpointPolicy({
+    FELTUS_ENV: "production",
+    FELTUS_AI_ENDPOINT: "http://ollama:11434",
+    FELTUS_AI_ENDPOINT_TRUST: "private_managed",
+    FELTUS_AI_ALLOWED_PRIVATE_HOSTS: "ollama",
+    FELTUS_AI_SEND_HISTORY: "true"
+  }, { lookup: async () => [{ address: "172.21.0.5", family: 4 }] });
+  assert.equal(optedInServicePolicy.sendHistory, true);
+  await assert.rejects(
+    resolveAIEndpointPolicy({
+      FELTUS_ENV: "production",
+      FELTUS_AI_ENDPOINT: "https://public.example/ollama",
+      FELTUS_AI_ENDPOINT_TRUST: "local_private",
+      FELTUS_AI_ALLOWED_PRIVATE_HOSTS: "public.example"
+    }, { lookup: async () => [{ address: "203.0.113.20", family: 4 }] }),
+    /resolve only to loopback or private network addresses/
+  );
+});
+
+await checkAsync("unverified external AI endpoint fails closed for stored data", async () => {
+  const policy = await resolveAIEndpointPolicy({
+    FELTUS_ENV: "production",
+    FELTUS_AI_ENDPOINT: "https://ai.example.test/v1",
+    FELTUS_AI_ENDPOINT_TRUST: "external_unverified",
+    FELTUS_AI_SEND_HISTORY: "true"
+  }, { lookup: async () => [{ address: "203.0.113.10", family: 4 }] });
+  assert.equal(policy.sendHistory, false);
+  assert.equal(policy.sendProjectContext, false);
+  const prompt = composeAIPrompt({
+    systemInstructions: "FELTUS system instructions",
+    projectContext: policy.sendProjectContext ? "SENSITIVE PROJECT DATA" : "",
+    history: policy.sendHistory ? [{ role: "user", content: "SENSITIVE HISTORY" }] : [],
+    retrievedContext: policy.sendProjectContext ? "PRIVATE DOCUMENT" : "",
+    currentPrompt: "Current prompt explicitly supplied by the user"
+  });
+  assert.match(prompt, /Current prompt explicitly supplied by the user/);
+  assert.doesNotMatch(prompt, /SENSITIVE PROJECT DATA|SENSITIVE HISTORY|PRIVATE DOCUMENT/);
+});
+
+await checkAsync("external trusted endpoint requires HTTPS and an exact approved host", async () => {
+  const base = {
+    FELTUS_ENV: "production",
+    FELTUS_AI_ENDPOINT: "https://trusted.example.test",
+    FELTUS_AI_ENDPOINT_TRUST: "external_trusted",
+    FELTUS_AI_SEND_HISTORY: "true",
+    FELTUS_AI_SEND_PROJECT_CONTEXT: "true"
+  };
+  await assert.rejects(
+    resolveAIEndpointPolicy(base, { lookup: async () => [{ address: "203.0.113.11", family: 4 }] }),
+    /listed in FELTUS_AI_TRUSTED_HOSTS/
+  );
+  const policy = await resolveAIEndpointPolicy({
+    ...base,
+    FELTUS_AI_TRUSTED_HOSTS: "trusted.example.test"
+  }, { lookup: async () => [{ address: "203.0.113.11", family: 4 }] });
+  assert.equal(policy.sendHistory, true);
+  assert.equal(policy.sendProjectContext, true);
+});
+
+await checkAsync("cross-project AI conversation history cannot load or enter a prompt", async () => {
+  const projectId = "project-a";
+  const otherProjectId = "project-b";
+  const ownerId = "owner-a";
+  const conversationId = "conversation-a";
+  const calls = [];
+  const tableRequest = async (table, method, options) => {
+    calls.push({ table, query: options.query });
+    if (table === "feltus_ai_conversations") {
+      return {
+        status: 200,
+        data: [{ id: conversationId, app_id: otherProjectId, owner_id: ownerId, status: "active" }]
+      };
+    }
+    return { status: 200, data: [] };
+  };
+  const denied = await loadAuthorizedAIHistory(tableRequest, {
+    appId: projectId,
+    conversationId,
+    ownerId,
+    maxMessages: 20
+  });
+  assert.equal(denied.status, 404);
+  assert.deepEqual(denied.messages, []);
+  assert.equal(calls.some(call => call.table === "feltus_ai_messages"), false);
+  assert.match(calls[0].query, /&app_id=eq.project-a/);
+  assert.match(calls[0].query, /&owner_id=eq.owner-a/);
+
+  const safeLoader = async (table, method, options) => {
+    calls.push({ table, query: options.query });
+    if (table === "feltus_ai_conversations") {
+      return {
+        status: 200,
+        data: [{ id: conversationId, app_id: projectId, owner_id: ownerId, status: "active" }]
+      };
+    }
+    return {
+      status: 200,
+      data: [
+        { conversation_id: conversationId, app_id: projectId, owner_id: ownerId, role: "user", content: "authorized prior turn" },
+        { conversation_id: "conversation-b", app_id: otherProjectId, owner_id: ownerId, role: "user", content: "CROSS PROJECT SECRET" },
+        { conversation_id: conversationId, app_id: projectId, owner_id: "owner-b", role: "assistant", content: "CROSS OWNER SECRET" }
+      ]
+    };
+  };
+  const loaded = await loadAuthorizedAIHistory(safeLoader, {
+    appId: projectId,
+    conversationId,
+    ownerId,
+    maxMessages: 20
+  });
+  assert.equal(loaded.status, 200);
+  assert.deepEqual(loaded.messages, [{ role: "user", content: "authorized prior turn" }]);
+  const prompt = composeAIPrompt({
+    systemInstructions: "System",
+    projectContext: "authorized project context",
+    history: loaded.messages,
+    retrievedContext: "authorized retrieved context",
+    currentPrompt: "current"
+  });
+  assert.match(prompt, /authorized prior turn/);
+  assert.doesNotMatch(prompt, /CROSS PROJECT SECRET|CROSS OWNER SECRET/);
+  assert.match(calls.at(-1).query, /&conversation_id=eq.conversation-a/);
+  assert.match(calls.at(-1).query, /&app_id=eq.project-a/);
+  assert.match(calls.at(-1).query, /&owner_id=eq.owner-a/);
+  const order = [
+    prompt.indexOf("System"),
+    prompt.indexOf("PROJECT CONTEXT"),
+    prompt.indexOf("RECENT AUTHORIZED CONVERSATION"),
+    prompt.indexOf("RETRIEVED PROJECT/DOCUMENT CONTEXT"),
+    prompt.indexOf("CURRENT USER PROMPT")
+  ];
+  assert.ok(order.every((position, index) => position >= 0 && (index === 0 || position > order[index - 1])));
+});
+
+await checkAsync("AI HTTP clients refuse endpoint redirects", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchOptions;
+  globalThis.fetch = async (_url, options) => {
+    fetchOptions = options;
+    return {
+      status: 302,
+      ok: false,
+      text: async () => "redirect body"
+    };
+  };
+  try {
+    const ai = new FeltusAI({ baseUrl: "http://127.0.0.1:11434" });
+    await assert.rejects(ai.request("/api/tags"), /redirects are not allowed/);
+    assert.equal(fetchOptions.redirect, "manual");
+    await assert.rejects(async () => {
+      for await (const _event of ai.generateStream("current prompt")) {
+        // A redirect response must be rejected before an inference stream starts.
+      }
+    }, /redirects are not allowed/);
+    assert.equal(fetchOptions.redirect, "manual");
+    assert.equal((aiClient.match(/redirect:\s*"manual"/g) || []).length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 check("project-scoped AI conversation storage and authorization", () => {
@@ -187,6 +392,32 @@ check("project-scoped AI conversation storage and authorization", () => {
   assert.match(html, /"\/api\/ai\/conversation"/);
   assert.match(html, /"\/api\/ai\/messages\?app_id="/);
   assert.match(html, /conversation_id:\s*activeAIConversationId/);
+  assert.match(server, /loadAuthorizedAIHistory\(/);
+  assert.match(server, /historyLimit:\s*policy\.sendHistory\s*\?/);
+  assert.doesNotMatch(server, /body\.history/);
+  assert.match(server, /&app_id=eq\." \+ encodeURIComponent\(appId\)/);
+  assert.match(server, /&owner_id=eq\." \+ encodeURIComponent\(ownerId/);
+});
+
+check("AI endpoint trust and data-sharing configuration is documented and bounded", () => {
+  const policy = fs.readFileSync(path.join(root, "src/lib/feltus-ai-policy.js"), "utf8");
+  const history = fs.readFileSync(path.join(root, "src/lib/feltus-ai-history.js"), "utf8");
+  const prompt = fs.readFileSync(path.join(root, "src/lib/feltus-ai-prompt.js"), "utf8");
+  for (const trust of ["local_private", "private_managed", "external_trusted", "external_unverified"]) {
+    assert.ok(policy.includes(`"${trust}"`), `missing endpoint trust level ${trust}`);
+  }
+  assert.match(policy, /FELTUS_AI_SEND_HISTORY[\s\S]{0,100}false/);
+  assert.match(policy, /FELTUS_AI_MAX_HISTORY_MESSAGES[\s\S]{0,130}maxHistoryMessages > 20/);
+  assert.match(policy, /FELTUS_AI_ALLOWED_PRIVATE_HOSTS/);
+  assert.match(policy, /FELTUS_AI_TRUSTED_HOSTS/);
+  assert.match(history, /&conversation_id=eq\./);
+  assert.match(history, /&app_id=eq\./);
+  assert.match(history, /&owner_id=eq\./);
+  assert.match(history, /slice\(0, maxMessages\)/);
+  assert.match(prompt, /RECENT AUTHORIZED CONVERSATION/);
+  assert.match(prompt, /RETRIEVED PROJECT\/DOCUMENT CONTEXT/);
+  assert.match(compose, /FELTUS_AI_ENDPOINT_TRUST: \$\{FELTUS_AI_ENDPOINT_TRUST:-external_unverified\}/);
+  assert.match(compose, /FELTUS_AI_SEND_HISTORY: \$\{FELTUS_AI_SEND_HISTORY:-false\}/);
 });
 
 check("request trace IDs and expensive-operation rate limits", () => {

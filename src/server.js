@@ -6,6 +6,9 @@ import { isIP } from "node:net";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
+import { resolveAIEndpointPolicy } from "./lib/feltus-ai-policy.js";
+import { loadAuthorizedAIHistory } from "./lib/feltus-ai-history.js";
+import { composeAIPrompt } from "./lib/feltus-ai-prompt.js";
 
 dotenv.config();
 
@@ -119,6 +122,15 @@ const ownerSessions = new Map();
 const loginFailures = new Map();
 const operationRateLimits = new Map();
 const requestContext = new AsyncLocalStorage();
+
+async function createConfiguredAI() {
+  const policy = await resolveAIEndpointPolicy(process.env);
+  const { FeltusAI } = await import("./lib/feltus-ai.js");
+  return {
+    ai: new FeltusAI({ baseUrl: policy.endpoint }),
+    policy
+  };
+}
 
 const STORAGE_ROOT = path.resolve(
   process.env.FELTUS_STORAGE_ROOT ||
@@ -2181,7 +2193,8 @@ async function prepareAIConversation(
   prompt,
   {
     model = null,
-    capability = "general"
+    capability = "general",
+    historyLimit = 0
   } = {}
 ) {
   const ownerId = activeSession()?.user?.id;
@@ -2222,6 +2235,23 @@ async function prepareAIConversation(
     conversation = result.conversation;
   }
 
+  let history = [];
+  if (historyLimit > 0) {
+    const historyResult = await loadAuthorizedAIHistory(
+      tableRequest,
+      {
+        appId,
+        conversationId: conversation.id,
+        ownerId,
+        maxMessages: historyLimit
+      }
+    );
+    if (historyResult.status < 200 || historyResult.status >= 300) {
+      return { status: historyResult.status, conversation: null, history: [] };
+    }
+    history = historyResult.messages;
+  }
+
   const userMessage = await tableRequest(
     "feltus_ai_messages",
     "POST",
@@ -2253,7 +2283,7 @@ async function prepareAIConversation(
     }
   );
 
-  return { status: 200, conversation };
+  return { status: 200, conversation, history };
 }
 
 async function assetRequest(
@@ -3022,8 +3052,7 @@ async function evaluateDeploymentReadiness(
       );
 
 
-    const ai =
-      new FeltusAI();
+    const { ai } = await createConfiguredAI();
 
 
     await ai.listModels();
@@ -5145,8 +5174,7 @@ async function handleHttpRequest(req, res) {
               );
 
 
-            const ai =
-              new FeltusAI();
+            const { ai } = await createConfiguredAI();
 
 
             const installed =
@@ -5414,8 +5442,7 @@ async function handleHttpRequest(req, res) {
               );
 
 
-            const ai =
-              new FeltusAI();
+            const { ai } = await createConfiguredAI();
 
 
             const installed =
@@ -5711,8 +5738,7 @@ async function handleHttpRequest(req, res) {
               );
 
 
-            const ai =
-              new FeltusAI();
+            const { ai } = await createConfiguredAI();
 
 
             const models =
@@ -6109,8 +6135,7 @@ async function handleHttpRequest(req, res) {
               );
 
 
-            const ai =
-              new FeltusAI();
+            const { ai, policy } = await createConfiguredAI();
 
 
             const installed =
@@ -6245,7 +6270,13 @@ async function handleHttpRequest(req, res) {
                 ? body.conversation_id
                 : null,
               prompt,
-              { model, capability }
+              {
+                model,
+                capability,
+                historyLimit: policy.sendHistory
+                  ? policy.maxHistoryMessages
+                  : 0
+              }
             );
             if (
               conversationState.status < 200 ||
@@ -6430,39 +6461,33 @@ async function handleHttpRequest(req, res) {
                 : "- none";
 
 
-            const groundedPrompt =
-              [
-                "You are the private AI assistant inside FELTUS LABS.",
-                "",
-                "CURRENT PROJECT",
-                "Name: " +
-                  app.app_name,
-                "Environment: " +
-                  app.environment,
-                "Project ID: " +
-                  app.id,
-                "",
-                "PROJECT ASSETS",
-                assetContext,
-                "",
-                "RELATIONAL DATA MODELS",
-                modelContext,
-                "",
-                "RELATIONAL RELATIONSHIPS",
-                relationshipContext,
-                "",
-                "PROJECT DOCUMENT CONTEXT",
-                await buildDocumentContext(
-                  appId,
-                  prompt
-                ),
-                "",
-                "USER REQUEST",
-                prompt,
-                "",
-                "Respond directly and concisely. Use only the FELTUS project context above for project-specific facts."
-              ]
-                .join("\n");
+            const projectContext = policy.sendProjectContext
+              ? [
+                  "Project name: " + app.app_name,
+                  "Environment: " + app.environment,
+                  "Project ID: " + app.id,
+                  "",
+                  "PROJECT ASSETS",
+                  assetContext,
+                  "",
+                  "RELATIONAL DATA MODELS",
+                  modelContext,
+                  "",
+                  "RELATIONAL RELATIONSHIPS",
+                  relationshipContext
+                ].join("\n")
+              : "";
+            const retrievedContext = policy.sendProjectContext
+              ? await buildDocumentContext(appId, prompt)
+              : "";
+            const groundedPrompt = composeAIPrompt({
+              systemInstructions:
+                "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.",
+              projectContext,
+              history: conversationState.history,
+              retrievedContext,
+              currentPrompt: prompt
+            });
 
 
             res.statusCode =
@@ -6890,8 +6915,7 @@ res.write(
               );
 
 
-            const ai =
-              new FeltusAI();
+            const { ai, policy } = await createConfiguredAI();
 
 
             const installed =
@@ -7039,7 +7063,13 @@ res.write(
                 ? body.conversation_id
                 : null,
               prompt,
-              { model, capability }
+              {
+                model,
+                capability,
+                historyLimit: policy.sendHistory
+                  ? policy.maxHistoryMessages
+                  : 0
+              }
             );
             if (
               conversationState.status < 200 ||
@@ -7224,39 +7254,33 @@ res.write(
                 : "- none";
 
 
-            const groundedPrompt =
-              [
-                "You are the private AI assistant inside FELTUS LABS.",
-                "",
-                "CURRENT PROJECT",
-                "Name: " +
-                  app.app_name,
-                "Environment: " +
-                  app.environment,
-                "Project ID: " +
-                  app.id,
-                "",
-                "PROJECT ASSETS",
-                assetContext,
-                "",
-                "RELATIONAL DATA MODELS",
-                modelContext,
-                "",
-                "RELATIONAL RELATIONSHIPS",
-                relationshipContext,
-                "",
-                "PROJECT DOCUMENT CONTEXT",
-                await buildDocumentContext(
-                  appId,
-                  prompt
-                ),
-                "",
-                "USER REQUEST",
-                prompt,
-                "",
-                "Respond directly and concisely. When the request concerns this project, use the FELTUS project context above and do not invent project resources that are not listed."
-              ]
-                .join("\n");
+            const projectContext = policy.sendProjectContext
+              ? [
+                  "Project name: " + app.app_name,
+                  "Environment: " + app.environment,
+                  "Project ID: " + app.id,
+                  "",
+                  "PROJECT ASSETS",
+                  assetContext,
+                  "",
+                  "RELATIONAL DATA MODELS",
+                  modelContext,
+                  "",
+                  "RELATIONAL RELATIONSHIPS",
+                  relationshipContext
+                ].join("\n")
+              : "";
+            const retrievedContext = policy.sendProjectContext
+              ? await buildDocumentContext(appId, prompt)
+              : "";
+            const groundedPrompt = composeAIPrompt({
+              systemInstructions:
+                "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.",
+              projectContext,
+              history: conversationState.history,
+              retrievedContext,
+              currentPrompt: prompt
+            });
 
 
             const result =
