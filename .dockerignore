@@ -6,10 +6,13 @@
 .feltus-storage
 .feltus-runtime
 node_modules
+__pycache__
+*.py[cod]
 *.zip
 *.log
 *.bak
 *.backup*
+index.before-*.html
 *-backup
 *.pre-*
 **/*.bak

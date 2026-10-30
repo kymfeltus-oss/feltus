@@ -75,6 +75,25 @@ const GATEWAY =
     process.env.FELTUS_GATEWAY_URL ||
     (IS_PRODUCTION ? "" : "http://127.0.0.1:54321")
   ).replace(/\/+$/, "");
+const EVIDENCE_EXTRACTION_URL =
+  (process.env.FELTUS_EVIDENCE_EXTRACTION_URL || "")
+    .trim()
+    .replace(/\/+$/, "");
+const EVIDENCE_EXTRACTION_TOKEN =
+  process.env.FELTUS_EVIDENCE_EXTRACTION_TOKEN || "";
+const EVIDENCE_EXTRACTION_TIMEOUT_MS = Number(
+  process.env.FELTUS_EVIDENCE_EXTRACTION_TIMEOUT_MS || 180000
+);
+
+if (
+  !Number.isInteger(EVIDENCE_EXTRACTION_TIMEOUT_MS) ||
+  EVIDENCE_EXTRACTION_TIMEOUT_MS < 1000 ||
+  EVIDENCE_EXTRACTION_TIMEOUT_MS > 900000
+) {
+  throw new Error(
+    "FELTUS_EVIDENCE_EXTRACTION_TIMEOUT_MS must be between 1000 and 900000."
+  );
+}
 const API_KEY =
   process.env.FELTUS_PUBLISHABLE_KEY ||
   process.env.FELTUS_API_KEY;
@@ -98,6 +117,7 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const SESSION_COOKIE = "__Host-feltus_session";
 const ownerSessions = new Map();
 const loginFailures = new Map();
+const operationRateLimits = new Map();
 const requestContext = new AsyncLocalStorage();
 
 const STORAGE_ROOT = path.resolve(
@@ -211,6 +231,27 @@ if (IS_PRODUCTION) {
 
   if (!GATEWAY) {
     throw new Error("FELTUS_GATEWAY_URL is required in production.");
+  }
+
+  let evidenceExtractionUrl;
+  try {
+    evidenceExtractionUrl = new URL(EVIDENCE_EXTRACTION_URL);
+  } catch {
+    throw new Error(
+      "FELTUS_EVIDENCE_EXTRACTION_URL must be an absolute internal HTTP URL in production."
+    );
+  }
+
+  if (!new Set(["http:", "https:"]).has(evidenceExtractionUrl.protocol)) {
+    throw new Error(
+      "FELTUS_EVIDENCE_EXTRACTION_URL must use HTTP or HTTPS."
+    );
+  }
+
+  if (EVIDENCE_EXTRACTION_TOKEN.length < 32) {
+    throw new Error(
+      "FELTUS_EVIDENCE_EXTRACTION_TOKEN must contain at least 32 characters in production."
+    );
   }
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(OWNER_EMAIL)) {
@@ -433,6 +474,220 @@ const NATIVE_PARSE_EXTENSIONS =
   ]);
 
 
+function extractionDocumentMetadata(
+  extraction,
+  artifact
+) {
+  return {
+    extraction: {
+      schema_version:
+        extraction.schema_version,
+      extraction_id:
+        extraction.extraction_id,
+      status:
+        extraction.status,
+      parser_version:
+        extraction.parser_version,
+      page_count:
+        extraction.page_count,
+      pages_with_text:
+        extraction.pages_with_text,
+      pages_needing_review:
+        extraction.pages_needing_review,
+      extraction_confidence:
+        extraction.extraction_confidence,
+      ocr_used:
+        Boolean(extraction.ocr_used),
+      warnings:
+        Array.isArray(extraction.warnings)
+          ? extraction.warnings
+          : [],
+      errors:
+        Array.isArray(extraction.errors)
+          ? extraction.errors
+          : [],
+      requires_review:
+        extraction.status !== "VALIDATED"
+    },
+    extraction_artifact: artifact
+  };
+}
+
+
+function writeExtractionArtifact(
+  document,
+  extraction
+) {
+  const extractionId =
+    String(extraction.extraction_id || "");
+
+  if (!UUID_PATTERN.test(extractionId)) {
+    const error = new Error(
+      "Evidence extractor returned an invalid extraction identifier."
+    );
+    error.status = 502;
+    throw error;
+  }
+
+  const storageDirectory = path.posix.dirname(
+    String(document.storage_key || "").replaceAll("\\", "/")
+  );
+  const artifactName =
+    `${document.id}.${extractionId}.evidence.json`;
+  const storageKey =
+    storageDirectory === "."
+      ? artifactName
+      : `${storageDirectory}/${artifactName}`;
+  const absolutePath =
+    resolveDocumentStoragePath(storageKey);
+  const content = Buffer.from(
+    JSON.stringify(extraction),
+    "utf8"
+  );
+
+  fs.writeFileSync(
+    absolutePath,
+    content,
+    {
+      flag: "wx",
+      mode: 0o600
+    }
+  );
+
+  return {
+    storage_key: storageKey,
+    sha256: crypto
+      .createHash("sha256")
+      .update(content)
+      .digest("hex"),
+    size_bytes: content.length,
+    content_type: "application/json"
+  };
+}
+
+
+async function parsePdfDocument(
+  document
+) {
+  if (!EVIDENCE_EXTRACTION_URL) {
+    const error = new Error(
+      "PDF evidence extraction is not configured."
+    );
+    error.status = 415;
+    throw error;
+  }
+
+  const storagePath =
+    resolveDocumentStoragePath(document.storage_key);
+
+  if (!fs.existsSync(storagePath)) {
+    const error = new Error(
+      "Stored document file is unavailable."
+    );
+    error.status = 404;
+    throw error;
+  }
+
+  let response;
+  try {
+    response = await fetch(
+      `${EVIDENCE_EXTRACTION_URL}/extract`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:
+            `Bearer ${EVIDENCE_EXTRACTION_TOKEN}`
+        },
+        body: JSON.stringify({
+          document_id: document.id,
+          storage_key: document.storage_key,
+          source_sha256: document.sha256
+        }),
+        signal: AbortSignal.timeout(
+          EVIDENCE_EXTRACTION_TIMEOUT_MS
+        )
+      }
+    );
+  } catch {
+    const error = new Error(
+      "Evidence extraction service is unavailable."
+    );
+    error.status = 503;
+    throw error;
+  }
+
+  const extraction =
+    await response.json().catch(() => null);
+
+  if (!response.ok || !extraction) {
+    const error = new Error(
+      response.status >= 500
+        ? "Evidence extraction service is unavailable."
+        : "PDF evidence extraction failed."
+    );
+    error.status =
+      response.status >= 500
+        ? 503
+        : response.status;
+    throw error;
+  }
+
+  if (
+    extraction.document_id !== document.id ||
+    extraction.source_sha256 !== document.sha256 ||
+    !UUID_PATTERN.test(
+      String(extraction.extraction_id || "")
+    ) ||
+    !Array.isArray(extraction.pages) ||
+    typeof extraction.raw_text !== "string" ||
+    !new Set(["VALIDATED", "NEEDS_REVIEW"])
+      .has(extraction.status)
+  ) {
+    const error = new Error(
+      "Evidence extractor returned an invalid contract."
+    );
+    error.status = 502;
+    throw error;
+  }
+
+  const artifact =
+    writeExtractionArtifact(document, extraction);
+  const documentMetadata =
+    extractionDocumentMetadata(extraction, artifact);
+
+  if (extraction.status !== "VALIDATED") {
+    const error = new Error(
+      "Document extraction requires professional review."
+    );
+    error.status = 409;
+    error.requiresReview = true;
+    error.documentMetadata = documentMetadata;
+    throw error;
+  }
+
+  const text =
+    normalizeDocumentText(extraction.raw_text);
+
+  if (!text) {
+    const error = new Error(
+      "No extractable text found."
+    );
+    error.status = 422;
+    error.documentMetadata = documentMetadata;
+    throw error;
+  }
+
+  return {
+    extension: ".pdf",
+    text,
+    parser: extraction.parser_version,
+    pages: extraction.pages,
+    documentMetadata
+  };
+}
+
+
 function resolveDocumentStoragePath(
   storageKey
 ) {
@@ -497,7 +752,7 @@ function normalizeDocumentText(
 }
 
 
-function parseStoredDocument(
+async function parseStoredDocument(
   document
 ) {
 
@@ -506,6 +761,11 @@ function parseStoredDocument(
       document.original_name
     )
       .toLowerCase();
+
+
+  if (extension === ".pdf") {
+    return parsePdfDocument(document);
+  }
 
 
   if (
@@ -775,6 +1035,39 @@ function chunkDocumentText(
 }
 
 
+function chunkParsedDocument(
+  parsed
+) {
+  if (
+    parsed.extension !== ".pdf" ||
+    !Array.isArray(parsed.pages)
+  ) {
+    return chunkDocumentText(parsed.text);
+  }
+
+  return parsed.pages.flatMap(page => {
+    const pageText = normalizeDocumentText(
+      page?.raw_text
+    );
+
+    if (!pageText) {
+      return [];
+    }
+
+    return chunkDocumentText(pageText).map(chunk => ({
+      ...chunk,
+      metadata: {
+        ...chunk.metadata,
+        source: "pdf-page",
+        page_number: page.page_number,
+        extraction_method: page.method,
+        text_quality: page.text_quality
+      }
+    }));
+  });
+}
+
+
 
 /* ============================================================
    FELTUS DOCUMENT-GROUNDED AI RETRIEVAL
@@ -892,7 +1185,7 @@ async function buildDocumentContext(
           "GET",
           {
             query:
-              "?select=document_id,chunk_index,content,character_count,created_at" +
+              "?select=document_id,chunk_index,content,character_count,metadata,created_at" +
               "&app_id=eq." +
               encodeURIComponent(
                 appId
@@ -1047,6 +1340,13 @@ async function buildDocumentContext(
               content:
                 chunk.content,
 
+              page_number:
+                Number.isInteger(
+                  chunk.metadata?.page_number
+                )
+                  ? chunk.metadata.page_number
+                  : null,
+
               score
             };
           }
@@ -1168,6 +1468,9 @@ async function buildDocumentContext(
             chunk.document_name +
             " | Chunk: " +
             chunk.chunk_index +
+            (chunk.page_number
+              ? " | Page: " + chunk.page_number
+              : "") +
             "]",
           chunk.content,
           ""
@@ -1432,6 +1735,54 @@ function allowLoginAttempt(req, email = "") {
 
   current.count += 1;
   return true;
+}
+
+
+function consumeOperationRateLimit(
+  req,
+  action,
+  maximum,
+  windowMs
+) {
+  const now = Date.now();
+  const identity = activeSession()?.user?.id || clientAddress(req);
+  const key = `${action}:${identity}`;
+  const current = operationRateLimits.get(key);
+
+  if (!current || current.resetAt <= now) {
+    if (operationRateLimits.size >= 20000) {
+      for (const [entryKey, entry] of operationRateLimits) {
+        if (entry.resetAt <= now) operationRateLimits.delete(entryKey);
+      }
+      while (operationRateLimits.size >= 20000) {
+        operationRateLimits.delete(operationRateLimits.keys().next().value);
+      }
+    }
+
+    operationRateLimits.set(key, {
+      count: 1,
+      resetAt: now + windowMs
+    });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  if (current.count >= maximum) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000))
+    };
+  }
+
+  current.count += 1;
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+
+function sendRateLimitResponse(res, limit) {
+  res.setHeader("Retry-After", limit.retryAfterSeconds);
+  return send(res, 429, {
+    error: "Rate limit exceeded. Try again later."
+  });
 }
 
 function clientAddress(req) {
@@ -1730,6 +2081,181 @@ async function appRequest(
   );
 }
 
+
+async function projectAIConversation(
+  appId,
+  {
+    create = false,
+    title = "Project conversation"
+  } = {}
+) {
+  const ownerId = activeSession()?.user?.id;
+  if (!ownerId) {
+    return { status: 401, conversation: null };
+  }
+
+  const applicationResult = await tableRequest(
+    "feltus_applications",
+    "GET",
+    {
+      query:
+        "?select=id&id=eq." + encodeURIComponent(appId) + "&limit=1"
+    }
+  );
+  const application = Array.isArray(applicationResult.data)
+    ? applicationResult.data[0]
+    : null;
+  if (applicationResult.status < 200 || applicationResult.status >= 300) {
+    return { status: applicationResult.status, conversation: null };
+  }
+  if (!application) {
+    return { status: 404, conversation: null };
+  }
+
+  const query =
+    "?select=id,app_id,owner_id,title,status,created_at,updated_at" +
+    "&app_id=eq." + encodeURIComponent(appId) +
+    "&owner_id=eq." + encodeURIComponent(ownerId) +
+    "&limit=1";
+
+  let result = await tableRequest(
+    "feltus_ai_conversations",
+    "GET",
+    { query }
+  );
+
+  if (result.status < 200 || result.status >= 300) {
+    return { status: result.status, conversation: null };
+  }
+
+  let conversation = Array.isArray(result.data)
+    ? result.data[0]
+    : null;
+
+  if (conversation || !create) {
+    return { status: 200, conversation };
+  }
+
+  result = await tableRequest(
+    "feltus_ai_conversations",
+    "POST",
+    {
+      body: {
+        app_id: appId,
+        owner_id: ownerId,
+        created_by: ownerId,
+        title: String(title || "Project conversation").trim().slice(0, 120) || "Project conversation"
+      }
+    }
+  );
+
+  conversation = Array.isArray(result.data)
+    ? result.data[0]
+    : null;
+
+  if (result.status >= 200 && result.status < 300 && conversation) {
+    return { status: result.status, conversation };
+  }
+
+  // A simultaneous first request can win the unique project conversation
+  // constraint. Re-read so both requests converge on that same row.
+  const reread = await tableRequest(
+    "feltus_ai_conversations",
+    "GET",
+    { query }
+  );
+  if (reread.status >= 200 && reread.status < 300 && Array.isArray(reread.data) && reread.data[0]) {
+    return { status: 200, conversation: reread.data[0] };
+  }
+
+  return {
+    status: result.status || reread.status || 500,
+    conversation: null
+  };
+}
+
+
+async function prepareAIConversation(
+  appId,
+  requestedConversationId,
+  prompt,
+  {
+    model = null,
+    capability = "general"
+  } = {}
+) {
+  const ownerId = activeSession()?.user?.id;
+  let conversation = null;
+
+  if (requestedConversationId) {
+    if (!UUID_PATTERN.test(requestedConversationId)) {
+    return { status: 400, conversation: null };
+    }
+
+    const result = await tableRequest(
+      "feltus_ai_conversations",
+      "GET",
+      {
+        query:
+          "?select=id,app_id,owner_id,title,status" +
+          "&id=eq." + encodeURIComponent(requestedConversationId) +
+          "&app_id=eq." + encodeURIComponent(appId) +
+          "&owner_id=eq." + encodeURIComponent(ownerId || "") +
+          "&limit=1"
+      }
+    );
+    if (result.status < 200 || result.status >= 300) {
+      return { status: result.status, conversation: null };
+    }
+    conversation = Array.isArray(result.data) ? result.data[0] : null;
+    if (!conversation || conversation.status !== "active") {
+      return { status: 404, conversation: null };
+    }
+  } else {
+    const result = await projectAIConversation(appId, {
+      create: true,
+      title: prompt.slice(0, 120)
+    });
+    if (result.status < 200 || result.status >= 300 || !result.conversation) {
+      return { status: result.status || 404, conversation: null };
+    }
+    conversation = result.conversation;
+  }
+
+  const userMessage = await tableRequest(
+    "feltus_ai_messages",
+    "POST",
+    {
+      body: {
+        conversation_id: conversation.id,
+        app_id: appId,
+        owner_id: ownerId,
+        role: "user",
+        content: prompt,
+        model,
+        metadata: { capability }
+      }
+    }
+  );
+  if (userMessage.status < 200 || userMessage.status >= 300) {
+    return { status: userMessage.status, conversation: null };
+  }
+
+  await tableRequest(
+    "feltus_ai_conversations",
+    "PATCH",
+    {
+      query:
+        "?id=eq." + encodeURIComponent(conversation.id) +
+        "&app_id=eq." + encodeURIComponent(appId) +
+        "&owner_id=eq." + encodeURIComponent(ownerId),
+      body: { updated_at: new Date().toISOString() }
+    }
+  );
+
+  return { status: 200, conversation };
+}
+
 async function assetRequest(
   method,
   {
@@ -1917,7 +2443,9 @@ async function logEvent({
           : {},
 
       p_request_id:
-        requestId,
+        requestId ||
+        requestContext.getStore()?.requestId ||
+        null,
 
       p_duration_ms:
         Number.isInteger(
@@ -2716,7 +3244,7 @@ const server =
   http.createServer(
     (req, res) => {
       requestContext.run(
-        { session: null },
+        { session: null, requestId: crypto.randomUUID() },
         () => {
           void handleHttpRequest(req, res);
         }
@@ -2729,7 +3257,10 @@ async function handleHttpRequest(req, res) {
       /* FELTUS INFRASTRUCTURE ERROR TELEMETRY */
 
       const requestTelemetryId =
+        requestContext.getStore()?.requestId ||
         globalThis.crypto.randomUUID();
+
+      res.setHeader("X-Request-ID", requestTelemetryId);
 
       const requestTelemetryStartedAt =
         Date.now();
@@ -2855,14 +3386,44 @@ async function handleHttpRequest(req, res) {
           const options = {
             method,
             headers,
-            signal: AbortSignal.timeout(15000)
+            signal: AbortSignal.timeout(15000),
+            redirect:
+              method === "GET" && url.pathname === "/auth/v1/verify"
+                ? "manual"
+                : "follow"
           };
           let authLoginAttemptKey = null;
 
           if (!["GET", "HEAD"].includes(method)) {
             const body = await readBody(req);
             headers["Content-Type"] = "application/json";
-            options.body = JSON.stringify(body);
+            let upstreamBody = body;
+
+            if (method === "POST" && url.pathname === "/auth/v1/recover") {
+              const recoveryLimit = consumeOperationRateLimit(
+                req,
+                "password-recovery",
+                5,
+                60 * 60 * 1000
+              );
+              if (!recoveryLimit.allowed) {
+                return sendRateLimitResponse(res, recoveryLimit);
+              }
+
+              upstreamBody = {
+                ...(body && typeof body === "object" && !Array.isArray(body)
+                  ? body
+                  : {}),
+                email: IS_PRODUCTION
+                  ? OWNER_EMAIL
+                  : typeof body?.email === "string"
+                    ? body.email.trim()
+                    : "",
+                redirect_to: PUBLIC_URL
+              };
+            }
+
+            options.body = JSON.stringify(upstreamBody);
 
             if (
               method === "POST" &&
@@ -2880,16 +3441,73 @@ async function handleHttpRequest(req, res) {
             }
           }
 
-          const authResponse = await fetch(
-            `${GATEWAY}${url.pathname}${url.search}`,
-            options
-          );
+          const isRecoveryRequest =
+            method === "POST" && url.pathname === "/auth/v1/recover";
+          let authResponse;
+          try {
+            authResponse = await fetch(
+              `${GATEWAY}${url.pathname}${url.search}`,
+              options
+            );
+          } catch (error) {
+            if (!isRecoveryRequest) throw error;
+            console.warn(JSON.stringify({
+              event: "password_recovery_unavailable",
+              request_id: requestContext.getStore()?.requestId || null,
+              outcome: "upstream_unreachable"
+            }));
+            return send(res, 200, {});
+          }
+
+          if (isRecoveryRequest) {
+            if (!authResponse.ok) {
+              console.warn(JSON.stringify({
+                event: "password_recovery_unavailable",
+                request_id: requestContext.getStore()?.requestId || null,
+                upstream_status: authResponse.status
+              }));
+            }
+            // Do not expose whether Auth accepted the configured owner address
+            // or whether mail delivery was successful.
+            return send(res, 200, {});
+          }
+
           const responseHeaders = {
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff"
           };
           const contentType = authResponse.headers.get("content-type");
           const setCookies = authResponse.headers.getSetCookie?.() || [];
+          const authRedirectLocation = authResponse.headers.get("location");
+          if (
+            method === "GET" &&
+            url.pathname === "/auth/v1/verify" &&
+            authResponse.status >= 300 &&
+            authResponse.status < 400
+          ) {
+            if (!authRedirectLocation) {
+              return send(res, 502, {
+                error: "The Auth recovery redirect is unavailable."
+              });
+            }
+
+            let safeRedirect;
+            try {
+              safeRedirect = new URL(authRedirectLocation, PUBLIC_URL);
+            } catch {
+              return send(res, 502, {
+                error: "The Auth recovery redirect is invalid."
+              });
+            }
+
+            if (!ALLOWED_ORIGINS.has(safeRedirect.origin)) {
+              return send(res, 502, {
+                error: "The Auth recovery redirect origin is not allowed."
+              });
+            }
+
+            responseHeaders.Location = safeRedirect.href;
+          }
           const noBody =
             method === "HEAD" ||
             [204, 205, 304].includes(authResponse.status);
@@ -2996,6 +3614,8 @@ async function handleHttpRequest(req, res) {
         ) {
           let databaseOnline = false;
           let authOnline = false;
+          let extractionOnline =
+            !EVIDENCE_EXTRACTION_URL;
 
           try {
             const [database, auth] = await Promise.all([
@@ -3009,11 +3629,24 @@ async function handleHttpRequest(req, res) {
             authOnline =
               auth.status >= 200 &&
               auth.status < 300;
+
+            if (EVIDENCE_EXTRACTION_URL) {
+              const extraction = await fetch(
+                `${EVIDENCE_EXTRACTION_URL}/health`,
+                {
+                  signal: AbortSignal.timeout(5000)
+                }
+              );
+              extractionOnline = extraction.ok;
+            }
           } catch {
             // The response reports readiness without internal error details.
           }
 
-          const ready = databaseOnline && authOnline;
+          const ready =
+            databaseOnline &&
+            authOnline &&
+            extractionOnline;
 
           return send(
             res,
@@ -3022,7 +3655,9 @@ async function handleHttpRequest(req, res) {
               status: ready ? "ready" : "not_ready",
               services: {
                 database: databaseOnline ? "online" : "offline",
-                auth: authOnline ? "online" : "offline"
+                auth: authOnline ? "online" : "offline",
+                evidence_extraction:
+                  extractionOnline ? "online" : "offline"
               },
               ai_required: false
             }
@@ -3332,6 +3967,89 @@ async function handleHttpRequest(req, res) {
 
         if (
           url.pathname ===
+          "/api/documents/extraction"
+        ) {
+          if (req.method !== "GET") {
+            return send(res, 405, {
+              error: "Method not allowed."
+            });
+          }
+
+          const documentId =
+            url.searchParams.get("document_id");
+
+          if (
+            !documentId ||
+            !UUID_PATTERN.test(documentId)
+          ) {
+            return send(res, 400, {
+              error: "Valid document ID required."
+            });
+          }
+
+          const documentResult =
+            await tableRequest(
+              "feltus_documents",
+              "GET",
+              {
+                query:
+                  "?select=id,metadata" +
+                  "&id=eq." +
+                  encodeURIComponent(documentId) +
+                  "&limit=1"
+              }
+            );
+          const document =
+            Array.isArray(documentResult.data)
+              ? documentResult.data[0]
+              : null;
+
+          if (!document) {
+            return send(res, 404, {
+              error: "Document not found."
+            });
+          }
+
+          const storageKey =
+            document.metadata
+              ?.extraction_artifact
+              ?.storage_key;
+
+          if (
+            typeof storageKey !== "string" ||
+            !storageKey
+          ) {
+            return send(res, 404, {
+              error: "Extraction evidence is unavailable."
+            });
+          }
+
+          const artifactPath =
+            resolveDocumentStoragePath(storageKey);
+
+          if (!fs.existsSync(artifactPath)) {
+            return send(res, 404, {
+              error: "Extraction evidence is unavailable."
+            });
+          }
+
+          const artifactSize =
+            fs.statSync(artifactPath).size;
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Length": artifactSize,
+            "Content-Disposition":
+              `attachment; filename="${document.id}.evidence.json"`,
+            "Cache-Control": "no-store"
+          });
+          return fs
+            .createReadStream(artifactPath)
+            .pipe(res);
+        }
+
+
+        if (
+          url.pathname ===
           "/api/documents/process"
         ) {
 
@@ -3348,6 +4066,17 @@ async function handleHttpRequest(req, res) {
                   "Method not allowed."
               }
             );
+          }
+
+
+          const documentProcessLimit = consumeOperationRateLimit(
+            req,
+            "document-processing",
+            30,
+            60 * 60 * 1000
+          );
+          if (!documentProcessLimit.allowed) {
+            return sendRateLimitResponse(res, documentProcessLimit);
           }
 
 
@@ -3424,14 +4153,14 @@ async function handleHttpRequest(req, res) {
           try {
 
             const parsed =
-              parseStoredDocument(
+              await parseStoredDocument(
                 document
               );
 
 
             const chunks =
-              chunkDocumentText(
-                parsed.text
+              chunkParsedDocument(
+                parsed
               );
 
 
@@ -3477,14 +4206,18 @@ async function handleHttpRequest(req, res) {
 
                     chunking: {
                       strategy:
-                        "character-window",
+                        parsed.extension === ".pdf"
+                          ? "pdf-page-character-window"
+                          : "character-window",
 
                       maximum_characters:
                         1800,
 
                       overlap_characters:
                         200
-                    }
+                    },
+
+                    ...(parsed.documentMetadata || {})
                   }
                 }
               );
@@ -3546,7 +4279,13 @@ async function handleHttpRequest(req, res) {
                   parsed.text.length,
 
                 chunk_count:
-                  chunks.length
+                  chunks.length,
+
+                page_count:
+                  parsed.documentMetadata
+                    ?.extraction
+                    ?.page_count ||
+                  null
               }
             });
 
@@ -3572,6 +4311,12 @@ async function handleHttpRequest(req, res) {
 
                 chunk_count:
                   chunks.length,
+
+                page_count:
+                  parsed.documentMetadata
+                    ?.extraction
+                    ?.page_count ||
+                  null,
 
                 duration_ms:
                   Date.now() -
@@ -3619,11 +4364,15 @@ async function handleHttpRequest(req, res) {
                     document.id,
 
                   p_error:
-                    "Document processing failed.",
+                    error.requiresReview === true
+                      ? "Document extraction requires professional review."
+                      : "Document processing failed.",
 
                   p_metadata: {
                     processing_failure:
-                      true
+                      error.requiresReview !== true,
+
+                    ...(error.documentMetadata || {})
                   }
                 }
               );
@@ -3677,10 +4426,15 @@ async function handleHttpRequest(req, res) {
                 500,
               {
                 error:
-                  "Document processing failed.",
+                  error.requiresReview === true
+                    ? "Document extraction requires professional review."
+                    : "Document processing failed.",
 
                 processing_status:
-                  "failed"
+                  "failed",
+
+                requires_review:
+                  error.requiresReview === true
               }
             );
           }
@@ -3774,6 +4528,17 @@ async function handleHttpRequest(req, res) {
                   "Method not allowed."
               }
             );
+          }
+
+
+          const documentUploadLimit = consumeOperationRateLimit(
+            req,
+            "document-upload",
+            20,
+            60 * 60 * 1000
+          );
+          if (!documentUploadLimit.allowed) {
+            return sendRateLimitResponse(res, documentUploadLimit);
           }
 
 
@@ -4512,6 +5277,116 @@ async function handleHttpRequest(req, res) {
         }
 
 
+        if (url.pathname === "/api/ai/conversation") {
+          if (!new Set(["GET", "POST"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          if (typeof appId !== "string" || !UUID_PATTERN.test(appId)) {
+            return send(res, 400, { error: "Valid application ID required." });
+          }
+
+          const result = await projectAIConversation(appId, {
+            create: req.method === "POST",
+            title: body?.title
+          });
+          if (result.status < 200 || result.status >= 300) {
+            return send(res, result.status, {
+              error: result.status === 404
+                ? "Project not found."
+                : "Project conversation is unavailable."
+            });
+          }
+
+          return send(res, 200, {
+            conversation: result.conversation
+          });
+        }
+
+
+        if (url.pathname === "/api/ai/messages") {
+          if (!new Set(["GET", "DELETE"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+
+          const appId = url.searchParams.get("app_id");
+          const conversationId = url.searchParams.get("conversation_id");
+          if (
+            !appId ||
+            !UUID_PATTERN.test(appId) ||
+            !conversationId ||
+            !UUID_PATTERN.test(conversationId)
+          ) {
+            return send(res, 400, {
+              error: "Valid application and conversation IDs are required."
+            });
+          }
+
+          const ownerId = activeSession()?.user?.id;
+          const conversationResult = await tableRequest(
+            "feltus_ai_conversations",
+            "GET",
+            {
+              query:
+                "?select=id,app_id" +
+                "&id=eq." + encodeURIComponent(conversationId) +
+                "&app_id=eq." + encodeURIComponent(appId) +
+                "&owner_id=eq." + encodeURIComponent(ownerId || "") +
+                "&limit=1"
+            }
+          );
+          const conversation = Array.isArray(conversationResult.data)
+            ? conversationResult.data[0]
+            : null;
+          if (conversationResult.status < 200 || conversationResult.status >= 300) {
+            return send(res, conversationResult.status, {
+              error: "Project conversation is unavailable."
+            });
+          }
+          if (!conversation) {
+            return send(res, 404, { error: "Project conversation not found." });
+          }
+
+          if (req.method === "DELETE") {
+            const deleted = await tableRequest(
+              "feltus_ai_messages",
+              "DELETE",
+              {
+                query:
+                  "?conversation_id=eq." + encodeURIComponent(conversationId) +
+                  "&app_id=eq." + encodeURIComponent(appId) +
+                  "&owner_id=eq." + encodeURIComponent(ownerId)
+              }
+            );
+            if (deleted.status < 200 || deleted.status >= 300) {
+              return send(res, deleted.status, {
+                error: "Project conversation could not be cleared."
+              });
+            }
+            return send(res, 200, { cleared: true });
+          }
+
+          const messagesResult = await tableRequest(
+            "feltus_ai_messages",
+            "GET",
+            {
+              query:
+                "?select=id,conversation_id,app_id,role,content,model,metadata,created_at" +
+                "&conversation_id=eq." + encodeURIComponent(conversationId) +
+                "&app_id=eq." + encodeURIComponent(appId) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&order=created_at.desc,id.desc&limit=100"
+            }
+          );
+          const messages = Array.isArray(messagesResult.data)
+            ? [...messagesResult.data].reverse()
+            : messagesResult.data;
+          return send(res, messagesResult.status, messages);
+        }
+
+
         if (
           url.pathname ===
           "/api/ai/status"
@@ -5141,6 +6016,17 @@ async function handleHttpRequest(req, res) {
           }
 
 
+          const aiLimit = consumeOperationRateLimit(
+            req,
+            "ai-inference",
+            20,
+            60_000
+          );
+          if (!aiLimit.allowed) {
+            return sendRateLimitResponse(res, aiLimit);
+          }
+
+
           const body =
             await readBody(req);
 
@@ -5176,7 +6062,7 @@ async function handleHttpRequest(req, res) {
 
           /* FELTUS AI INFERENCE TELEMETRY */
           const aiTelemetryRequestId =
-            globalThis.crypto.randomUUID();
+            requestTelemetryId;
 
           const aiTelemetryStartedAt =
             Date.now();
@@ -5337,6 +6223,42 @@ async function handleHttpRequest(req, res) {
                 {
                   error:
                     "Project not found."
+                }
+              );
+            }
+
+
+            if (
+              body.conversation_id !== undefined &&
+              body.conversation_id !== null &&
+              typeof body.conversation_id !== "string"
+            ) {
+              return send(res, 400, {
+                error: "Valid conversation ID required."
+              });
+            }
+
+
+            const conversationState = await prepareAIConversation(
+              appId,
+              typeof body.conversation_id === "string"
+                ? body.conversation_id
+                : null,
+              prompt,
+              { model, capability }
+            );
+            if (
+              conversationState.status < 200 ||
+              conversationState.status >= 300 ||
+              !conversationState.conversation
+            ) {
+              return send(
+                res,
+                conversationState.status || 404,
+                {
+                  error: conversationState.status === 404
+                    ? "Project conversation not found."
+                    : "Project conversation could not be saved."
                 }
               );
             }
@@ -5582,6 +6504,9 @@ async function handleHttpRequest(req, res) {
 
                 model,
 
+                conversation_id:
+                  conversationState.conversation.id,
+
                 project: {
                   id:
                     app.id,
@@ -5604,6 +6529,9 @@ async function handleHttpRequest(req, res) {
               "\n"
             );
 
+
+            let assistantResponseText = "";
+            let assistantPersistenceFailed = false;
 
             for await (
               const event
@@ -5633,6 +6561,7 @@ async function handleHttpRequest(req, res) {
               if (
                 event.response
               ) {
+                assistantResponseText += event.response;
                 res.write(
                   JSON.stringify({
                     type:
@@ -5649,6 +6578,43 @@ async function handleHttpRequest(req, res) {
               if (
                 event.done === true
               ) {
+
+                if (assistantResponseText.trim()) {
+                  const savedAssistant = await tableRequest(
+                    "feltus_ai_messages",
+                    "POST",
+                    {
+                      body: {
+                        conversation_id: conversationState.conversation.id,
+                        app_id: appId,
+                        owner_id: activeSession().user.id,
+                        role: "assistant",
+                        content: assistantResponseText.slice(0, 40000),
+                        model,
+                        metadata: {
+                          capability,
+                          request_id: aiTelemetryRequestId
+                        }
+                      }
+                    }
+                  );
+                  if (savedAssistant.status < 200 || savedAssistant.status >= 300) {
+                    assistantPersistenceFailed = true;
+                    break;
+                  }
+
+                  await tableRequest(
+                    "feltus_ai_conversations",
+                    "PATCH",
+                    {
+                      query:
+                        "?id=eq." + encodeURIComponent(conversationState.conversation.id) +
+                        "&app_id=eq." + encodeURIComponent(appId) +
+                        "&owner_id=eq." + encodeURIComponent(activeSession().user.id),
+                      body: { updated_at: new Date().toISOString() }
+                    }
+                  );
+                }
                 
             await logEvent({
               eventType:
@@ -5711,6 +6677,18 @@ res.write(
                   "\n"
                 );
               }
+            }
+
+
+            if (assistantPersistenceFailed && !res.destroyed) {
+              res.write(
+                JSON.stringify({
+                  type: "error",
+                  error: "AI response could not be saved to the project conversation."
+                }) + "\n"
+              );
+              res.end();
+              return;
             }
 
 
@@ -5813,6 +6791,17 @@ res.write(
           }
 
 
+          const aiLimit = consumeOperationRateLimit(
+            req,
+            "ai-inference",
+            20,
+            60_000
+          );
+          if (!aiLimit.allowed) {
+            return sendRateLimitResponse(res, aiLimit);
+          }
+
+
           const body =
             await readBody(req);
 
@@ -5851,7 +6840,7 @@ res.write(
 
           /* FELTUS AI INFERENCE TELEMETRY */
           const aiTelemetryRequestId =
-            globalThis.crypto.randomUUID();
+            requestTelemetryId;
 
           const aiTelemetryStartedAt =
             Date.now();
@@ -6028,6 +7017,42 @@ res.write(
                 {
                   error:
                     "Project not found."
+                }
+              );
+            }
+
+
+            if (
+              body.conversation_id !== undefined &&
+              body.conversation_id !== null &&
+              typeof body.conversation_id !== "string"
+            ) {
+              return send(res, 400, {
+                error: "Valid conversation ID required."
+              });
+            }
+
+
+            const conversationState = await prepareAIConversation(
+              appId,
+              typeof body.conversation_id === "string"
+                ? body.conversation_id
+                : null,
+              prompt,
+              { model, capability }
+            );
+            if (
+              conversationState.status < 200 ||
+              conversationState.status >= 300 ||
+              !conversationState.conversation
+            ) {
+              return send(
+                res,
+                conversationState.status || 404,
+                {
+                  error: conversationState.status === 404
+                    ? "Project conversation not found."
+                    : "Project conversation could not be saved."
                 }
               );
             }
@@ -6251,6 +7276,45 @@ res.write(
                 }
               );
 
+
+            const assistantText = String(result.response || "").slice(0, 40000);
+            if (assistantText.trim()) {
+              const savedAssistant = await tableRequest(
+                "feltus_ai_messages",
+                "POST",
+                {
+                  body: {
+                    conversation_id: conversationState.conversation.id,
+                    app_id: appId,
+                    owner_id: activeSession().user.id,
+                    role: "assistant",
+                    content: assistantText,
+                    model,
+                    metadata: {
+                      capability,
+                      request_id: aiTelemetryRequestId
+                    }
+                  }
+                }
+              );
+              if (savedAssistant.status < 200 || savedAssistant.status >= 300) {
+                return send(res, 503, {
+                  error: "AI response could not be saved to the project conversation."
+                });
+              }
+              await tableRequest(
+                "feltus_ai_conversations",
+                "PATCH",
+                {
+                  query:
+                    "?id=eq." + encodeURIComponent(conversationState.conversation.id) +
+                    "&app_id=eq." + encodeURIComponent(appId) +
+                    "&owner_id=eq." + encodeURIComponent(activeSession().user.id),
+                  body: { updated_at: new Date().toISOString() }
+                }
+              );
+            }
+
             await logEvent({
               eventType:
                 "ai.inference.completed",
@@ -6300,9 +7364,11 @@ res.write(
 
                 model,
 
+                conversation_id:
+                  conversationState.conversation.id,
+
                 response:
-                  result.response ||
-                  "",
+                  assistantText,
 
                 done:
                   result.done ===
@@ -7303,7 +8369,8 @@ res.write(
             error:
               error.status && error.status < 500
                 ? error.message
-                : "FELTUS service temporarily unavailable."
+                : "FELTUS service temporarily unavailable.",
+            request_id: requestTelemetryId
           }
         );
       }
@@ -7374,13 +8441,17 @@ async function start() {
   }
 }
 
-start().catch(
-  error => {
-    console.error(
-      "FELTUS startup configuration failed.",
-      error.message
-    );
+if (process.env.FELTUS_DISABLE_LISTEN !== "1") {
+  start().catch(
+    error => {
+      console.error(
+        "FELTUS startup configuration failed.",
+        error.message
+      );
 
-    process.exitCode = 1;
-  }
-);
+      process.exitCode = 1;
+    }
+  );
+}
+
+export { handleHttpRequest };

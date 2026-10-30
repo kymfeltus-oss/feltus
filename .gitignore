@@ -22,6 +22,8 @@ volumes/storage/
 *.pre-phase*.bak
 *.pre-persistent-host.bak
 node_modules/
+__pycache__/
+*.py[cod]
 .env.*
 !.env.example
 .supabase/
@@ -33,6 +35,7 @@ Thumbs.db
 *.bak.*
 *.backup.*
 *.backup-*
+index.before-*.html
 *-backup
 *.pre-*
 *.dump

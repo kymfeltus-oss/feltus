@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -1447,6 +1447,19 @@ footer {
   white-space: nowrap;
 }
 
+.document-evidence-link {
+  display: inline-flex;
+  margin-top: 5px;
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.document-evidence-link:hover {
+  text-decoration: underline;
+}
+
 .document-state {
   display: inline-flex;
   align-items: center;
@@ -1529,7 +1542,27 @@ footer {
     <label for="feltus-auth-password">Password</label>
     <input id="feltus-auth-password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
     <button id="feltus-auth-submit" type="submit">Sign in</button>
+    <button id="feltus-password-recovery-open" class="secondary" type="button">Forgot password?</button>
     <p id="feltus-auth-status" role="status" aria-live="polite"></p>
+  </form>
+
+  <form id="feltus-password-recovery-request" class="feltus-auth-card" hidden>
+    <h2>Reset your password</h2>
+    <p>If SMTP is configured, a recovery link will be sent to this instance's configured owner mailbox.</p>
+    <button id="feltus-recovery-submit" type="submit">Send recovery link</button>
+    <button id="feltus-recovery-back" class="secondary" type="button">Back to sign in</button>
+    <p id="feltus-recovery-status" role="status" aria-live="polite"></p>
+  </form>
+
+  <form id="feltus-password-recovery-complete" class="feltus-auth-card" hidden>
+    <h2>Choose a new password</h2>
+    <p>Use at least 12 characters. This recovery link can only be used once.</p>
+    <label for="feltus-recovery-password">New password</label>
+    <input id="feltus-recovery-password" name="new-password" type="password" autocomplete="new-password" required minlength="12" maxlength="1024">
+    <label for="feltus-recovery-password-confirm">Confirm new password</label>
+    <input id="feltus-recovery-password-confirm" name="new-password-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="1024">
+    <button id="feltus-recovery-complete-submit" type="submit">Update password</button>
+    <p id="feltus-recovery-complete-status" role="status" aria-live="polite"></p>
   </form>
 </div>
 
@@ -1555,6 +1588,65 @@ footer {
   const status = document.getElementById("feltus-auth-status");
   const signout = document.getElementById("feltus-signout");
   const submit = document.getElementById("feltus-auth-submit");
+  const recoveryOpen = document.getElementById("feltus-password-recovery-open");
+  const recoveryRequestForm = document.getElementById("feltus-password-recovery-request");
+  const recoverySubmit = document.getElementById("feltus-recovery-submit");
+  const recoveryStatus = document.getElementById("feltus-recovery-status");
+  const recoveryBack = document.getElementById("feltus-recovery-back");
+  const recoveryCompleteForm = document.getElementById("feltus-password-recovery-complete");
+  const recoveryCompleteStatus = document.getElementById("feltus-recovery-complete-status");
+  const recoveryCompleteSubmit = document.getElementById("feltus-recovery-complete-submit");
+  let recoveryAccessToken = null;
+  let recoveryFlowFromLink = false;
+
+  const showLogin = message => {
+    form.hidden = false;
+    recoveryRequestForm.hidden = true;
+    recoveryCompleteForm.hidden = true;
+    gate.hidden = false;
+    signout.hidden = true;
+    if (message) status.textContent = message;
+  };
+
+  const showRecoveryRequest = () => {
+    form.hidden = true;
+    recoveryRequestForm.hidden = false;
+    recoveryCompleteForm.hidden = true;
+    recoveryStatus.textContent = "";
+    gate.hidden = false;
+    signout.hidden = true;
+  };
+
+  const showRecoveryComplete = () => {
+    form.hidden = true;
+    recoveryRequestForm.hidden = true;
+    recoveryCompleteForm.hidden = false;
+    recoveryCompleteStatus.textContent = "Choose a new password for the owner account.";
+    gate.hidden = false;
+    signout.hidden = true;
+  };
+
+  const initializeRecoveryFlow = () => {
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    if (fragment.get("type") !== "recovery") return false;
+
+    recoveryFlowFromLink = true;
+    const accessToken = fragment.get("access_token") || "";
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}`
+    );
+
+    if (!accessToken || accessToken.length > 4096) {
+      showLogin("That recovery link is invalid or expired. Request a new link.");
+      return true;
+    }
+
+    recoveryAccessToken = accessToken;
+    showRecoveryComplete();
+    return true;
+  };
 
   const showGate = message => {
     gate.hidden = false;
@@ -1563,6 +1655,7 @@ footer {
   };
 
   const checkSession = async () => {
+    if (recoveryFlowFromLink) return;
     try {
       const response = await fetch("/api/auth/session", {
         headers: { Accept: "application/json" },
@@ -1581,6 +1674,84 @@ footer {
       showGate("FELTUS could not verify the session. Try again shortly.");
     }
   };
+
+  recoveryOpen.addEventListener("click", showRecoveryRequest);
+  recoveryBack.addEventListener("click", () => showLogin("Sign in to continue."));
+
+  recoveryRequestForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    recoveryStatus.textContent = "Requesting a recovery link…";
+    recoverySubmit.disabled = true;
+
+    try {
+      const response = await fetch("/auth/v1/recover", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        throw new Error("Recovery could not start. Wait a moment and try again.");
+      }
+
+      recoveryStatus.textContent =
+        "If email delivery is enabled, a recovery link will arrive at the configured owner mailbox shortly.";
+    } catch (error) {
+      recoveryStatus.textContent = error.message || "Recovery could not start. Try again shortly.";
+    } finally {
+      recoverySubmit.disabled = false;
+    }
+  });
+
+  recoveryCompleteForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    const password = document.getElementById("feltus-recovery-password").value;
+    const confirmation = document.getElementById("feltus-recovery-password-confirm").value;
+
+    if (!recoveryAccessToken) {
+      showLogin("That recovery link is invalid or expired. Request a new link.");
+      return;
+    }
+    if (password.length < 12 || password.length > 1024) {
+      recoveryCompleteStatus.textContent = "Use a password between 12 and 1024 characters.";
+      return;
+    }
+    if (password !== confirmation) {
+      recoveryCompleteStatus.textContent = "The passwords do not match.";
+      return;
+    }
+
+    recoveryCompleteStatus.textContent = "Updating the owner password…";
+    recoveryCompleteSubmit.disabled = true;
+
+    try {
+      const response = await fetch("/auth/v1/user", {
+        method: "PUT",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${recoveryAccessToken}`
+        },
+        body: JSON.stringify({ password })
+      });
+
+      if (!response.ok) {
+        throw new Error("The recovery link may have expired. Request a new link and try again.");
+      }
+
+      recoveryAccessToken = null;
+      document.getElementById("feltus-recovery-password").value = "";
+      document.getElementById("feltus-recovery-password-confirm").value = "";
+      showLogin("Password updated. Sign in with your new password.");
+    } catch (error) {
+      recoveryCompleteStatus.textContent = error.message || "Password update failed. Request a new link and try again.";
+    } finally {
+      recoveryCompleteSubmit.disabled = false;
+    }
+  });
 
   form.addEventListener("submit", async event => {
     event.preventDefault();
@@ -1628,7 +1799,7 @@ footer {
     showGate("Your session ended. Sign in again to continue.");
   });
 
-  checkSession();
+  if (!initializeRecoveryFlow()) checkSession();
 })();
 </script>
 
@@ -2622,8 +2793,8 @@ footer {
       </span>
 
       <span>
-        TXT, MD, CSV, and JSON are parsed immediately.
-        PDF, DOCX, and XLSX are securely stored while
+        TXT, MD, CSV, JSON, and PDF are parsed into private
+        project context. DOCX and XLSX are securely stored while
         dedicated parsers remain pending.
       </span>
 
@@ -2721,7 +2892,7 @@ footer {
     <div>
       <h3>Private AI Hub</h3>
       <p>
-        Local AI grounded in the selected FELTUS project's real infrastructure.
+        Private AI grounded in the selected FELTUS project's real infrastructure.
       </p>
     </div>
 
@@ -2769,7 +2940,7 @@ footer {
         <div>
           <strong>FELTUS AI Assistant</strong>
           <div class="project-meta">
-            Private project-aware local inference
+            Project-aware private inference
           </div>
         </div>
 
@@ -3196,6 +3367,10 @@ let projects = [];
 let selectedProject = null;
 let models = [];
 let aiRuntime = null;
+let activeAIRequest = null;
+let activeAIProjectId = null;
+let activeAIConversationId = null;
+let activeAIRequestGeneration = 0;
 let relationships = [];
 let relationshipSourceColumns = [];
 const relationshipColumnCache = new Map();
@@ -3212,6 +3387,38 @@ function setStatus(
   element.className =
     "status " +
     (error ? "error" : "success");
+}
+
+
+function cancelActiveAIRequest(preserveConversation = false) {
+  activeAIRequestGeneration += 1;
+
+  const request = activeAIRequest;
+  activeAIRequest = null;
+  activeAIProjectId = null;
+  if (!preserveConversation) {
+    activeAIConversationId = null;
+  }
+
+  if (request && !request.signal.aborted) {
+    request.abort();
+  }
+
+  const button = $("sendAIButton");
+  if (button) {
+    button.disabled = false;
+  }
+}
+
+
+function selectActiveProject(project) {
+  if (selectedProject?.id !== project?.id) {
+    clearAIConversation();
+    $("aiPromptInput").value = "";
+    setStatus($("aiChatStatus"), "");
+  }
+
+  selectedProject = project;
 }
 
 
@@ -3345,8 +3552,7 @@ function projectCard(project) {
   card.addEventListener(
     "click",
     async () => {
-      selectedProject =
-        project;
+      selectActiveProject(project);
 
       renderProjects();
 
@@ -4091,8 +4297,7 @@ $("projectForm")
 
 
         if (created) {
-          selectedProject =
-            created;
+          selectActiveProject(created);
 
           renderProjects();
 
@@ -4392,8 +4597,7 @@ async function initialize() {
   if (
     projects.length > 0
   ) {
-    selectedProject =
-      projects[0];
+    selectActiveProject(projects[0]);
 
     renderProjects();
 
@@ -4406,6 +4610,14 @@ async function initialize() {
 
 
 ﻿function clearAIConversation() {
+  cancelActiveAIRequest();
+
+  renderEmptyAIConversation();
+}
+
+
+function renderEmptyAIConversation() {
+
   const conversation =
     $("aiConversation");
 
@@ -4426,6 +4638,35 @@ async function initialize() {
   conversation.appendChild(
     empty
   );
+}
+
+
+async function clearAIChatHistory() {
+  const appId = selectedProject?.id;
+  const conversationId = activeAIConversationId;
+  cancelActiveAIRequest(true);
+  renderEmptyAIConversation();
+
+  if (!appId || !conversationId) {
+    return;
+  }
+
+  try {
+    await requestJson(
+      "/api/ai/messages?app_id=" +
+        encodeURIComponent(appId) +
+        "&conversation_id=" +
+        encodeURIComponent(conversationId),
+      { method: "DELETE" }
+    );
+    setStatus($("aiChatStatus"), "Project conversation cleared.");
+  } catch {
+    setStatus(
+      $("aiChatStatus"),
+      "Conversation history could not be cleared.",
+      true
+    );
+  }
 }
 
 
@@ -4462,7 +4703,7 @@ function appendAIMessage(
   label.textContent =
     role === "user"
       ? "You"
-      : "FELTUS AI · Local";
+      : "FELTUS AI";
 
 
   const content =
@@ -4486,10 +4727,77 @@ function appendAIMessage(
 }
 
 
+async function loadAIConversation(projectId) {
+  if (activeAIProjectId === projectId) {
+    return;
+  }
+
+  const projectGeneration = activeAIRequestGeneration;
+  try {
+    const result = await requestJson(
+      "/api/ai/conversation",
+      {
+        method: "POST",
+        body: JSON.stringify({ app_id: projectId })
+      }
+    );
+
+    if (
+      selectedProject?.id !== projectId ||
+      activeAIRequestGeneration !== projectGeneration
+    ) {
+      return;
+    }
+
+    const conversationId = result.conversation?.id;
+    if (!conversationId) {
+      throw new Error("Project conversation is unavailable.");
+    }
+
+    const messages = await requestJson(
+      "/api/ai/messages?app_id=" +
+        encodeURIComponent(projectId) +
+        "&conversation_id=" +
+        encodeURIComponent(conversationId)
+    );
+
+    if (
+      selectedProject?.id !== projectId ||
+      activeAIRequestGeneration !== projectGeneration ||
+      activeAIProjectId === projectId
+    ) {
+      return;
+    }
+
+    activeAIConversationId = conversationId;
+    renderEmptyAIConversation();
+    for (const message of Array.isArray(messages) ? messages : []) {
+      if (message.role === "user" || message.role === "assistant") {
+        appendAIMessage(message.role, String(message.content || ""));
+      }
+    }
+  } catch (error) {
+    if (
+      selectedProject?.id === projectId &&
+      activeAIRequestGeneration === projectGeneration
+    ) {
+      setStatus(
+        $("aiChatStatus"),
+        "Project conversation could not be loaded.",
+        true
+      );
+    }
+  }
+}
+
+
 async function loadAIHubStatus() {
   if (!selectedProject) {
     return;
   }
+
+
+  const projectId = selectedProject.id;
 
 
   $("aiHubPanel")
@@ -4528,6 +4836,11 @@ async function loadAIHubStatus() {
       await requestJson(
         "/api/ai/status"
       );
+
+
+    if (selectedProject?.id !== projectId) {
+      return;
+    }
 
 
     $("aiEngineStatus")
@@ -4632,7 +4945,13 @@ async function loadAIHubStatus() {
     }
 
 
+    await loadAIConversation(projectId);
+
+
 } catch (error) {
+    if (selectedProject?.id !== projectId) {
+      return;
+    }
     $("aiEngineStatus")
       .textContent =
       "Offline";
@@ -4642,6 +4961,7 @@ async function loadAIHubStatus() {
       error.message,
       true
     );
+    await loadAIConversation(projectId);
   }
 }
 
@@ -4667,6 +4987,29 @@ async function loadAIHubStatus() {
   if (!prompt) {
     return;
   }
+
+
+  if (activeAIRequest) {
+    return;
+  }
+
+
+  const requestProjectId =
+    selectedProject.id;
+  const requestGeneration =
+    ++activeAIRequestGeneration;
+  const controller =
+    new AbortController();
+
+  activeAIRequest = controller;
+  activeAIProjectId = requestProjectId;
+
+  const requestIsCurrent = () =>
+    activeAIRequest === controller &&
+    activeAIProjectId === requestProjectId &&
+    activeAIRequestGeneration === requestGeneration &&
+    selectedProject?.id === requestProjectId &&
+    !controller.signal.aborted;
 
 
   const selectedModel =
@@ -4718,6 +5061,25 @@ async function loadAIHubStatus() {
 
 
   try {
+    if (!activeAIConversationId) {
+      const conversationResult = await requestJson(
+        "/api/ai/conversation",
+        {
+          method: "POST",
+          body: JSON.stringify({ app_id: requestProjectId }),
+          signal: controller.signal
+        }
+      );
+      if (!requestIsCurrent()) {
+        return;
+      }
+      activeAIConversationId = conversationResult.conversation?.id || null;
+      if (!activeAIConversationId) {
+        throw new Error("Project conversation is unavailable.");
+      }
+    }
+
+
     const response =
       await fetch(
         "/api/ai/chat/stream",
@@ -4739,14 +5101,25 @@ async function loadAIHubStatus() {
 
 
               app_id:
-                selectedProject.id,
+                requestProjectId,
+
+              conversation_id:
+                activeAIConversationId,
 
               model,
 
               prompt
-            })
+            }),
+
+          signal:
+            controller.signal
         }
       );
+
+
+    if (!requestIsCurrent()) {
+      return;
+    }
 
 
     if (!response.ok) {
@@ -4803,7 +5176,7 @@ async function loadAIHubStatus() {
       "ai-message-label";
 
     label.textContent =
-      "FELTUS AI · Local";
+      "FELTUS AI";
 
 
     assistantContent =
@@ -4834,6 +5207,10 @@ async function loadAIHubStatus() {
 
     const processLine =
       line => {
+        if (!requestIsCurrent()) {
+          return;
+        }
+
         if (!line.trim()) {
           return;
         }
@@ -4846,6 +5223,10 @@ async function loadAIHubStatus() {
         if (
           event.type === "meta"
         ) {
+          if (event.conversation_id) {
+            activeAIConversationId = event.conversation_id;
+          }
+
           if (event.context) {
             const assets =
               String(
@@ -4906,7 +5287,7 @@ async function loadAIHubStatus() {
         ) {
           setStatus(
             $("aiChatStatus"),
-            "Local inference complete."
+            "AI response complete."
           );
 
           return;
@@ -4918,18 +5299,29 @@ async function loadAIHubStatus() {
         ) {
           throw new Error(
             event.error ||
-            "Local AI stream failed."
+            "AI stream failed."
           );
         }
       };
 
 
     while (true) {
+      if (!requestIsCurrent()) {
+        await reader.cancel().catch(() => {});
+        return;
+      }
+
       const {
         done,
         value
       } =
         await reader.read();
+
+
+      if (!requestIsCurrent()) {
+        await reader.cancel().catch(() => {});
+        return;
+      }
 
 
       if (done) {
@@ -4994,6 +5386,15 @@ async function loadAIHubStatus() {
     }
 
   } catch (error) {
+    if (!requestIsCurrent()) {
+      return;
+    }
+
+    if (error.name === "AbortError") {
+      return;
+    }
+
+
     if (assistantContent) {
       assistantContent.textContent +=
         "\n\nAI request failed: " +
@@ -5015,8 +5416,11 @@ async function loadAIHubStatus() {
     );
 
   } finally {
-    button.disabled =
-      false;
+    if (activeAIRequest === controller) {
+      activeAIRequest = null;
+      activeAIProjectId = null;
+      button.disabled = false;
+    }
   }
 }
 
@@ -5046,7 +5450,7 @@ $("aiPromptInput")
 $("clearAIChatButton")
   .addEventListener(
     "click",
-    clearAIConversation
+    clearAIChatHistory
   );
 
 
@@ -6371,7 +6775,7 @@ function renderSystemHealth(
       "Database",
 
     ai:
-      "Local AI"
+      "AI endpoint"
   };
 
 
@@ -8004,8 +8408,8 @@ function renderDeploymentControl(
           ) +
           (
             reasons.length
-              ? " ? " +
-                reasons.join(" ? ")
+              ? " — " +
+                reasons.join(" — ")
               : ""
           );
   }
@@ -8469,6 +8873,39 @@ function renderDocuments() {
     );
 
 
+    if (
+      item.metadata
+        ?.extraction_artifact
+        ?.storage_key
+    ) {
+      const evidenceLink =
+        document.createElement(
+          "a"
+        );
+
+      evidenceLink.className =
+        "document-evidence-link";
+
+      evidenceLink.href =
+        "/api/documents/extraction" +
+        "?document_id=" +
+        encodeURIComponent(
+          item.id
+        );
+
+      evidenceLink.textContent =
+        item.metadata
+          ?.extraction
+          ?.requires_review
+          ? "Download evidence for review"
+          : "Download extraction evidence";
+
+      nameCell.appendChild(
+        evidenceLink
+      );
+    }
+
+
     const typeCell =
       document.createElement(
         "td"
@@ -8641,7 +9078,7 @@ function selectDocumentFile(file) {
     .textContent =
     pendingDocumentFile
       ? pendingDocumentFile.name +
-        " ? " +
+        " — " +
         documentBytes(
           pendingDocumentFile.size
         )

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,19 @@ const backupScript = fs.readFileSync(path.join(root, "scripts/backup.sh"), "utf8
 const storageBackupScript = fs.readFileSync(path.join(root, "scripts/backup-storage.sh"), "utf8");
 const storageRestoreScript = fs.readFileSync(path.join(root, "scripts/restore-storage.sh"), "utf8");
 const deployment = fs.readFileSync(path.join(root, "DEPLOYMENT.md"), "utf8");
+const apiInventory = fs.readFileSync(path.join(root, "docs/api/current-api.md"), "utf8");
+const extractorDockerfile = fs.readFileSync(
+  path.join(root, "services/evidence-extractor/Dockerfile"),
+  "utf8"
+);
+const extractorMain = fs.readFileSync(
+  path.join(root, "services/evidence-extractor/app/main.py"),
+  "utf8"
+);
+const aiConversationMigration = fs.readFileSync(
+  path.join(root, "supabase/migrations/20261030100000_project_scoped_ai_conversations.sql"),
+  "utf8"
+);
 
 check("AI capability controls and auto model", () => {
   assert.equal((html.match(/id="aiCapabilitySelect"/g) || []).length, 1);
@@ -46,7 +59,10 @@ check("AI capability controls and auto model", () => {
   }
   assert.match(html, /autoModelOption\.value\s*=\s*"__auto__"/);
   assert.match(html, /selectedModel\s*===\s*"__auto__"\s*\?\s*""\s*:\s*selectedModel/);
-  assert.match(html, /capability\s*,[\s\S]{0,140}model\s*,/);
+  assert.ok(
+    /capability,\s*app_id:\s*requestProjectId,[\s\S]{0,180}model,/.test(html),
+    "stream request does not carry the selected capability and model"
+  );
 });
 
 check("canonical cross-platform package entrypoints", () => {
@@ -90,6 +106,20 @@ check("production auth, cookie and origin protections", () => {
   assert.doesNotMatch(html, /localStorage\.(?:setItem|getItem)\([^\n]*(?:token|session)/i);
 });
 
+check("owner-only password recovery and redirect protections", () => {
+  assert.match(server, /url\.pathname === "\/auth\/v1\/recover"/);
+  assert.match(server, /"password-recovery",\s*5,\s*60 \* 60 \* 1000/);
+  assert.match(server, /email: IS_PRODUCTION\s*\?\s*OWNER_EMAIL/);
+  assert.match(server, /redirect_to: PUBLIC_URL/);
+  assert.match(server, /safeRedirect\.origin/);
+  assert.match(server, /redirect:\s*method === "GET" && url\.pathname === "\/auth\/v1\/verify"\s*\?\s*"manual"/);
+  assert.match(html, /id="feltus-password-recovery-request"/);
+  assert.match(html, /id="feltus-password-recovery-complete"/);
+  assert.match(html, /fetch\("\/auth\/v1\/user"/);
+  assert.match(html, /new URLSearchParams\(window\.location\.hash/);
+  assert.match(html, /window\.history\.replaceState/);
+});
+
 check("persistent storage and private service exposure", () => {
   assert.match(compose, /feltus_postgres:\s*$/m);
   assert.match(compose, /feltus_documents:\s*$/m);
@@ -100,13 +130,84 @@ check("persistent storage and private service exposure", () => {
   assert.match(compose, /cap_drop:[\s\S]{0,35}- ALL/);
 });
 
+check("private PDF evidence extraction integration", () => {
+  assert.match(compose, /^  evidence-extractor:/m);
+  assert.match(compose, /FELTUS_EVIDENCE_EXTRACTION_URL: http:\/\/evidence-extractor:8090/);
+  assert.match(compose, /feltus_documents:\/data\/feltus-storage:ro/);
+  assert.match(server, /async function parsePdfDocument/);
+  assert.match(server, /feltus-evidence-extraction-1\.0|extraction_artifact/);
+  assert.match(server, /\/api\/documents\/extraction/);
+  assert.match(server, /evidence_extraction:/);
+  assert.match(extractorDockerfile, /tesseract-ocr/);
+  assert.match(extractorDockerfile, /^USER feltus$/m);
+  assert.match(extractorMain, /source_sha256/);
+  assert.match(extractorMain, /resolve_document_path/);
+  assert.match(extractorMain, /"NEEDS_REVIEW"/);
+  assert.match(extractorMain, /secrets\.compare_digest/);
+  assert.match(extractorMain, /Depends\(require_extraction_token\)/);
+  assert.match(server, /FELTUS_EVIDENCE_EXTRACTION_TOKEN must contain at least 32 characters/);
+  assert.match(server, /Authorization:\s*`Bearer \$\{EVIDENCE_EXTRACTION_TOKEN\}`/);
+});
+
+check("project switch aborts and isolates in-flight AI streams", () => {
+  assert.match(html, /let activeAIRequest = null/);
+  assert.match(html, /let activeAIProjectId = null/);
+  assert.match(html, /let activeAIConversationId = null/);
+  assert.match(html, /let activeAIRequestGeneration = 0/);
+  assert.match(html, /function cancelActiveAIRequest\(/);
+  assert.match(html, /function selectActiveProject\(project\)/);
+  assert.match(html, /activeAIRequestGeneration === requestGeneration/);
+  assert.match(html, /selectedProject\?\.id === requestProjectId/);
+  assert.match(html, /signal:\s*controller\.signal/);
+  assert.match(html, /if \(!requestIsCurrent\(\)\)/);
+});
+
+check("project-scoped AI conversation storage and authorization", () => {
+  assert.match(aiConversationMigration, /UNIQUE \(app_id, owner_id\)/);
+  assert.match(aiConversationMigration, /ALTER TABLE public\.feltus_ai_conversations ENABLE ROW LEVEL SECURITY/);
+  assert.match(aiConversationMigration, /ALTER TABLE public\.feltus_ai_messages ENABLE ROW LEVEL SECURITY/);
+  assert.match(aiConversationMigration, /owner_id = auth\.uid\(\)/);
+  assert.match(aiConversationMigration, /conversation\.app_id = feltus_ai_messages\.app_id/);
+  assert.match(server, /url\.pathname === "\/api\/ai\/conversation"/);
+  assert.match(server, /url\.pathname === "\/api\/ai\/messages"/);
+  assert.match(server, /"&app_id=eq\." \+ encodeURIComponent\(appId\)/);
+  assert.match(server, /conversation_id: conversationState\.conversation\.id/);
+  assert.match(html, /"\/api\/ai\/conversation"/);
+  assert.match(html, /"\/api\/ai\/messages\?app_id="/);
+  assert.match(html, /conversation_id:\s*activeAIConversationId/);
+});
+
+check("request trace IDs and expensive-operation rate limits", () => {
+  assert.match(server, /res\.setHeader\("X-Request-ID", requestTelemetryId\)/);
+  assert.match(server, /p_request_id:[\s\S]{0,100}requestContext\.getStore\(\)\?\.requestId/);
+  assert.match(server, /function consumeOperationRateLimit\(/);
+  assert.match(server, /"ai-inference",\s*20,\s*60_000/);
+  assert.match(server, /"document-upload",\s*20,\s*60 \* 60 \* 1000/);
+  assert.match(server, /"document-processing",\s*30,\s*60 \* 60 \* 1000/);
+  assert.match(server, /Retry-After/);
+});
+
+check("current API route inventory covers server handlers", () => {
+  const apiRoutes = [...server.matchAll(/url\.pathname\s*===\s*["'](\/api\/[A-Za-z0-9/_-]+)["']/g)]
+    .map(match => match[1]);
+  assert.ok(apiRoutes.length > 0, "no API route handlers were found");
+  for (const route of new Set(apiRoutes)) {
+    assert.ok(apiInventory.includes(route), `API documentation is missing ${route}`);
+  }
+  assert.ok(
+    /secure.*__Host-feltus_session.*cookie/i.test(apiInventory),
+    "API documentation must describe the secure session cookie"
+  );
+  assert.ok(apiInventory.includes("AI data boundary"), "API documentation must describe the AI data boundary");
+});
+
 check("production Docker runtime and build-context exclusions", () => {
   assert.match(dockerfile, /^FROM node:22-alpine/m);
   assert.match(dockerfile, /npm ci --omit=dev/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^HEALTHCHECK /m);
   assert.match(dockerfile, /CMD \["node", "src\/server\.js"\]/);
-  for (const pattern of ["node_modules", ".env", ".env.*", ".feltus-dev-auth.json", ".feltus-storage", ".feltus-runtime", "**/*.bak", "**/*.backup*", "**/*-backup", "**/*.pre-*"]) {
+  for (const pattern of ["node_modules", "__pycache__", "*.py[cod]", ".env", ".env.*", ".feltus-dev-auth.json", ".feltus-storage", ".feltus-runtime", "**/*.bak", "**/*.backup*", "index.before-*.html", "**/*-backup", "**/*.pre-*"]) {
     assert.ok(dockerignore.split(/\r?\n/).includes(pattern), `Docker build context does not exclude ${pattern}`);
   }
 });
@@ -133,7 +234,7 @@ check("tracked and pending files contain no committed secret material", () => {
   const names = listed.stdout.toString("utf8").split("\0").filter(Boolean);
   const secretName = names.find(name => /(^|\/)(\.env(\..*)?|\.feltus-dev-auth\.json)$/i.test(name) && !name.endsWith(".env.example"));
   assert.equal(secretName, undefined, `secret-bearing file is tracked: ${secretName}`);
-  const backupName = names.find(name => /(?:\.bak(?:$|\.)|\.backup(?:$|[-.])|-backup$|\.pre-[^/]*)/i.test(name));
+  const backupName = names.find(name => /(?:\.bak(?:$|\.)|\.backup(?:$|[-.])|-backup$|\.pre-[^/]*|(?:^|\/)index\.before-[^/]*\.html$)/i.test(name));
   assert.equal(backupName, undefined, `local backup snapshot is tracked: ${backupName}`);
 
   const secretPatterns = [
@@ -164,110 +265,19 @@ check("Docker Compose production configuration", () => {
   assert.equal(result.status, 0, result.stderr || result.error?.message || "docker compose config failed");
 });
 
-const localPort = 18000 + Math.floor(Math.random() * 10000);
-const runtimeRoot = path.join(root, ".feltus-runtime");
-fs.mkdirSync(runtimeRoot, { recursive: true });
-const storageRoot = fs.mkdtempSync(path.join(runtimeRoot, "production-smoke-"));
-const dummyKey = "local-smoke-anon-key";
-const child = spawn(process.execPath, ["src/server.js"], {
-  cwd: root,
-  stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
-  env: {
-    ...process.env,
-    FELTUS_ENV: "production",
-    NODE_ENV: "production",
-    FELTUS_LOCAL_DEV_MODE: "0",
-    FELTUS_HOST: "127.0.0.1",
-    FELTUS_PORT: String(localPort),
-    FELTUS_PUBLIC_URL: "https://feltuslabs.com",
-    FELTUS_ALLOWED_ORIGINS: "https://feltuslabs.com,https://www.feltuslabs.com",
-    FELTUS_GATEWAY_URL: "http://127.0.0.1:1",
-    FELTUS_PUBLISHABLE_KEY: dummyKey,
-    FELTUS_OWNER_EMAIL: "smoke-owner@example.com",
-    FELTUS_STORAGE_ROOT: storageRoot
-  }
-});
-let childError = "";
-let childOutput = "";
-child.stdout.setEncoding("utf8");
-child.stdout.on("data", chunk => {
-  childOutput = `${childOutput}${chunk}`.slice(-1200);
-});
-child.stderr.setEncoding("utf8");
-child.stderr.on("data", chunk => {
-  childError = `${childError}${chunk}`.slice(-1200);
-});
-
-const baseUrl = `http://127.0.0.1:${localPort}`;
-
-try {
-  await liveCheck("production-mode server liveness and session gate", async () => {
-    let healthResponse;
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (child.exitCode !== null) {
-        throw new Error(`production smoke server exited before listening${childError ? `: ${childError.trim()}` : ""}`);
-      }
-      try {
-        healthResponse = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(1000) });
-        break;
-      } catch {
-        await new Promise(resolve => setTimeout(resolve, 150));
-      }
-    }
-    assert.ok(
-      healthResponse,
-      /Listening on /.test(childOutput)
-        ? "restricted runtime could not connect to the loopback smoke server"
-        : `production smoke server did not start${childError ? `: ${childError.trim()}` : ""}`
-    );
-    assert.equal(healthResponse.status, 200);
-    assert.equal(healthResponse.headers.get("cache-control"), "no-store");
-    assert.equal(healthResponse.headers.get("x-content-type-options"), "nosniff");
-    assert.equal((await healthResponse.json()).auth_required, true);
-
-    const readinessResponse = await fetch(`${baseUrl}/api/ready`);
-    assert.equal(readinessResponse.status, 503);
-
-    const aiStatusResponse = await fetch(`${baseUrl}/api/ai/status`);
-    assert.equal(aiStatusResponse.status, 401, "AI model inventory is not protected by the production session gate");
-
-    const sessionResponse = await fetch(`${baseUrl}/api/auth/session`);
-    assert.equal(sessionResponse.status, 200);
-    assert.equal((await sessionResponse.json()).authenticated, false);
-
-    const protectedResponse = await fetch(`${baseUrl}/api/apps`);
-    assert.equal(protectedResponse.status, 401);
-
-    const rejectedOriginResponse = await fetch(`${baseUrl}/api/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Origin: "https://attacker.invalid"
-      },
-      body: "{}"
-    });
-    assert.equal(rejectedOriginResponse.status, 403);
-
-    const pageResponse = await fetch(baseUrl);
-    assert.equal(pageResponse.status, 200);
-    assert.match(await pageResponse.text(), /feltus-auth-gate/);
+const smoke = spawnSync(
+  process.execPath,
+  ["scripts/production-smoke.mjs"],
+  { cwd: root, encoding: "utf8", timeout: 30000 }
+);
+if (smoke.status === 0) {
+  results.push({ name: "production handler liveness, session gate, and recovery throttling", status: "PASS" });
+} else {
+  results.push({
+    name: "production handler liveness, session gate, and recovery throttling",
+    status: "FAIL",
+    message: smoke.stderr?.trim() || smoke.error?.message || "production handler smoke failed"
   });
-} finally {
-  child.kill("SIGTERM");
-  await new Promise(resolve => {
-    if (child.exitCode !== null) return resolve();
-    const timeout = setTimeout(resolve, 3000);
-    child.once("exit", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-  });
-  const resolvedStorage = path.resolve(storageRoot);
-  const safeRuntimeRoot = path.resolve(root, ".feltus-runtime");
-  if (resolvedStorage.startsWith(`${safeRuntimeRoot}${path.sep}`)) {
-    fs.rmSync(resolvedStorage, { recursive: true, force: true });
-  }
 }
 
 const localRegressionBase = process.env.FELTUS_LOCAL_REGRESSION_URL?.replace(/\/$/, "");
@@ -413,5 +423,5 @@ for (const result of results) {
 
 const failed = results.some(result => result.status === "FAIL");
 const blocked = results.some(result => result.status === "BLOCKED");
-process.stdout.write(`FELTUS PRODUCTION READINESS: ${failed || blocked ? "FAIL" : "PASS"}\n`);
+process.stdout.write(`FELTUS PRODUCTION READINESS: ${failed ? "FAIL" : blocked ? "BLOCKED" : "PASS"}\n`);
 process.exitCode = failed ? 1 : blocked ? 2 : 0;

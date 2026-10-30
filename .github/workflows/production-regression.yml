@@ -1,0 +1,51 @@
+name: Production regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install PDF extractor test dependencies
+        run: python -m pip install -r services/evidence-extractor/requirements.txt
+
+      - name: Check JavaScript syntax
+        run: npm run check
+
+      - name: Run production regression
+        run: npm run regression
+
+      - name: Test PDF extraction service
+        working-directory: services/evidence-extractor
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate production Compose configuration
+        run: docker compose --env-file .env.example --file compose.production.yaml config --quiet
+
+      - name: Build production app and extractor images
+        run: docker compose --env-file .env.example --file compose.production.yaml build app evidence-extractor
