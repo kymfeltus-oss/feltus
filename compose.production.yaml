@@ -345,7 +345,7 @@ services:
       - feltus_documents:/data/documents:ro
       - feltus_object_storage:/data/object-storage:ro
       - type: bind
-        source: ${FELTUS_BACKUP_DIR:?set FELTUS_BACKUP_DIR}
+        source: ${FELTUS_BACKUP_DIR}
         target: /backups
         bind:
           create_host_path: false
@@ -364,7 +364,7 @@ services:
       - feltus_documents:/data/documents
       - feltus_object_storage:/data/object-storage
       - type: bind
-        source: ${FELTUS_BACKUP_DIR:?set FELTUS_BACKUP_DIR}
+        source: ${FELTUS_BACKUP_DIR}
         target: /backups
         read_only: true
         bind:
