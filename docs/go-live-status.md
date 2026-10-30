@@ -6,7 +6,8 @@ Status for the repository checkout as of 2026-10-30. “Verified locally” mean
 | --- | --- | --- |
 | Production Compose configuration | Verified locally | `docker compose --env-file .env.example --file compose.production.yaml config --quiet` passed. |
 | App and extractor regression checks | Verified locally | `npm run check`, `npm run regression`, and extractor unit tests passed. |
-| GitHub automated checks | Added in this revision | Workflow runs syntax/regression, Python tests, Compose validation, and builds the app/extractor images on GitHub. Confirm the first GitHub Actions run succeeds. |
+| GitHub automated checks | Workflow added; first run unverified | The review branch is configured to run checks on every branch push. Confirm syntax/regression, Python tests, Compose validation, and app/extractor image builds pass in GitHub Actions. |
+| Live project/data isolation | Not verified against a running backend | Source and RLS wiring checks pass locally; run two-owner/project API and document/conversation isolation tests against an isolated self-hosted stack. |
 | Coolify application and runtime secrets | Not verified | Configure the Compose resource and secrets in Coolify. Never copy real values into Git. |
 | DNS and TLS for `feltuslabs.com` / `www` | Not verified | Point DNS at the Coolify host, issue certificates, enforce HTTPS, then check both domains. |
 | Production owner bootstrap and login | Not verified | Run the one-time owner bootstrap and validate the session on the deployed site. |
