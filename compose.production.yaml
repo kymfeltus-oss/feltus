@@ -318,6 +318,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      auth:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
 
