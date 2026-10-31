@@ -1,4 +1,4 @@
-name: feltus
+﻿name: feltus
 
 services:
   app:
@@ -101,6 +101,7 @@ services:
       JWT_EXP: 3600
     volumes:
       - feltus_postgres:/var/lib/postgresql/data
+      - ./supabase/production/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:ro
       - ./supabase/production/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
       - ./supabase/production/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:ro
     expose:
