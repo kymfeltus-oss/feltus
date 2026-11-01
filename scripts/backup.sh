@@ -50,7 +50,7 @@ compose() {
 cp "$env_file" "$target_dir/deployment.env"
 chmod 600 "$target_dir/deployment.env"
 compose exec -T db pg_dump -U postgres -d postgres -Fc > "$temporary"
-compose exec -T db pg_restore --list - < "$temporary" >/dev/null
+compose exec -T db pg_restore --list < "$temporary" >/dev/null
 mv "$temporary" "$target"
 chmod 600 "$target"
 printf 'Verified database archive in backup %s\n' "$timestamp"
