@@ -169,10 +169,158 @@ await test("QA model persisted with RLS",async()=>{
   ok(model.rls_enabled===true,"RLS is not enabled");
 });
 
-await test("Relationship service",async()=>{
-  const r=await req(`/api/relationships?app_id=${encodeURIComponent(project.id)}`);
-  ok(r.status===200,`HTTP ${r.status}`);
-  return `${list(r.data).length} relationship(s)`;
+await test("Relationship create, verify, delete",async()=>{
+  ok(project?.id,"project unavailable");
+
+  let modelsResponse=await req(
+    `/api/models?app_id=${encodeURIComponent(project.id)}`
+  );
+  ok(modelsResponse.status===200,`models HTTP ${modelsResponse.status}`);
+
+  let models=list(modelsResponse.data);
+
+  const targetModel=models.find(x=>
+    String(x.logical_name||x.table_name||x.name||"").toLowerCase()===MODEL.toLowerCase()
+  );
+
+  ok(targetModel,`target model "${MODEL}" not found`);
+  ok(targetModel.id,"target model ID missing");
+
+  let probeModel=models.find(x=>
+    String(x.logical_name||x.table_name||x.name||"").toLowerCase()==="qa_relationship_probe"
+  );
+
+  if(!probeModel){
+    const createProbe=await req("/api/models",{
+      method:"POST",
+      origin:BASE,
+      body:{
+        app_id:project.id,
+        table_name:"qa_relationship_probe",
+        columns:[
+          {
+            name:"qa_item_id",
+            type:"uuid",
+            nullable:true
+          }
+        ],
+        enable_rls:true
+      }
+    });
+
+    ok(
+      createProbe.status>=200&&createProbe.status<300,
+      `probe model creation HTTP ${createProbe.status}: ${createProbe.text}`
+    );
+
+    modelsResponse=await req(
+      `/api/models?app_id=${encodeURIComponent(project.id)}`
+    );
+    ok(modelsResponse.status===200,`models refresh HTTP ${modelsResponse.status}`);
+
+    models=list(modelsResponse.data);
+
+    probeModel=models.find(x=>
+      String(x.logical_name||x.table_name||x.name||"").toLowerCase()==="qa_relationship_probe"
+    );
+  }
+
+  ok(probeModel,"qa_relationship_probe not found after creation");
+  ok(probeModel.id,"probe model ID missing");
+  ok(probeModel.rls_enabled===true,"probe model RLS is not enabled");
+
+  let relationshipsResponse=await req(
+    `/api/relationships?app_id=${encodeURIComponent(project.id)}`
+  );
+  ok(
+    relationshipsResponse.status===200,
+    `relationships HTTP ${relationshipsResponse.status}`
+  );
+
+  let relationships=list(relationshipsResponse.data);
+
+  const matchesAuditRelationship=x=>
+    x.source_model_id===probeModel.id &&
+    x.source_column==="qa_item_id" &&
+    x.target_model_id===targetModel.id &&
+    x.target_column==="id";
+
+  const stale=relationships.find(matchesAuditRelationship);
+
+  if(stale?.id){
+    const cleanup=await req("/api/relationships/delete",{
+      method:"POST",
+      origin:BASE,
+      body:{
+        relationship_id:stale.id
+      }
+    });
+
+    ok(
+      cleanup.status>=200&&cleanup.status<300,
+      `stale relationship cleanup HTTP ${cleanup.status}`
+    );
+  }
+
+  const createRelationship=await req("/api/relationships",{
+    method:"POST",
+    origin:BASE,
+    body:{
+      app_id:project.id,
+      source_model_id:probeModel.id,
+      source_column:"qa_item_id",
+      target_model_id:targetModel.id,
+      target_column:"id",
+      on_delete:"RESTRICT"
+    }
+  });
+
+  ok(
+    createRelationship.status>=200&&createRelationship.status<300,
+    `relationship creation HTTP ${createRelationship.status}: ${createRelationship.text}`
+  );
+
+  relationshipsResponse=await req(
+    `/api/relationships?app_id=${encodeURIComponent(project.id)}`
+  );
+  ok(
+    relationshipsResponse.status===200,
+    `relationship verification HTTP ${relationshipsResponse.status}`
+  );
+
+  relationships=list(relationshipsResponse.data);
+
+  const createdRelationship=relationships.find(matchesAuditRelationship);
+
+  ok(createdRelationship,"created relationship was not returned by API");
+  ok(createdRelationship.id,"created relationship ID missing");
+
+  const removeRelationship=await req("/api/relationships/delete",{
+    method:"POST",
+    origin:BASE,
+    body:{
+      relationship_id:createdRelationship.id
+    }
+  });
+
+  ok(
+    removeRelationship.status>=200&&removeRelationship.status<300,
+    `relationship deletion HTTP ${removeRelationship.status}: ${removeRelationship.text}`
+  );
+
+  const finalResponse=await req(
+    `/api/relationships?app_id=${encodeURIComponent(project.id)}`
+  );
+  ok(
+    finalResponse.status===200,
+    `final relationship verification HTTP ${finalResponse.status}`
+  );
+
+  const stillExists=list(finalResponse.data).find(matchesAuditRelationship);
+
+  ok(!stillExists,"audit relationship still exists after deletion");
+
+  return "create -> verify -> delete";
 });
 
 await test("Invalid model ID rejected",async()=>{
@@ -228,4 +376,5 @@ console.log("");
 console.log(fail===0 ? "FINAL: PASS WITH KNOWN DEPENDENCY" : "FINAL: FAIL");
 
 process.exit(fail===0?0:1);
+
 
