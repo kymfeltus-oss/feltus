@@ -333,10 +333,140 @@ await test("Invalid relationship ID rejected",async()=>{
   ok(r.status===400,`expected 400, got ${r.status}`);
 });
 
-await test("Documents service",async()=>{
-  const r=await req(`/api/documents?app_id=${encodeURIComponent(project.id)}`);
-  ok(r.status===200,`HTTP ${r.status}`);
-  return `${list(r.data).length} document(s)`;
+await test("Document upload, process, readback",async()=>{
+  ok(project?.id,"project unavailable");
+
+  const qaDocumentName="feltus-staging-acceptance.txt";
+
+  const qaDocumentContent=[
+    "FELTUS staging acceptance document.",
+    `Project: ${PROJECT}`,
+    "This file verifies private document storage, parsing, chunking, and retrieval."
+  ].join("\n");
+
+  let documentsResponse=await req(
+    `/api/documents?app_id=${encodeURIComponent(project.id)}`
+  );
+
+  ok(
+    documentsResponse.status===200,
+    `documents HTTP ${documentsResponse.status}`
+  );
+
+  let documents=list(documentsResponse.data);
+
+  let document=documents.find(x=>
+    String(x.original_name||"").toLowerCase()===qaDocumentName.toLowerCase()
+  );
+
+  if(!document){
+    const uploadResponse=await fetch(
+      `${BASE}/api/documents/upload?app_id=${encodeURIComponent(project.id)}&name=${encodeURIComponent(qaDocumentName)}`,
+      {
+        method:"POST",
+        headers:{
+          cookie,
+          origin:BASE,
+          "content-type":"text/plain; charset=utf-8"
+        },
+        body:qaDocumentContent,
+        redirect:"manual"
+      }
+    );
+
+    const uploadText=await uploadResponse.text();
+
+    let uploadData=null;
+
+    try{
+      uploadData=uploadText
+        ? JSON.parse(uploadText)
+        : null;
+    }catch{
+      uploadData=uploadText;
+    }
+
+    ok(
+      uploadResponse.status===201,
+      `document upload HTTP ${uploadResponse.status}: ${uploadText}`
+    );
+
+    document=uploadData;
+  }
+
+  ok(document?.id,"QA document ID missing");
+
+  const processResponse=await req("/api/documents/process",{
+    method:"POST",
+    origin:BASE,
+    body:{
+      document_id:document.id
+    }
+  });
+
+  ok(
+    processResponse.status===200,
+    `document processing HTTP ${processResponse.status}: ${processResponse.text}`
+  );
+
+  ok(
+    processResponse.data?.processing_status==="ready",
+    `expected ready, got ${processResponse.data?.processing_status}`
+  );
+
+  ok(
+    Number(processResponse.data?.chunk_count)>0,
+    "document processing returned no chunks"
+  );
+
+  documentsResponse=await req(
+    `/api/documents?app_id=${encodeURIComponent(project.id)}`
+  );
+
+  ok(
+    documentsResponse.status===200,
+    `document readback HTTP ${documentsResponse.status}`
+  );
+
+  documents=list(documentsResponse.data);
+
+  const storedDocument=documents.find(x=>
+    x.id===document.id
+  );
+
+  ok(storedDocument,"processed document was not returned by /api/documents");
+
+  ok(
+    storedDocument.processing_status==="ready",
+    `stored document status is ${storedDocument.processing_status}`
+  );
+
+  const chunksResponse=await req(
+    `/api/document-chunks?document_id=${encodeURIComponent(document.id)}`
+  );
+
+  ok(
+    chunksResponse.status===200,
+    `document chunks HTTP ${chunksResponse.status}`
+  );
+
+  const chunks=list(chunksResponse.data);
+
+  ok(
+    chunks.length>0,
+    "no stored document chunks returned"
+  );
+
+  const combinedContent=chunks
+    .map(x=>String(x.content||""))
+    .join("\n");
+
+  ok(
+    combinedContent.includes("FELTUS staging acceptance document"),
+    "stored chunk content does not match QA document"
+  );
+
+  return `ready - ${chunks.length} chunk(s)`;
 });
 
 await test("Deployment state",async()=>{
@@ -376,5 +506,6 @@ console.log("");
 console.log(fail===0 ? "FINAL: PASS WITH KNOWN DEPENDENCY" : "FINAL: FAIL");
 
 process.exit(fail===0?0:1);
+
 
 
