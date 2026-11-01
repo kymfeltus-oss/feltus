@@ -335,7 +335,6 @@ services:
       FELTUS_GATEWAY_URL: http://gateway:8000
       FELTUS_ADMIN_API_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
       FELTUS_OWNER_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
-      FELTUS_OWNER_PASSWORD: ${FELTUS_OWNER_PASSWORD:-}
     depends_on:
       gateway:
         condition: service_healthy
