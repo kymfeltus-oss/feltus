@@ -259,6 +259,18 @@ check("production auth, cookie and origin protections", () => {
   assert.doesNotMatch(html, /localStorage\.(?:setItem|getItem)\([^\n]*(?:token|session)/i);
 });
 
+check("only FELTUS CODE UI allows same-origin framing", () => {
+  const override = server.match(/if \(String\(req\.method \|\| "GET"\)\.toUpperCase\(\) === "GET" && url\.pathname === "\/api\/code\/ui"\) \{[\s\S]*?\n        \}/)?.[0] || "";
+  assert.match(server, /res\.setHeader\("X-Frame-Options", "DENY"\)/);
+  assert.match(server, /frame-ancestors 'none'/);
+  assert.match(override, /X-Frame-Options", "SAMEORIGIN"/);
+  assert.match(override, /frame-ancestors 'self'/);
+  assert.match(override, /url\.pathname === "\/api\/code\/ui"/);
+  const smoke = fs.readFileSync(path.join(root, "scripts/production-smoke.mjs"), "utf8");
+  assert.match(smoke, /health\.headers\["x-frame-options"\], "DENY"/);
+  assert.match(smoke, /protectedCodeUI\.headers\["x-frame-options"\], "SAMEORIGIN"/);
+});
+
 check("owner-only password recovery and redirect protections", () => {
   assert.match(server, /url\.pathname === "\/auth\/v1\/recover"/);
   assert.match(server, /"password-recovery",\s*5,\s*60 \* 60 \* 1000/);

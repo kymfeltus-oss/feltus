@@ -3856,6 +3856,14 @@ async function handleHttpRequest(req, res) {
             `http://${HOST}:${PORT}`
           );
 
+        if (String(req.method || "GET").toUpperCase() === "GET" && url.pathname === "/api/code/ui") {
+          res.setHeader("X-Frame-Options", "SAMEORIGIN");
+          res.setHeader(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+          );
+        }
+
         if (IS_PRODUCTION) {
           const canonical = new URL(PUBLIC_URL);
           const requestHost = String(
