@@ -584,6 +584,10 @@ check("current API route inventory covers server handlers", () => {
 
 check("production Docker runtime and build-context exclusions", () => {
   assert.match(dockerfile, /^FROM node:22-alpine/m);
+  assert.match(dockerfile, /^RUN apk add --no-cache git$/m);
+  assert.match(dockerfile, /^RUN git --version$/m);
+  assert.match(compose, /^  app:[\s\S]{0,150}dockerfile: Dockerfile/m);
+  assert.match(compose, /^  worker:[\s\S]{0,150}dockerfile: Dockerfile/m);
   assert.match(dockerfile, /npm ci --omit=dev/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^HEALTHCHECK /m);

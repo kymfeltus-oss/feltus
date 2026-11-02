@@ -1,5 +1,8 @@
 FROM node:22-alpine
 
+RUN apk add --no-cache git
+RUN git --version
+
 ENV NODE_ENV=production \
     FELTUS_ENV=production \
     FELTUS_HOST=0.0.0.0 \
