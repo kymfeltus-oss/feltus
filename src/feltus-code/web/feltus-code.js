@@ -191,7 +191,7 @@ async function streamPlanAI({ mode, prompt, paths, controller }) {
     cache: "no-store",
     headers: { Accept: "application/x-ndjson", "Content-Type": "application/json" },
     signal: controller.signal,
-    body: JSON.stringify({ app_id: projectId, prompt: `${mode}: ${prompt}`, model: $("model").value, paths })
+    body: JSON.stringify({ app_id: projectId, mode: mode.toLowerCase(), prompt: `${mode}: ${prompt}`, model: $("model").value, paths })
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -251,6 +251,8 @@ async function requestAI(mode) {
   if (state.request) return;
   const prompt = $("prompt").value.trim();
   if (!prompt) return setStatus("Enter a task for FELTUS AI.", true);
+  if (!state.activePath) return setStatus(`Select a project file before using ${mode}.`, true);
+  if (state.files.get(state.activePath)?.dirty) return setStatus("Save the selected file before requesting AI so FELTUS CODE reads the current workspace contents.", true);
   const controller = new AbortController();
   state.request = controller;
   $("cancel-ai").hidden = false;
@@ -263,7 +265,7 @@ async function requestAI(mode) {
       : await api(projectQuery(`/api/code/ai/${route}`), {
           method: "POST",
           signal: controller.signal,
-          body: JSON.stringify({ app_id: projectId, prompt: `${mode}: ${prompt}`, model: $("model").value, paths: requestPaths })
+          body: JSON.stringify({ app_id: projectId, mode: mode.toLowerCase(), prompt: `${mode}: ${prompt}`, model: $("model").value, paths: requestPaths })
         });
     if (route === "edit") {
       state.proposal = data.result;
@@ -307,7 +309,9 @@ function renderProposal(proposal) {
 async function runAgent() {
   if (state.request) return;
   const prompt = $("prompt").value.trim();
-  if (!prompt || !state.activePath) return setStatus("Open a file and enter an agent task.", true);
+  if (!state.activePath) return setStatus("Select a project file before using Agent.", true);
+  if (!prompt) return setStatus("Enter an agent task.", true);
+  if (state.files.get(state.activePath)?.dirty) return setStatus("Save the selected file before using Agent so FELTUS CODE reads the current workspace contents.", true);
   if (!window.confirm("Allow FELTUS CODE Agent to edit the selected file and run the selected allowlisted validation task?")) return;
   const controller = new AbortController();
   state.request = controller;
@@ -319,6 +323,7 @@ async function runAgent() {
       signal: controller.signal,
       body: JSON.stringify({
         app_id: projectId,
+        mode: "agent",
         prompt,
         paths: [state.activePath],
         model: $("model").value,

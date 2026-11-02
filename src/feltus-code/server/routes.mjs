@@ -42,9 +42,9 @@ export function createFeltusCodeHandlers({ repoRoot, aiGateway, approvedTasks })
     checkpoint: async ({ message, confirm }) => ({ ok: true, ...(await git.checkpoint({ message, confirm })) }),
     listTasks: async () => ({ ok: true, tasks: tasks.list() }),
     runTask: async ({ task }, { signal } = {}) => ({ ok: true, result: await tasks.run(task, { signal }) }),
-    aiPlan: async ({ prompt, model }, { signal, onToken } = {}) => ({
+    aiPlan: async ({ prompt, paths, model }, { signal, onToken } = {}) => ({
       ok: true,
-      result: await getAgent().plan({ prompt, model, signal, onToken })
+      result: await getAgent().plan({ prompt, paths, model, signal, onToken })
     }),
     aiEdit: async ({ prompt, paths, model }, { signal } = {}) => ({
       ok: true,

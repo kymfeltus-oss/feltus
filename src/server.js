@@ -2445,6 +2445,13 @@ async function handleFeltusCodeRequest(req, res, url) {
       if (!aiLimit.allowed) { sendRateLimitResponse(res, aiLimit); return true; }
       const prompt = String(body.prompt || "").trim();
       if (!prompt || prompt.length > 8000) { send(res, 400, { code: "INVALID_CODE_PROMPT", error: "Prompt must contain 1 to 8000 characters." }); return true; }
+      const selectedPaths = body.paths === undefined ? [] : body.paths;
+      if (!Array.isArray(selectedPaths) || selectedPaths.length > 12 || selectedPaths.some(filePath => typeof filePath !== "string" || !filePath.trim())) {
+        send(res, 400, { code: "INVALID_FILE_CONTEXT", error: "Select up to 12 project-relative files for FELTUS CODE AI." }); return true;
+      }
+      if (selectedPaths.length === 0) {
+        send(res, 400, { code: "FILE_CONTEXT_REQUIRED", error: "Select a file in this project workspace before requesting FELTUS CODE AI." }); return true;
+      }
       const { ai, policy } = await createConfiguredAI();
       if (!policy.sendProjectContext) { send(res, 403, { code: "AI_CODE_CONTEXT_NOT_APPROVED", error: "The AI endpoint trust policy does not allow sending project code context." }); return true; }
       const installed = await ai.listModels();
@@ -2464,7 +2471,7 @@ async function handleFeltusCodeRequest(req, res, url) {
             });
             codePlanStreamStarted = true;
           }
-          result = await handlers.aiPlan({ prompt, model: requestedModel }, {
+          result = await handlers.aiPlan({ prompt, paths: selectedPaths, model: requestedModel }, {
             signal: requestSignal,
             ...(streamingPlan ? {
               onToken: token => {
@@ -2476,11 +2483,10 @@ async function handleFeltusCodeRequest(req, res, url) {
         } else if (route.endsWith("/edit")) {
           result = await handlers.aiEdit({ prompt, paths: body.paths, model: requestedModel }, { signal: requestSignal });
         } else {
-          const selectedPaths = Array.isArray(body.paths) ? body.paths.slice(0, 12) : [];
           const selectedTask = String(body.task || "npm-check");
           const allowedTasks = (await handlers.listTasks()).tasks || [];
           if (!allowedTasks.includes(selectedTask)) throw Object.assign(new Error("Task is not allowlisted."), { status: 400, code: "TASK_NOT_ALLOWED" });
-          const planResult = await handlers.aiPlan({ prompt, model: requestedModel }, { signal: requestSignal });
+          const planResult = await handlers.aiPlan({ prompt, paths: selectedPaths, model: requestedModel }, { signal: requestSignal });
           let proposalResult = await handlers.aiEdit({ prompt, paths: selectedPaths, model: requestedModel }, { signal: requestSignal });
           const runs = [];
           const applied = [];

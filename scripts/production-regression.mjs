@@ -136,6 +136,22 @@ check("FELTUS CODE streams plans and cancels stale requests", () => {
   assert.match(projectSwitch, /codeFrame\.src = "\/api\/code\/ui\?app_id="/);
 });
 
+check("FELTUS CODE AI grounds every action in server-read selected files", () => {
+  const codeWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
+  assert.match(codeAgent, /fileTools\.inspect\(relativePath, \{ forAI: true \}\)/);
+  assert.match(codeAgent, /Server-read selected file context/);
+  assert.match(codeAgent, /required: true, max: 12/);
+  assert.match(codeServer, /aiPlan: async \(\{ prompt, paths, model \}/);
+  assert.match(server, /handlers\.aiPlan\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
+  assert.match(server, /const planResult = await handlers\.aiPlan\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
+  assert.match(server, /let proposalResult = await handlers\.aiEdit\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
+  assert.match(server, /code: "FILE_CONTEXT_REQUIRED"/);
+  assert.match(codeWeb, /paths: requestPaths/);
+  assert.match(codeWeb, /state\.files\.get\(state\.activePath\)\?\.dirty/);
+  assert.match(codeWeb, /mode: mode\.toLowerCase\(\)/);
+  assert.match(codeWeb, /Select a project file before using/);
+});
+
 check("AI capability controls and auto model", () => {
   assert.equal((html.match(/id="aiCapabilitySelect"/g) || []).length, 1);
   assert.equal((html.match(/id="aiModelSelect"/g) || []).length, 1);

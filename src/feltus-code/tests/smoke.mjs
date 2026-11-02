@@ -15,6 +15,8 @@ const root = path.join(parent, "project-workspace");
 const outside = path.join(tempRoot, "outside");
 await fs.mkdir(root, { recursive: true });
 await fs.mkdir(outside, { recursive: true });
+const otherProject = path.join(parent, "other-project");
+await fs.mkdir(otherProject, { recursive: true });
 
 function git(args, cwd) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -22,7 +24,9 @@ function git(args, cwd) {
 }
 
 try {
-  await fs.writeFile(path.join(root, "hello.txt"), "hello FELTUS\n", "utf8");
+  const stagingFileContent = "FELTUS CODE STAGING TEST\n";
+  await fs.writeFile(path.join(root, "hello.txt"), stagingFileContent, "utf8");
+  await fs.writeFile(path.join(otherProject, "hello.txt"), "SECOND PROJECT PRIVATE\n", "utf8");
   await fs.writeFile(path.join(root, "config.yml"), 'password: "must-not-leak-this-value"\n', "utf8");
   await fs.writeFile(path.join(root, "runtime-config.json"), '{"SERVICE_ROLE_KEY":"must-not-leak-this-key","endpoint":"http://local"}\n', "utf8");
   await fs.writeFile(path.join(root, "values-secret.yml"), "credential: private-value\n", "utf8");
@@ -30,7 +34,7 @@ try {
   await fs.writeFile(path.join(root, "module.mjs"), "export function safeFunction() {}\n", "utf8");
 
   const files = createFileTools({ repoRoot: root });
-  assert.equal(await files.read("hello.txt"), "hello FELTUS\n");
+  assert.equal(await files.read("hello.txt"), stagingFileContent);
   assert.match(await files.read("config.yml"), /password: \[REDACTED\]/);
   assert.doesNotMatch(await files.read("config.yml"), /must-not-leak-this-value/);
   assert.doesNotMatch(await files.read("runtime-config.json"), /must-not-leak-this-key/);
@@ -52,29 +56,76 @@ try {
   assert.doesNotMatch(await buildRepoMap(root), /values-secret|\.env\.local/);
 
   const planChunks = [];
+  let planCalls = 0;
   const agent = createCodeAgent({
     repoRoot: root,
     fileTools: files,
     aiGateway: {
       async complete() { throw new Error("The streaming planning path should be used."); },
       async *completeStream({ messages, model }) {
+        planCalls += 1;
         assert.match(messages[1].content, /module\.mjs/);
         assert.doesNotMatch(messages[1].content, /values-secret|must-not-leak-this-value/);
+        assert.match(messages[0].content, /Never invent, assume, or claim file contents/);
+        const contextMatch = messages[1].content.match(/Server-read selected file context \(authoritative JSON; an empty array means no file is selected\):\n([\s\S]*?)\n\nTask:/);
+        assert.ok(contextMatch, "planning request includes a distinct selected-file context block");
+        const selected = JSON.parse(contextMatch[1]);
+        assert.equal(selected.length, 1);
+        assert.equal(selected[0].path, "hello.txt");
+        assert.equal(selected[0].content, stagingFileContent);
+        assert.match(messages[1].content, /FELTUS CODE STAGING TEST/);
         assert.equal(model, "local-coder");
-        yield { delta: "Plan ", done: false, model };
-        yield { delta: "ready", done: false, model };
+        yield { delta: "hello.txt contains FELTUS CODE STAGING TEST. ", done: false, model };
+        yield { delta: "Safe improvement: add a final newline.", done: false, model };
         yield { done: true, model, usage: { input_tokens: 8, output_tokens: 3 } };
       }
     }
   });
   const plan = await agent.plan({
-    prompt: "Describe the repository",
+    prompt: "Explain what hello.txt contains and suggest one safe improvement. Do not edit the file.",
+    paths: ["hello.txt"],
     model: "local-coder",
     onToken: token => planChunks.push(token)
   });
-  assert.equal(plan.content, "Plan ready");
-  assert.deepEqual(planChunks, ["Plan ", "ready"]);
+  assert.equal(plan.content, "hello.txt contains FELTUS CODE STAGING TEST. Safe improvement: add a final newline.");
+  assert.doesNotMatch(plan.content, /Hello, World!/);
+  assert.deepEqual(planChunks, ["hello.txt contains FELTUS CODE STAGING TEST. ", "Safe improvement: add a final newline."]);
   assert.deepEqual(plan.usage, { input_tokens: 8, output_tokens: 3 });
+
+  await assert.rejects(
+    () => agent.plan({ prompt: "Explain the other project's hello.txt", paths: ["../other-project/hello.txt"] }),
+    error => error.code === "INVALID_REPO_PATH"
+  );
+  await assert.rejects(
+    () => files.inspect("../other-project/hello.txt", { forAI: true }),
+    error => error.code === "INVALID_REPO_PATH"
+  );
+  assert.equal(planCalls, 1, "cross-project file attempts must be rejected before reaching the model");
+  await assert.rejects(
+    () => agent.plan({ prompt: "Explain an unspecified file", paths: [] }),
+    error => error.code === "FILE_CONTEXT_REQUIRED"
+  );
+
+  let editMessages;
+  const editAgent = createCodeAgent({
+    repoRoot: root,
+    fileTools: files,
+    aiGateway: {
+      async complete({ messages }) {
+        editMessages = messages;
+        return {
+          content: JSON.stringify({ summary: "Keep the staging marker", files: [{ path: "hello.txt", content: stagingFileContent }] }),
+          model: "local-coder",
+          usage: { input_tokens: 4, output_tokens: 2 }
+        };
+      }
+    }
+  });
+  const editProposal = await editAgent.proposeEdit({ prompt: "Make a safe improvement", paths: ["hello.txt"], model: "local-coder" });
+  assert.match(editMessages[0].content, /Never use absolute paths/);
+  assert.match(editMessages[1].content, /FELTUS CODE STAGING TEST/);
+  assert.match(editMessages[1].content, /"path":"hello.txt"/);
+  assert.equal(editProposal.files[0].before_sha256, await files.hash("hello.txt"));
 
   await files.createDirectory("nested");
   await files.createFile("nested/new.txt", "new content");
@@ -100,6 +151,10 @@ try {
     await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
     await assert.rejects(
       () => files.read("linked-outside/external.txt"),
+      error => error.code === "SYMLINK_NOT_ALLOWED"
+    );
+    await assert.rejects(
+      () => agent.plan({ prompt: "Explain the linked file", paths: ["linked-outside/external.txt"] }),
       error => error.code === "SYMLINK_NOT_ALLOWED"
     );
   } catch (error) {
@@ -144,7 +199,7 @@ try {
     error => error.code === "CONFIRMATION_REQUIRED"
   );
   await gitTools.stage(["hello.txt"]);
-  assert.match((await gitTools.diff({ staged: true })).stdout, /hello FELTUS/);
+  assert.match((await gitTools.diff({ staged: true })).stdout, /FELTUS CODE STAGING TEST/);
 
   const tasks = createTaskRunner({ repoRoot: root });
   assert.ok(tasks.list().includes("npm-check"));
@@ -175,6 +230,7 @@ try {
   setTimeout(() => abortController.abort(), 50);
   await assert.rejects(taskPromise, error => error.code === "REQUEST_CANCELLED");
 
+  process.stdout.write("PASS FELTUS CODE selected-file AI grounding, staging marker, cross-project isolation, and edit hash tests\n");
   process.stdout.write("PASS FELTUS CODE file, redaction, search, repo map, write-conflict, rename, and delete tests\n");
   process.stdout.write(`PASS FELTUS CODE symlink traversal test${symlinkTested ? "" : " (platform capability unavailable; skipped)"}\n`);
   process.stdout.write("PASS FELTUS CODE exact Git-root isolation, status, stage, and checkpoint-confirmation tests\n");
