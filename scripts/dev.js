@@ -20,6 +20,9 @@ process.env.FELTUS_ALLOWED_ORIGINS = [
 ].join(",");
 process.env.FELTUS_STORAGE_ROOT =
   process.env.FELTUS_LOCAL_STORAGE_ROOT || ".feltus-storage";
+process.env.FELTUS_CODE_WORKSPACE_ROOT =
+  process.env.FELTUS_CODE_WORKSPACE_ROOT ||
+  `${process.env.FELTUS_STORAGE_ROOT}/code-workspaces`;
 process.env.FELTUS_GATEWAY_URL =
   process.env.FELTUS_LOCAL_GATEWAY_URL ||
   "http://127.0.0.1:54321";

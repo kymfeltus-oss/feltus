@@ -1,5 +1,8 @@
 FROM node:22-alpine
 
+RUN apk add --no-cache git
+RUN git --version
+
 ENV NODE_ENV=production \
     FELTUS_ENV=production \
     FELTUS_HOST=0.0.0.0 \
@@ -16,7 +19,7 @@ COPY --chown=node:node index.html ./index.html
 COPY --chown=node:node src ./src
 COPY --chown=node:node scripts/bootstrap-owner.mjs ./scripts/bootstrap-owner.mjs
 
-RUN mkdir -p /data/feltus-storage && chown -R node:node /data/feltus-storage /app
+RUN mkdir -p /data/feltus-storage /data/feltus-code && chown -R node:node /data/feltus-storage /data/feltus-code /app
 
 USER node
 EXPOSE 8080

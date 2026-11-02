@@ -10,7 +10,7 @@ case "$stamp" in
     ;;
 esac
 
-for entry in documents object-storage; do
+for entry in documents object-storage code-workspaces; do
   source="/data/$entry"
   target="/backups/$stamp/feltus-$entry.tar.gz"
   if [ -e "$target" ]; then

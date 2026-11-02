@@ -412,6 +412,28 @@ footer {
   }
 }
 
+.feltus-primary-nav {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 28px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(10, 15, 24, 0.82);
+}
+
+.feltus-code-panel {
+  min-height: calc(100vh - 145px);
+}
+
+.feltus-code-panel iframe {
+  display: block;
+  width: 100%;
+  min-height: calc(100vh - 245px);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 12px;
+  background: #090b10;
+}
+
 #feltus-auth-gate {
   position: fixed;
   inset: 0;
@@ -528,6 +550,17 @@ footer {
   gap: 12px;
 }
 
+.ai-chat-actions,
+.ai-side-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-side-title {
+  justify-content: space-between;
+}
+
 .ai-conversation {
   min-height: 320px;
   max-height: 520px;
@@ -569,6 +602,35 @@ footer {
   letter-spacing: .06em;
 }
 
+.ai-message pre {
+  margin: 10px 0;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid #344254;
+  border-radius: 8px;
+  background: #0b1118;
+  white-space: pre;
+}
+
+.ai-message p {
+  margin: 0 0 10px;
+}
+
+.ai-message p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-message-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-message-actions button {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
 .ai-composer {
   padding: 14px;
   border-top: 1px solid #29313c;
@@ -592,6 +654,52 @@ footer {
   align-items: center;
   gap: 12px;
   margin-top: 10px;
+}
+
+.ai-side-card input,
+.ai-side-card textarea,
+.ai-side-card select {
+  width: 100%;
+  margin: 6px 0 12px;
+  padding: 9px;
+  border: 1px solid #445063;
+  border-radius: 8px;
+  background: #0e131a;
+  color: #fff;
+  font: inherit;
+}
+
+.ai-side-card textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.ai-conversation-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.ai-conversation-item {
+  width: 100%;
+  text-align: left;
+  padding: 9px;
+  border: 1px solid #344254;
+  border-radius: 8px;
+  background: #111923;
+  color: #dbe5ef;
+}
+
+.ai-conversation-item.active {
+  border-color: #3a8dff;
+  background: #172942;
+}
+
+.ai-conversation-item small {
+  display: block;
+  margin-top: 4px;
+  color: #8f9baa;
 }
 
 .ai-suggestions {
@@ -1581,6 +1689,11 @@ footer {
   </button>
 </header>
 
+<nav id="feltusPrimaryNav" class="feltus-primary-nav" aria-label="Primary navigation" hidden>
+  <button id="feltusCodeNav" type="button" class="secondary">CODE</button>
+  <span id="feltusCodeNavProject" class="project-meta">Project-scoped code workspace</span>
+</nav>
+
 <script>
 (() => {
   const gate = document.getElementById("feltus-auth-gate");
@@ -1666,11 +1779,14 @@ footer {
       if (session.mode === "local-development" || session.authenticated) {
         gate.hidden = true;
         signout.hidden = session.mode !== "production";
+        document.getElementById("feltusPrimaryNav").hidden = false;
         return;
       }
 
+      document.getElementById("feltusPrimaryNav").hidden = true;
       showGate("Sign in to continue.");
     } catch {
+      document.getElementById("feltusPrimaryNav").hidden = true;
       showGate("FELTUS could not verify the session. Try again shortly.");
     }
   };
@@ -1804,6 +1920,17 @@ footer {
 </script>
 
 <main>
+
+<section id="feltusCodePanel" class="panel feltus-code-panel" hidden>
+  <div class="panel-header">
+    <div>
+      <h3>FELTUS CODE</h3>
+      <p>Project-scoped source workspaces, safe file operations, Git tools, and the FELTUS AI Gateway.</p>
+    </div>
+    <button id="feltusCodeClose" class="secondary" type="button">Back to platform</button>
+  </div>
+  <iframe id="feltusCodeFrame" title="FELTUS CODE workspace" loading="lazy" referrerpolicy="no-referrer"></iframe>
+</section>
 
 <section class="hero">
   <div>
@@ -2944,9 +3071,17 @@ footer {
           </div>
         </div>
 
-        <button id="clearAIChatButton" class="secondary" type="button">
-          Clear Chat
-        </button>
+        <div class="ai-chat-actions">
+          <button id="newAIConversationButton" class="secondary" type="button">
+            New chat
+          </button>
+          <button id="exportAIConversationButton" class="secondary" type="button">
+            Export
+          </button>
+          <button id="clearAIChatButton" class="secondary" type="button">
+            Clear
+          </button>
+        </div>
       </div>
 
 
@@ -2998,6 +3133,10 @@ footer {
         <div class="ai-composer-actions">
 
           <div id="aiChatStatus" class="status"></div>
+
+          <button id="stopAIButton" class="secondary hidden" type="button">
+            Stop
+          </button>
 
           <button id="sendAIButton" type="button">
             Send to AI
@@ -3061,7 +3200,7 @@ footer {
 
         <div class="ai-detail">
           <span>Runtime</span>
-          <strong>Ollama-compatible</strong>
+          <strong id="aiRuntimeName">Configured runtime</strong>
         </div>
 
         <div class="ai-detail">
@@ -3104,14 +3243,48 @@ footer {
         <h4>Privacy & Security</h4>
 
         <p class="project-meta">
-          FELTUS sends inference only to the locally running
-          Ollama service and supplies context through its
-          authenticated backend.
+          FELTUS validates the configured runtime, keeps data in
+          the selected project, and only sends history or project
+          context when the runtime trust policy allows it.
         </p>
 
         <div class="badge ai-private">
           PRIVATE LOCAL AI
         </div>
+
+      </div>
+
+      <div class="ai-side-card">
+
+        <div class="ai-side-title">
+          <h4>Conversations</h4>
+          <button id="archiveAIConversationButton" class="secondary" type="button">
+            Archive
+          </button>
+        </div>
+
+        <input id="aiConversationSearch" type="search" maxlength="100" placeholder="Search chats">
+
+        <div id="aiConversationList" class="ai-conversation-list" aria-label="Project conversations"></div>
+
+      </div>
+
+      <div class="ai-side-card">
+
+        <h4>Generation Controls</h4>
+
+        <label class="project-meta" for="aiSystemPromptInput">System prompt</label>
+        <textarea id="aiSystemPromptInput" maxlength="12000" placeholder="Optional instructions for this chat"></textarea>
+
+        <label class="project-meta" for="aiTemperatureInput">Temperature</label>
+        <input id="aiTemperatureInput" type="number" min="0" max="2" step="0.1" value="0.2">
+
+        <label class="project-meta" for="aiMaxTokensInput">Max tokens</label>
+        <input id="aiMaxTokensInput" type="number" min="32" max="32768" step="1" value="2048">
+
+        <button id="saveAIConversationSettingsButton" class="secondary" type="button">
+          Save chat controls
+        </button>
 
       </div>
 
@@ -3370,6 +3543,8 @@ let aiRuntime = null;
 let activeAIRequest = null;
 let activeAIProjectId = null;
 let activeAIConversationId = null;
+let activeAIConversation = null;
+let aiConversations = [];
 let activeAIRequestGeneration = 0;
 let relationships = [];
 let relationshipSourceColumns = [];
@@ -3408,6 +3583,7 @@ function cancelActiveAIRequest(preserveConversation = false) {
   if (button) {
     button.disabled = false;
   }
+  $("stopAIButton")?.classList.add("hidden");
 }
 
 
@@ -3419,6 +3595,11 @@ function selectActiveProject(project) {
   }
 
   selectedProject = project;
+  const codeFrame = $("feltusCodeFrame");
+  if (!$("feltusCodePanel").hidden && selectedProject?.id) {
+    codeFrame.src = "/api/code/ui?app_id=" + encodeURIComponent(selectedProject.id);
+    $("feltusCodeNavProject").textContent = selectedProject.app_name || selectedProject.id;
+  }
 }
 
 
@@ -4670,10 +4851,31 @@ async function clearAIChatHistory() {
 }
 
 
-function appendAIMessage(
-  role,
-  text
-) {
+function renderAIContent(target, text) {
+  target.replaceChildren();
+  const value = String(text || "");
+  const fragments = value.split(/```[^\n]*\n?/g);
+  fragments.forEach((fragment, index) => {
+    if (index % 2 === 1) {
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = fragment.replace(/\n$/, "");
+      pre.appendChild(code);
+      target.appendChild(pre);
+      return;
+    }
+    for (const paragraphText of fragment.split(/\n{2,}/)) {
+      if (!paragraphText) continue;
+      const paragraph = document.createElement("p");
+      paragraph.textContent = paragraphText;
+      target.appendChild(paragraph);
+    }
+  });
+  if (!target.childNodes.length) target.textContent = value;
+}
+
+
+function appendAIMessage(role, text) {
   const conversation =
     $("aiConversation");
 
@@ -4692,6 +4894,8 @@ function appendAIMessage(
     role === "user"
       ? "ai-message ai-message-user"
       : "ai-message ai-message-assistant";
+  message.dataset.role = role;
+  message.dataset.raw = String(text || "");
 
 
   const label =
@@ -4709,13 +4913,30 @@ function appendAIMessage(
   const content =
     document.createElement("div");
 
-  content.textContent =
-    text;
+  renderAIContent(content, text);
+
+  const actions = document.createElement("div");
+  actions.className = "ai-message-actions";
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "secondary";
+  action.textContent = role === "user" ? "Edit & resend" : "Regenerate";
+  action.addEventListener("click", () => {
+    const source = role === "user"
+      ? message.dataset.raw
+      : [...conversation.querySelectorAll('[data-role="user"]')].at(-1)?.dataset.raw;
+    if (!source || activeAIRequest) return;
+    $("aiPromptInput").value = source;
+    $("aiPromptInput").focus();
+    if (role !== "user") sendAIMessage();
+  });
+  actions.appendChild(action);
 
 
   message.append(
     label,
-    content
+    content,
+    actions
   );
 
   conversation.appendChild(
@@ -4724,68 +4945,116 @@ function appendAIMessage(
 
   conversation.scrollTop =
     conversation.scrollHeight;
+  return { message, content };
 }
 
 
-async function loadAIConversation(projectId) {
-  if (activeAIProjectId === projectId) {
+function applyConversationControls(conversation) {
+  $("aiSystemPromptInput").value = conversation?.system_prompt || "";
+  $("aiTemperatureInput").value = String(conversation?.temperature ?? 0.2);
+  $("aiMaxTokensInput").value = String(conversation?.max_tokens ?? 2048);
+  if (conversation?.selected_model && $("aiModelSelect").querySelector(`option[value="${CSS.escape(conversation.selected_model)}"]`)) {
+    $("aiModelSelect").value = conversation.selected_model;
+  }
+}
+
+
+function renderAIConversationList() {
+  const list = $("aiConversationList");
+  list.replaceChildren();
+  if (!aiConversations.length) {
+    const empty = document.createElement("div");
+    empty.className = "project-meta";
+    empty.textContent = "No chats yet. Start one with New chat or send a message.";
+    list.appendChild(empty);
     return;
   }
+  for (const item of aiConversations) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ai-conversation-item" + (item.id === activeAIConversationId ? " active" : "");
+    button.textContent = item.title || "Untitled conversation";
+    const meta = document.createElement("small");
+    meta.textContent = new Date(item.updated_at || item.created_at).toLocaleString();
+    button.appendChild(meta);
+    button.addEventListener("click", () => loadAIConversation(selectedProject?.id, item.id, true));
+    list.appendChild(button);
+  }
+}
 
+
+async function refreshAIConversations(projectId) {
+  if (!projectId) return [];
+  const search = $("aiConversationSearch")?.value.trim() || "";
+  const result = await requestJson(
+    "/api/ai/conversations?app_id=" + encodeURIComponent(projectId) +
+      (search ? "&search=" + encodeURIComponent(search) : "")
+  );
+  if (selectedProject?.id !== projectId) return [];
+  aiConversations = Array.isArray(result.conversations) ? result.conversations : [];
+  renderAIConversationList();
+  return aiConversations;
+}
+
+
+async function createAIConversation(title = "New conversation") {
+  const projectId = selectedProject?.id;
+  if (!projectId || activeAIRequest) return null;
+  const result = await requestJson("/api/ai/conversations", {
+    method: "POST",
+    body: JSON.stringify({
+      app_id: projectId,
+      title: String(title).slice(0, 120),
+      system_prompt: $("aiSystemPromptInput").value,
+      model: $("aiModelSelect").value === "__auto__" ? "" : $("aiModelSelect").value,
+      temperature: Number($("aiTemperatureInput").value),
+      max_tokens: Number($("aiMaxTokensInput").value)
+    })
+  });
+  const conversation = result.conversation;
+  if (!conversation?.id) throw new Error("Conversation could not be created.");
+  await refreshAIConversations(projectId);
+  await loadAIConversation(projectId, conversation.id, true);
+  return conversation;
+}
+
+
+async function loadAIConversation(projectId, conversationId = null, force = false) {
+  if (!projectId || (!force && activeAIConversationId === conversationId && activeAIConversation)) return;
   const projectGeneration = activeAIRequestGeneration;
   try {
-    const result = await requestJson(
-      "/api/ai/conversation",
-      {
-        method: "POST",
-        body: JSON.stringify({ app_id: projectId })
-      }
-    );
-
-    if (
-      selectedProject?.id !== projectId ||
-      activeAIRequestGeneration !== projectGeneration
-    ) {
-      return;
-    }
-
-    const conversationId = result.conversation?.id;
     if (!conversationId) {
-      throw new Error("Project conversation is unavailable.");
+      if (!aiConversations.length) await refreshAIConversations(projectId);
+      conversationId = aiConversations[0]?.id || null;
     }
-
-    const messages = await requestJson(
-      "/api/ai/messages?app_id=" +
-        encodeURIComponent(projectId) +
-        "&conversation_id=" +
-        encodeURIComponent(conversationId)
-    );
-
-    if (
-      selectedProject?.id !== projectId ||
-      activeAIRequestGeneration !== projectGeneration ||
-      activeAIProjectId === projectId
-    ) {
+    if (!conversationId) {
+      activeAIConversationId = null;
+      activeAIConversation = null;
+      renderEmptyAIConversation();
+      applyConversationControls(null);
+      renderAIConversationList();
       return;
     }
-
+    const result = await requestJson(
+      "/api/ai/conversations/" + encodeURIComponent(conversationId) +
+        "?app_id=" + encodeURIComponent(projectId)
+    );
+    const messages = await requestJson(
+      "/api/ai/messages?app_id=" + encodeURIComponent(projectId) +
+        "&conversation_id=" + encodeURIComponent(conversationId)
+    );
+    if (selectedProject?.id !== projectId || activeAIRequestGeneration !== projectGeneration) return;
     activeAIConversationId = conversationId;
+    activeAIConversation = result.conversation || null;
+    applyConversationControls(activeAIConversation);
     renderEmptyAIConversation();
     for (const message of Array.isArray(messages) ? messages : []) {
-      if (message.role === "user" || message.role === "assistant") {
-        appendAIMessage(message.role, String(message.content || ""));
-      }
+      if (message.role === "user" || message.role === "assistant") appendAIMessage(message.role, String(message.content || ""));
     }
+    renderAIConversationList();
   } catch (error) {
-    if (
-      selectedProject?.id === projectId &&
-      activeAIRequestGeneration === projectGeneration
-    ) {
-      setStatus(
-        $("aiChatStatus"),
-        "Project conversation could not be loaded.",
-        true
-      );
+    if (selectedProject?.id === projectId && activeAIRequestGeneration === projectGeneration) {
+      setStatus($("aiChatStatus"), "Project conversation could not be loaded.", true);
     }
   }
 }
@@ -4848,6 +5117,10 @@ async function loadAIHubStatus() {
       aiRuntime.status === "online"
         ? "Online"
         : "Offline";
+
+    $("aiRuntimeName").textContent =
+      String(aiRuntime.engine || "configured runtime")
+        .replace(/_/g, " ");
 
 
     const select =
@@ -4945,6 +5218,7 @@ async function loadAIHubStatus() {
     }
 
 
+    await refreshAIConversations(projectId);
     await loadAIConversation(projectId);
 
 
@@ -4961,6 +5235,7 @@ async function loadAIHubStatus() {
       error.message,
       true
     );
+    await refreshAIConversations(projectId).catch(() => {});
     await loadAIConversation(projectId);
   }
 }
@@ -5038,6 +5313,7 @@ async function loadAIHubStatus() {
 
   button.disabled =
     true;
+  $("stopAIButton").classList.remove("hidden");
 
 
   appendAIMessage(
@@ -5063,10 +5339,17 @@ async function loadAIHubStatus() {
   try {
     if (!activeAIConversationId) {
       const conversationResult = await requestJson(
-        "/api/ai/conversation",
+        "/api/ai/conversations",
         {
           method: "POST",
-          body: JSON.stringify({ app_id: requestProjectId }),
+          body: JSON.stringify({
+            app_id: requestProjectId,
+            title: prompt.slice(0, 120),
+            system_prompt: $("aiSystemPromptInput").value,
+            model,
+            temperature: Number($("aiTemperatureInput").value),
+            max_tokens: Number($("aiMaxTokensInput").value)
+          }),
           signal: controller.signal
         }
       );
@@ -5077,6 +5360,8 @@ async function loadAIHubStatus() {
       if (!activeAIConversationId) {
         throw new Error("Project conversation is unavailable.");
       }
+      activeAIConversation = conversationResult.conversation || null;
+      await refreshAIConversations(requestProjectId);
     }
 
 
@@ -5108,7 +5393,13 @@ async function loadAIHubStatus() {
 
               model,
 
-              prompt
+              prompt,
+
+              system_prompt: $("aiSystemPromptInput").value,
+
+              temperature: Number($("aiTemperatureInput").value),
+
+              max_tokens: Number($("aiMaxTokensInput").value)
             }),
 
           signal:
@@ -5158,42 +5449,9 @@ async function loadAIHubStatus() {
     }
 
 
-    const message =
-      document.createElement(
-        "div"
-      );
-
-    message.className =
-      "ai-message ai-message-assistant";
-
-
-    const label =
-      document.createElement(
-        "span"
-      );
-
-    label.className =
-      "ai-message-label";
-
-    label.textContent =
-      "FELTUS AI";
-
-
-    assistantContent =
-      document.createElement(
-        "div"
-      );
-
-
-    message.append(
-      label,
-      assistantContent
-    );
-
-
-    conversation.appendChild(
-      message
-    );
+    const streamedMessage = appendAIMessage("assistant", "");
+    const message = streamedMessage.message;
+    assistantContent = streamedMessage.content;
 
 
     const reader =
@@ -5261,7 +5519,7 @@ async function loadAIHubStatus() {
 
           setStatus(
             $("aiChatStatus"),
-            "Generating locally..."
+            "Generating with configured runtime..."
           );
 
           return;
@@ -5271,8 +5529,8 @@ async function loadAIHubStatus() {
         if (
           event.type === "token"
         ) {
-          assistantContent.textContent +=
-            event.text || "";
+          message.dataset.raw += event.text || "";
+          renderAIContent(assistantContent, message.dataset.raw);
 
 
           conversation.scrollTop =
@@ -5379,11 +5637,13 @@ async function loadAIHubStatus() {
 
 
     if (
-      !assistantContent.textContent.trim()
+      !message.dataset.raw.trim()
     ) {
-      assistantContent.textContent =
-        "No response returned.";
+      message.dataset.raw = "No response returned.";
+      renderAIContent(assistantContent, message.dataset.raw);
     }
+
+    await refreshAIConversations(requestProjectId);
 
   } catch (error) {
     if (!requestIsCurrent()) {
@@ -5396,9 +5656,9 @@ async function loadAIHubStatus() {
 
 
     if (assistantContent) {
-      assistantContent.textContent +=
-        "\n\nAI request failed: " +
-        error.message;
+      const message = assistantContent.closest(".ai-message");
+      message.dataset.raw += "\n\nAI request failed: " + error.message;
+      renderAIContent(assistantContent, message.dataset.raw);
 
     } else {
       appendAIMessage(
@@ -5420,6 +5680,7 @@ async function loadAIHubStatus() {
       activeAIRequest = null;
       activeAIProjectId = null;
       button.disabled = false;
+      $("stopAIButton").classList.add("hidden");
     }
   }
 }
@@ -5452,6 +5713,109 @@ $("clearAIChatButton")
     "click",
     clearAIChatHistory
   );
+
+
+$("newAIConversationButton")
+  .addEventListener("click", async () => {
+    try {
+      await createAIConversation();
+      setStatus($("aiChatStatus"), "New conversation ready.");
+      $("aiPromptInput").focus();
+    } catch (error) {
+      setStatus($("aiChatStatus"), error.message, true);
+    }
+  });
+
+
+$("stopAIButton")
+  .addEventListener("click", () => {
+    if (!activeAIRequest) return;
+    cancelActiveAIRequest(true);
+    setStatus($("aiChatStatus"), "Generation stopped.");
+  });
+
+
+$("archiveAIConversationButton")
+  .addEventListener("click", async () => {
+    const projectId = selectedProject?.id;
+    if (!projectId || !activeAIConversationId || activeAIRequest) return;
+    try {
+      await requestJson(
+        "/api/ai/conversations/" + encodeURIComponent(activeAIConversationId) +
+          "?app_id=" + encodeURIComponent(projectId),
+        { method: "PATCH", body: JSON.stringify({ status: "archived" }) }
+      );
+      activeAIConversationId = null;
+      activeAIConversation = null;
+      await refreshAIConversations(projectId);
+      await loadAIConversation(projectId);
+      setStatus($("aiChatStatus"), "Conversation archived.");
+    } catch (error) {
+      setStatus($("aiChatStatus"), error.message, true);
+    }
+  });
+
+
+$("exportAIConversationButton")
+  .addEventListener("click", async () => {
+    const projectId = selectedProject?.id;
+    if (!projectId || !activeAIConversationId) return;
+    try {
+      const exported = await requestJson(
+        "/api/ai/conversations/" + encodeURIComponent(activeAIConversationId) +
+          "?app_id=" + encodeURIComponent(projectId) + "&export=true"
+      );
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "feltus-conversation-" + activeAIConversationId + ".json";
+      link.click();
+      URL.revokeObjectURL(link.href);
+      setStatus($("aiChatStatus"), "Conversation exported.");
+    } catch (error) {
+      setStatus($("aiChatStatus"), error.message, true);
+    }
+  });
+
+
+$("saveAIConversationSettingsButton")
+  .addEventListener("click", async () => {
+    const projectId = selectedProject?.id;
+    if (!projectId || !activeAIConversationId || activeAIRequest) return;
+    try {
+      const selectedModel = $("aiModelSelect").value;
+      const result = await requestJson(
+        "/api/ai/conversations/" + encodeURIComponent(activeAIConversationId) +
+          "?app_id=" + encodeURIComponent(projectId),
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            system_prompt: $("aiSystemPromptInput").value,
+            model: selectedModel === "__auto__" ? "" : selectedModel,
+            temperature: Number($("aiTemperatureInput").value),
+            max_tokens: Number($("aiMaxTokensInput").value)
+          })
+        }
+      );
+      activeAIConversation = result.conversation || activeAIConversation;
+      await refreshAIConversations(projectId);
+      setStatus($("aiChatStatus"), "Chat controls saved.");
+    } catch (error) {
+      setStatus($("aiChatStatus"), error.message, true);
+    }
+  });
+
+
+let aiConversationSearchTimer = null;
+$("aiConversationSearch")
+  .addEventListener("input", () => {
+    clearTimeout(aiConversationSearchTimer);
+    aiConversationSearchTimer = setTimeout(() => {
+      refreshAIConversations(selectedProject?.id).catch(error => {
+        setStatus($("aiChatStatus"), error.message, true);
+      });
+    }, 200);
+  });
 
 
 $("refreshAIButton")
@@ -9433,6 +9797,32 @@ $("refreshAllBtn")
       }
     }
   );
+
+
+$("feltusCodeNav").addEventListener("click", () => {
+  if (!selectedProject?.id) {
+    alert("Select or create a FELTUS project before opening CODE.");
+    return;
+  }
+  for (const section of Array.from(document.querySelector("main").children)) {
+    section.dataset.codeNavWasHidden = String(section.hidden);
+    section.hidden = section !== $("feltusCodePanel");
+  }
+  $("feltusCodePanel").hidden = false;
+  $("feltusCodeNavProject").textContent = selectedProject.app_name || selectedProject.id;
+  const frame = $("feltusCodeFrame");
+  frame.src = "/api/code/ui?app_id=" + encodeURIComponent(selectedProject.id);
+});
+
+$("feltusCodeClose").addEventListener("click", () => {
+  for (const section of Array.from(document.querySelector("main").children)) {
+    if (section.dataset.codeNavWasHidden !== undefined) {
+      section.hidden = section.dataset.codeNavWasHidden === "true";
+      delete section.dataset.codeNavWasHidden;
+    }
+  }
+  $("feltusCodePanel").hidden = true;
+});
 
 
 initialize();

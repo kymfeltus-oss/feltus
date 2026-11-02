@@ -68,6 +68,106 @@ const aiConversationMigration = fs.readFileSync(
 );
 
 const aiClient = fs.readFileSync(path.join(root, "src/lib/feltus-ai.js"), "utf8");
+const aiProviders = fs.readFileSync(path.join(root, "src/lib/feltus-ai-providers.js"), "utf8");
+const worker = fs.readFileSync(path.join(root, "src/worker.js"), "utf8");
+const coreMigration = fs.readFileSync(
+  path.join(root, "supabase/migrations/20261102000000_feltus_core_platform.sql"),
+  "utf8"
+);
+const codeMigration = fs.readFileSync(
+  path.join(root, "supabase/migrations/20261102010000_feltus_code.sql"),
+  "utf8"
+);
+const codeServer = fs.readFileSync(path.join(root, "src/feltus-code/server/routes.mjs"), "utf8");
+const codeAgent = fs.readFileSync(path.join(root, "src/feltus-code/server/agent.mjs"), "utf8");
+const codeAgentWorkflow = fs.readFileSync(path.join(root, "src/feltus-code/server/agent-workflow.mjs"), "utf8");
+const codeTaskRunner = fs.readFileSync(path.join(root, "src/feltus-code/server/task-runner.mjs"), "utf8");
+const codeGateway = fs.readFileSync(path.join(root, "src/feltus-code/server/ai-gateway.mjs"), "utf8");
+const codeGitTools = fs.readFileSync(path.join(root, "src/feltus-code/server/git-tools.mjs"), "utf8");
+const codeSecurity = fs.readFileSync(path.join(root, "src/feltus-code/server/security.mjs"), "utf8");
+const codePackageScripts = packageJson.scripts;
+
+check("FELTUS CODE is mounted behind FELTUS auth and project scope", () => {
+  assert.equal(codePackageScripts["test:code"], "node src/feltus-code/tests/smoke.mjs");
+  assert.match(productionWorkflow, /npm run test:code/);
+  assert.match(html, /id="feltusCodeNav"[^>]*>CODE/);
+  assert.match(html, /id="feltusCodeFrame"/);
+  assert.match(server, /authorizedCodeProject\(appId, permission\)/);
+  assert.match(server, /const repoRoot = codeRepositoryRoot\(app\.id\)/);
+  assert.match(server, /return path\.join\(CODE_WORKSPACE_ROOT, appId\)/);
+  assert.match(server, /consumeOperationRateLimit\(req, "feltus-code"/);
+  assert.match(server, /FELTUS_CODE_WORKSPACE_ROOT/);
+  assert.match(compose, /feltus_code_workspaces:\/data\/feltus-code/);
+  assert.match(dockerfile, /\/data\/feltus-code/);
+  assert.match(codeMigration, /feltus_code_sessions/);
+  assert.match(codeMigration, /feltus_code_actions/);
+  assert.match(codeMigration, /feltus_code_checkpoints/);
+  assert.match(codeMigration, /feltus_can_access_app\(app_id, 'read'\)/);
+  assert.match(codeMigration, /feltus_can_access_app\(app_id, 'write'\)/);
+  assert.match(codeMigration, /REVOKE ALL ON public\.feltus_code_sessions, public\.feltus_code_actions, public\.feltus_code_checkpoints FROM anon/);
+  assert.match(codeMigration, /CREATE UNIQUE INDEX IF NOT EXISTS feltus_code_sessions_one_active_project_idx/);
+  assert.match(codeServer, /absolute repo path from the browser/);
+  assert.match(codeGitTools, /rev-parse", "--show-toplevel/);
+  assert.match(codeGitTools, /gitEntry\.isSymbolicLink\(\)/);
+  assert.match(codeGitTools, /GIT_CONFIG_NOSYSTEM/);
+  assert.match(fs.readFileSync(path.join(root, "src/feltus-code/server/task-runner.mjs"), "utf8"), /isolatedGitEnvironment/);
+  assert.match(codeSecurity, /part === "\.\."/);
+  assert.match(codeSecurity, /isSymbolicLink\(\)/);
+  assert.match(server, /installed\.some\(model => model\.name === requestedModel\)/);
+  assert.match(fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8"), /api\/ai\/runtime\/health/);
+  assert.match(fs.readFileSync(path.join(root, "src/feltus-code/web/index.html"), "utf8"), /id="ai-runtime-status"/);
+  assert.match(server, /const app = await authorizedCodeProject\(appId, permission\)/);
+  assert.match(codeMigration, /CREATE POLICY feltus_code_sessions_read[\s\S]*feltus_can_access_app\(app_id, 'read'\)/);
+  assert.match(codeMigration, /CREATE POLICY feltus_code_actions_insert[\s\S]*actor_id = auth\.uid\(\)/);
+  assert.match(codeMigration, /GRANT UPDATE \(updated_at, model\) ON public\.feltus_code_sessions TO authenticated/);
+  assert.match(codeMigration, /feltus_code/);
+  assert.doesNotMatch(codeAgent, /conversation|history/i, "FELTUS CODE must not append stored conversation history");
+});
+
+check("FELTUS CODE streams plans and cancels stale requests", () => {
+  assert.match(codeAgent, /completeStream/);
+  assert.match(codeGateway, /generateStream/);
+  assert.match(codeServer, /onToken/);
+  assert.match(server, /\/api\/code\/ai\/plan\/stream/);
+  assert.match(server, /requestSignal\.aborted/);
+  assert.match(server, /X-Accel-Buffering": "no"/);
+  assert.match(server, /signal: requestSignal/);
+  assert.match(fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8"), /response\.body\.getReader\(\)/);
+  assert.match(fs.readFileSync(path.join(root, "src/feltus-code/server/task-runner.mjs"), "utf8"), /signal \? \{ signal \} : \{\}/);
+  const projectSwitch = html.match(/function selectActiveProject\(project\)\s*\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(projectSwitch, /codeFrame\.src = "\/api\/code\/ui\?app_id="/);
+});
+
+check("FELTUS CODE AI grounds every action in server-read selected files", () => {
+  const codeWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
+  assert.match(codeAgent, /fileTools\.inspect\(relativePath, \{ forAI: true \}\)/);
+  assert.match(codeAgent, /Server-read selected file context/);
+  assert.match(codeAgent, /required: true, max: 12/);
+  assert.match(codeServer, /aiPlan: async \(\{ prompt, paths, model \}/);
+  assert.match(server, /handlers\.aiPlan\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
+  assert.match(codeAgentWorkflow, /handlers\.aiPlan\(\{ prompt, paths, model \}/);
+  assert.match(codeAgentWorkflow, /handlers\.aiEdit\(\{ prompt, paths, model \}/);
+  assert.match(server, /code: "FILE_CONTEXT_REQUIRED"/);
+  assert.match(codeWeb, /paths: requestPaths/);
+  assert.match(codeWeb, /state\.files\.get\(state\.activePath\)\?\.dirty/);
+  assert.match(codeWeb, /mode: mode\.toLowerCase\(\)/);
+  assert.match(codeWeb, /Select a project file before using/);
+});
+
+check("FELTUS CODE Agent validates a temporary proposal before one-time application", () => {
+  assert.match(server, /runValidatedAgent\(\{/);
+  assert.ok(codeAgentWorkflow.indexOf("await handlers.validateTask") < codeAgentWorkflow.indexOf("await handlers.applyEdit"));
+  assert.match(codeAgentWorkflow, /if \(!value\.validationPassed\) return/);
+  assert.match(codeTaskRunner, /runAgainstProposed/);
+  assert.match(codeServer, /validateTask: async \(\{ task, files \}.*tasks\.runAgainstProposed/s);
+  assert.match(codeTaskRunner, /package\.json is missing; npm validation tasks are unavailable/);
+  assert.match(codeTaskRunner, /"git-status"\s*\|\|\s*taskName === "git-diff"/);
+  const codeWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
+  assert.match(codeWeb, /state\.proposal = null;\s*\$\("proposal"\)\.replaceChildren\(\);\s*\$\("apply-edit"\)\.hidden = true/);
+  assert.match(codeWeb, /renderProposal\(agentResult\.proposal, \{ allowApply: false \}\)/);
+  assert.match(codeWeb, /option\.disabled = true/);
+  assert.match(codeWeb, /window\.confirm\("Allow FELTUS CODE Agent to edit/);
+});
 
 check("AI capability controls and auto model", () => {
   assert.equal((html.match(/id="aiCapabilitySelect"/g) || []).length, 1);
@@ -89,6 +189,65 @@ check("canonical cross-platform package entrypoints", () => {
   assert.equal(packageJson.scripts.start, "node src/server.js");
   assert.equal(packageJson.scripts.check, "node scripts/check.js");
   assert.equal(packageJson.scripts.regression, "node scripts/production-regression.mjs");
+  assert.equal(packageJson.scripts["test:core"], "node scripts/core-platform-tests.mjs");
+});
+
+check("self-hosted core platform services are additive and secured", () => {
+  for (const table of [
+    "feltus_project_memberships", "feltus_ai_runtimes", "feltus_ai_models",
+    "feltus_jobs", "feltus_worker_heartbeats", "feltus_tool_executions",
+    "feltus_knowledge_bases", "feltus_knowledge_chunks", "feltus_usage_records",
+    "feltus_project_secrets", "feltus_deployments"
+  ]) {
+    assert.match(coreMigration, new RegExp(`CREATE TABLE IF NOT EXISTS public\\.${table}`));
+  }
+  assert.match(coreMigration, /feltus_claim_jobs/);
+  assert.match(coreMigration, /FOR UPDATE SKIP LOCKED/);
+  assert.match(coreMigration, /feltus_recover_stale_jobs/);
+  assert.match(coreMigration, /feltus_knowledge_chunks TO service_role/);
+  assert.match(coreMigration, /pgp_sym_encrypt/);
+  assert.match(coreMigration, /REVOKE ALL ON public\.feltus_project_secrets FROM anon, authenticated/);
+  assert.match(coreMigration, /ALTER PUBLICATION supabase_realtime ADD TABLE public\.%I/);
+  assert.match(coreMigration, /'feltus_ai_messages','feltus_jobs'/);
+  assert.match(coreMigration, /app_member_read_policy/);
+  assert.match(server, /FELTUS_SERVICE_ROLE_KEY is required for internal platform operations in production/);
+  assert.match(server, /FELTUS_SERVICE_ROLE_KEY must be a service_role JWT in production/);
+  assert.match(server, /FELTUS_SECRET_ENCRYPTION_KEY must contain at least 32 characters in production/);
+});
+
+check("provider-neutral AI and durable worker are wired for production", () => {
+  assert.match(aiProviders, /class OpenAICompatibleAI/);
+  assert.match(aiProviders, /openai_compatible/);
+  assert.match(aiProviders, /vllm/);
+  assert.match(aiProviders, /llama_cpp/);
+  assert.match(aiProviders, /stream_options: \{ include_usage: true \}/);
+  assert.match(worker, /resolveAIEndpointPolicy/);
+  assert.match(worker, /feltus_claim_jobs/);
+  assert.match(worker, /feltus_recover_stale_jobs/);
+  assert.match(worker, /cancellation_requested/);
+  assert.match(worker, /generateWithCancellation/);
+  assert.match(compose, /^  worker:/m);
+  assert.match(compose, /command: \["node", "src\/worker\.js"\]/);
+  assert.match(compose, /FELTUS_SECRET_ENCRYPTION_KEY/);
+});
+
+check("first-class chat controls remain project-scoped", () => {
+  for (const id of [
+    "newAIConversationButton", "archiveAIConversationButton", "exportAIConversationButton",
+    "stopAIButton", "aiConversationSearch", "aiSystemPromptInput",
+    "aiTemperatureInput", "aiMaxTokensInput", "saveAIConversationSettingsButton"
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /\/api\/ai\/conversations/);
+  assert.match(html, /function renderAIContent/);
+  assert.match(html, /function refreshAIConversations/);
+  assert.match(server, /\/api\/ai\/runtime\/health/);
+  assert.match(server, /\/api\/ai\/embeddings/);
+  assert.match(server, /\/api\/tools\/execute/);
+  assert.match(server, /\/api\/secrets/);
+  assert.match(server, /\/api\/knowledge-bases/);
+  assert.match(server, /\/api\/usage/);
 });
 
 check("CI runs production checks on every branch update", () => {
@@ -131,6 +290,18 @@ check("production auth, cookie and origin protections", () => {
   assert.match(server, /requireOrigin/);
   assert.match(server, /SESSION_TTL_SECONDS = 8 \* 60 \* 60/);
   assert.doesNotMatch(html, /localStorage\.(?:setItem|getItem)\([^\n]*(?:token|session)/i);
+});
+
+check("only FELTUS CODE UI allows same-origin framing", () => {
+  const override = server.match(/if \(String\(req\.method \|\| "GET"\)\.toUpperCase\(\) === "GET" && url\.pathname === "\/api\/code\/ui"\) \{[\s\S]*?\n        \}/)?.[0] || "";
+  assert.match(server, /res\.setHeader\("X-Frame-Options", "DENY"\)/);
+  assert.match(server, /frame-ancestors 'none'/);
+  assert.match(override, /X-Frame-Options", "SAMEORIGIN"/);
+  assert.match(override, /frame-ancestors 'self'/);
+  assert.match(override, /url\.pathname === "\/api\/code\/ui"/);
+  const smoke = fs.readFileSync(path.join(root, "scripts/production-smoke.mjs"), "utf8");
+  assert.match(smoke, /health\.headers\["x-frame-options"\], "DENY"/);
+  assert.match(smoke, /protectedCodeUI\.headers\["x-frame-options"\], "SAMEORIGIN"/);
 });
 
 check("owner-only password recovery and redirect protections", () => {
@@ -389,7 +560,7 @@ check("project-scoped AI conversation storage and authorization", () => {
   assert.match(server, /url\.pathname === "\/api\/ai\/messages"/);
   assert.match(server, /"&app_id=eq\." \+ encodeURIComponent\(appId\)/);
   assert.match(server, /conversation_id: conversationState\.conversation\.id/);
-  assert.match(html, /"\/api\/ai\/conversation"/);
+  assert.match(html, /"\/api\/ai\/conversations"/);
   assert.match(html, /"\/api\/ai\/messages\?app_id="/);
   assert.match(html, /conversation_id:\s*activeAIConversationId/);
   assert.match(server, /loadAuthorizedAIHistory\(/);
@@ -446,11 +617,15 @@ check("current API route inventory covers server handlers", () => {
 
 check("production Docker runtime and build-context exclusions", () => {
   assert.match(dockerfile, /^FROM node:22-alpine/m);
+  assert.match(dockerfile, /^RUN apk add --no-cache git$/m);
+  assert.match(dockerfile, /^RUN git --version$/m);
+  assert.match(compose, /^  app:[\s\S]{0,150}dockerfile: Dockerfile/m);
+  assert.match(compose, /^  worker:[\s\S]{0,150}dockerfile: Dockerfile/m);
   assert.match(dockerfile, /npm ci --omit=dev/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^HEALTHCHECK /m);
   assert.match(dockerfile, /CMD \["node", "src\/server\.js"\]/);
-  for (const pattern of ["node_modules", "__pycache__", "*.py[cod]", ".env", ".env.*", ".feltus-dev-auth.json", ".feltus-storage", ".feltus-runtime", "**/*.bak", "**/*.backup*", "index.before-*.html", "**/*-backup", "**/*.pre-*"]) {
+  for (const pattern of ["node_modules", "__pycache__", "*.py[cod]", ".env", ".env.*", ".feltus-dev-auth.json", ".feltus-storage", ".feltus-runtime", "src/feltus-code/dev-server.mjs", "src/feltus-code/package.json", "src/feltus-code/migrations/", "**/*.bak", "**/*.backup*", "index.before-*.html", "**/*-backup", "**/*.pre-*"]) {
     assert.ok(dockerignore.split(/\r?\n/).includes(pattern), `Docker build context does not exclude ${pattern}`);
   }
 });
@@ -461,8 +636,9 @@ check("timestamped database, file and configuration backups", () => {
   assert.match(backupScript, /pg_dump/);
   assert.match(backupScript, /pg_restore --list/);
   assert.match(storageBackupScript, /tar -tzf/);
-  assert.match(storageBackupScript, /for entry in documents object-storage/);
+  assert.match(storageBackupScript, /for entry in documents object-storage code-workspaces/);
   assert.match(storageRestoreScript, /tar -xzf/);
+  assert.match(storageRestoreScript, /for entry in documents object-storage code-workspaces/);
   assert.match(deployment, /pg_restore --clean --if-exists/);
   assert.match(deployment, /stop writes on the old stack/);
 });
@@ -514,10 +690,10 @@ const smoke = spawnSync(
   { cwd: root, encoding: "utf8", timeout: 30000 }
 );
 if (smoke.status === 0) {
-  results.push({ name: "production handler liveness, session gate, and recovery throttling", status: "PASS" });
+  results.push({ name: "production handler liveness, session gate, FELTUS CODE access, and recovery throttling", status: "PASS" });
 } else {
   results.push({
-    name: "production handler liveness, session gate, and recovery throttling",
+    name: "production handler liveness, session gate, FELTUS CODE access, and recovery throttling",
     status: "FAIL",
     message: smoke.stderr?.trim() || smoke.error?.message || "production handler smoke failed"
   });
