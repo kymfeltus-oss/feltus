@@ -26,7 +26,8 @@
     path,
     {
       method = "GET",
-      body = null
+      body = null,
+      signal = null
     } = {}
   ) {
     if (!this.baseUrl) {
@@ -71,7 +72,9 @@
             redirect: "manual",
 
             signal:
-              controller.signal
+              signal
+                ? AbortSignal.any([controller.signal, signal])
+                : controller.signal
           }
         );
 
@@ -132,7 +135,9 @@
       model = this.model,
       temperature = 0,
       numPredict = 256,
-      keepAlive = "10m"
+      keepAlive = "10m",
+      systemPrompt = "",
+      signal = null
     } = {}
   ) {
     if (
@@ -154,6 +159,7 @@
           body: {
             model,
             prompt: prompt.trim(),
+              system: String(systemPrompt || "").trim() || undefined,
             stream: false,
 
             keep_alive:
@@ -165,7 +171,9 @@
               num_predict:
                 numPredict
             }
-          }
+            },
+
+          signal
         }
       );
 
@@ -189,7 +197,9 @@
       model = this.model,
       temperature = 0,
       numPredict = 256,
-      keepAlive = "10m"
+      keepAlive = "10m",
+      systemPrompt = "",
+      signal = null
     } = {}
   ) {
     if (!this.baseUrl) {
@@ -238,6 +248,9 @@
                 prompt:
                   prompt.trim(),
 
+                system:
+                  String(systemPrompt || "").trim() || undefined,
+
                 stream:
                   true,
 
@@ -255,7 +268,9 @@
             redirect: "manual",
 
             signal:
-              controller.signal
+              signal
+                ? AbortSignal.any([controller.signal, signal])
+                : controller.signal
           }
         );
 
@@ -362,6 +377,28 @@
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+
+  async embeddings(
+    input,
+    {
+      model = this.model
+    } = {}
+  ) {
+    const values = Array.isArray(input) ? input : [input];
+    const result = await this.request("/api/embed", {
+      method: "POST",
+      body: {
+        model,
+        input: values.map(value => String(value || ""))
+      }
+    });
+    return {
+      model,
+      embeddings: Array.isArray(result.embeddings) ? result.embeddings : [],
+      usage: null
+    };
   }
 }
 

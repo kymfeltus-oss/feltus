@@ -23,6 +23,8 @@ Object.assign(process.env, {
   FELTUS_EVIDENCE_EXTRACTION_URL: "http://127.0.0.1:1",
   FELTUS_EVIDENCE_EXTRACTION_TOKEN: "local-smoke-evidence-extractor-token-0001",
   FELTUS_PUBLISHABLE_KEY: "local-smoke-anon-key",
+  FELTUS_SERVICE_ROLE_KEY: "e30.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.local-smoke-signature",
+  FELTUS_SECRET_ENCRYPTION_KEY: "local-smoke-secret-encryption-key-000000000001",
   FELTUS_OWNER_EMAIL: "smoke-owner@example.com",
   FELTUS_STORAGE_ROOT: storageRoot
 });
@@ -104,6 +106,14 @@ try {
   const protectedAI = await request("GET", "/api/ai/status");
   assert.equal(protectedAI.statusCode, 401);
 
+  const protectedCode = await request(
+    "GET",
+    "/api/code/tree?app_id=00000000-0000-0000-0000-000000000001"
+  );
+  assert.equal(protectedCode.statusCode, 401);
+  const protectedCodeUI = await request("GET", "/api/code/ui?app_id=00000000-0000-0000-0000-000000000001");
+  assert.equal(protectedCodeUI.statusCode, 401);
+
   const rejectedOrigin = await request(
     "POST",
     "/api/auth/login",
@@ -169,7 +179,7 @@ try {
     globalThis.fetch = originalFetch;
   }
 
-  process.stdout.write("PASS production handler liveness, session gate, and recovery throttling\n");
+  process.stdout.write("PASS production handler liveness, session gate, code access, and recovery throttling\n");
 } finally {
   const resolvedStorage = path.resolve(storageRoot);
   const resolvedRuntimeRoot = path.resolve(runtimeRoot);

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FELTUS CODE</title>
+  <link rel="stylesheet" href="/code-assets/feltus-code.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand"><strong>FELTUS CODE</strong><small id="session-title">Project code workspace</small></div>
+      <div class="top-actions"><span id="branch" class="branch">Git status</span><button id="refresh-tree">Refresh</button></div>
+    </header>
+
+    <section id="workspace-setup" class="workspace-setup" hidden>
+      <div class="setup-mark">F</div>
+      <h2>Create this project's private code workspace</h2>
+      <p>FELTUS will create an isolated repository inside its persistent workspace volume. The browser never selects a server path. The new repository starts empty.</p>
+      <button id="initialize-workspace" class="primary">Initialize project repository</button>
+    </section>
+
+    <main id="workspace-app" hidden>
+      <aside class="repository panel">
+        <div class="section-heading"><div><h2>Repository</h2><small id="tree-path">.</small></div><button id="tree-up" title="Parent folder">↑</button></div>
+        <div class="repo-actions"><button id="new-file">New file</button></div>
+        <input id="search" type="search" placeholder="Search this repository · Enter" />
+        <div id="search-results" class="search-results"></div>
+        <div id="tree" class="tree" aria-label="Project repository files"></div>
+        <div class="git-panel"><div class="section-heading"><h3>Git</h3><button id="git-log">Log</button></div><pre id="git-status">Loading status…</pre></div>
+      </aside>
+
+      <section class="editor panel">
+        <div class="editor-top">
+          <div id="tabs" class="tabs"></div>
+          <div class="editor-tools">
+            <strong id="active-file">No file selected</strong>
+            <div class="editor-buttons">
+              <button id="rename-file">Move/Rename</button>
+              <button id="delete-file" class="danger">Delete</button>
+              <button id="git-stage-current">Stage current</button>
+              <button id="git-checkpoint">Commit staged</button>
+              <button id="git-diff">Diff</button>
+              <button id="git-staged-diff">Staged diff</button>
+              <button id="save" class="primary" disabled>Save</button>
+            </div>
+          </div>
+        </div>
+        <div class="code-editor">
+          <pre id="line-numbers" aria-hidden="true">1</pre>
+          <textarea id="code" spellcheck="false" aria-label="Code editor" disabled></textarea>
+        </div>
+        <div class="output-panel">
+          <div class="output-heading"><strong id="output-title">Task output</strong><label>Validation task <select id="agent-task"></select></label><button id="run-task">Run task</button></div>
+          <pre id="output">Select a project file or run an allowlisted validation task.</pre>
+        </div>
+      </section>
+
+      <aside class="assistant panel">
+        <div class="section-heading"><div><h2>FELTUS AI</h2><small>Requests use the configured FELTUS provider and trust policy.</small><small id="ai-runtime-status" role="status">Checking runtime…</small></div></div>
+        <label class="field-label" for="model">Model</label>
+        <select id="model"></select>
+        <label class="field-label" for="prompt">Task</label>
+        <textarea id="prompt" placeholder="Describe the plan, edit, fix, explanation, or review you need…"></textarea>
+        <div class="agent-actions">
+          <button id="plan">Plan</button><button id="edit">Edit</button><button id="fix">Fix</button>
+          <button id="explain">Explain</button><button id="review">Review</button>
+        </div>
+        <div class="agent-run"><button id="agent" class="primary">Run Agent with validation</button></div>
+        <button id="cancel-ai" class="danger" hidden>Cancel AI request</button>
+        <p class="agent-note">Edit proposals show a review diff before applying. Agent runs require confirmation, edit only the selected file, and can run only an allowlisted FELTUS task.</p>
+        <div id="proposal" class="proposal"></div>
+        <button id="apply-edit" class="primary" hidden>Accept and apply edit</button>
+      </aside>
+    </main>
+
+    <footer><span id="status" role="status" aria-live="polite">Starting FELTUS CODE…</span><span>FELTUS LABS · Project isolated</span></footer>
+  </div>
+  <script type="module" src="/code-assets/feltus-code.js"></script>
+</body>
+</html>

@@ -19,11 +19,16 @@ services:
       FELTUS_PUBLIC_URL: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
       FELTUS_GATEWAY_URL: http://gateway:8000
       FELTUS_PUBLISHABLE_KEY: ${ANON_KEY:?set ANON_KEY}
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_SECRET_ENCRYPTION_KEY: ${FELTUS_SECRET_ENCRYPTION_KEY:?set FELTUS_SECRET_ENCRYPTION_KEY}
       FELTUS_OWNER_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
       FELTUS_ALLOWED_ORIGINS: ${FELTUS_ALLOWED_ORIGINS:-https://feltuslabs.com,https://www.feltuslabs.com}
       FELTUS_AI_ENDPOINT: ${FELTUS_AI_ENDPOINT:-}
       FELTUS_AI_BASE_URL: ${FELTUS_AI_BASE_URL:-}
       FELTUS_AI_ENDPOINT_TRUST: ${FELTUS_AI_ENDPOINT_TRUST:-external_unverified}
+      FELTUS_AI_PROVIDER: ${FELTUS_AI_PROVIDER:-ollama}
+      FELTUS_AI_RUNTIME_KEY: ${FELTUS_AI_RUNTIME_KEY:-}
+      FELTUS_AI_TIMEOUT_MS: ${FELTUS_AI_TIMEOUT_MS:-600000}
       FELTUS_AI_SEND_HISTORY: ${FELTUS_AI_SEND_HISTORY:-false}
       FELTUS_AI_SEND_PROJECT_CONTEXT: ${FELTUS_AI_SEND_PROJECT_CONTEXT:-false}
       FELTUS_AI_MAX_HISTORY_MESSAGES: ${FELTUS_AI_MAX_HISTORY_MESSAGES:-20}
@@ -31,11 +36,13 @@ services:
       FELTUS_AI_TRUSTED_HOSTS: ${FELTUS_AI_TRUSTED_HOSTS:-}
       FELTUS_AI_MODEL: ${FELTUS_AI_MODEL:-llama3:8b}
       FELTUS_STORAGE_ROOT: /data/feltus-storage
+      FELTUS_CODE_WORKSPACE_ROOT: /data/feltus-code
       FELTUS_EVIDENCE_EXTRACTION_URL: http://evidence-extractor:8090
       FELTUS_EVIDENCE_EXTRACTION_TOKEN: ${FELTUS_EVIDENCE_EXTRACTION_TOKEN:?Set FELTUS_EVIDENCE_EXTRACTION_TOKEN in Coolify}
       FELTUS_EVIDENCE_EXTRACTION_TIMEOUT_MS: 180000
     volumes:
       - feltus_documents:/data/feltus-storage
+      - feltus_code_workspaces:/data/feltus-code
     expose:
       - "8080"
     depends_on:
@@ -51,6 +58,54 @@ services:
       - ALL
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "src/worker.js"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    environment:
+      NODE_ENV: production
+      FELTUS_ENV: production
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_AI_ENDPOINT: ${FELTUS_AI_ENDPOINT:-}
+      FELTUS_AI_BASE_URL: ${FELTUS_AI_BASE_URL:-}
+      FELTUS_AI_PROVIDER: ${FELTUS_AI_PROVIDER:-ollama}
+      FELTUS_AI_RUNTIME_KEY: ${FELTUS_AI_RUNTIME_KEY:-}
+      FELTUS_AI_TIMEOUT_MS: ${FELTUS_AI_TIMEOUT_MS:-600000}
+      FELTUS_AI_ENDPOINT_TRUST: ${FELTUS_AI_ENDPOINT_TRUST:-external_unverified}
+      FELTUS_AI_ALLOWED_PRIVATE_HOSTS: ${FELTUS_AI_ALLOWED_PRIVATE_HOSTS:-}
+      FELTUS_AI_TRUSTED_HOSTS: ${FELTUS_AI_TRUSTED_HOSTS:-}
+      FELTUS_AI_MODEL: ${FELTUS_AI_MODEL:-llama3:8b}
+      FELTUS_AI_SEND_HISTORY: "false"
+      FELTUS_AI_SEND_PROJECT_CONTEXT: "false"
+      FELTUS_AI_MAX_HISTORY_MESSAGES: 20
+      FELTUS_WORKER_PORT: 8081
+      FELTUS_WORKER_POLL_MS: ${FELTUS_WORKER_POLL_MS:-1000}
+      FELTUS_JOB_LEASE_SECONDS: ${FELTUS_JOB_LEASE_SECONDS:-180}
+    expose:
+      - "8081"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 20s
@@ -351,6 +406,7 @@ services:
     volumes:
       - feltus_documents:/data/documents:ro
       - feltus_object_storage:/data/object-storage:ro
+      - feltus_code_workspaces:/data/code-workspaces:ro
       - type: bind
         source: ${FELTUS_BACKUP_DIR}
         target: /backups
@@ -370,6 +426,7 @@ services:
     volumes:
       - feltus_documents:/data/documents
       - feltus_object_storage:/data/object-storage
+      - feltus_code_workspaces:/data/code-workspaces
       - type: bind
         source: ${FELTUS_BACKUP_DIR}
         target: /backups
@@ -384,3 +441,4 @@ volumes:
   feltus_postgres:
   feltus_documents:
   feltus_object_storage:
+  feltus_code_workspaces:

@@ -9,6 +9,11 @@ import dotenv from "dotenv";
 import { resolveAIEndpointPolicy } from "./lib/feltus-ai-policy.js";
 import { loadAuthorizedAIHistory } from "./lib/feltus-ai-history.js";
 import { composeAIPrompt } from "./lib/feltus-ai-prompt.js";
+import { createAIProvider, publicRuntimeMetadata } from "./lib/feltus-ai-providers.js";
+import { BUILT_IN_TOOLS, executeBuiltInTool, toolByKey } from "./lib/feltus-tools.js";
+import { createFeltusCodeHandlers } from "./feltus-code/server/routes.mjs";
+import { createFeltusCodeAIGateway } from "./feltus-code/server/ai-gateway.mjs";
+import { assertNoSymlinkTraversal } from "./feltus-code/server/security.mjs";
 
 dotenv.config();
 
@@ -100,7 +105,10 @@ if (
 const API_KEY =
   process.env.FELTUS_PUBLISHABLE_KEY ||
   process.env.FELTUS_API_KEY;
+const SERVICE_ROLE_KEY = process.env.FELTUS_SERVICE_ROLE_KEY || "";
+const SECRET_ENCRYPTION_KEY = process.env.FELTUS_SECRET_ENCRYPTION_KEY || "";
 let apiKeyRole = null;
+let serviceKeyRole = null;
 
 try {
   const payload = API_KEY?.split(".")[1];
@@ -111,6 +119,14 @@ try {
     : null;
 } catch {
   apiKeyRole = null;
+}
+try {
+  const payload = SERVICE_ROLE_KEY?.split(".")[1];
+  serviceKeyRole = payload
+    ? JSON.parse(Buffer.from(payload, "base64url").toString("utf8")).role || null
+    : null;
+} catch {
+  serviceKeyRole = null;
 }
 const OWNER_EMAIL =
   (process.env.FELTUS_OWNER_EMAIL || "")
@@ -125,9 +141,8 @@ const requestContext = new AsyncLocalStorage();
 
 async function createConfiguredAI() {
   const policy = await resolveAIEndpointPolicy(process.env);
-  const { FeltusAI } = await import("./lib/feltus-ai.js");
   return {
-    ai: new FeltusAI({ baseUrl: policy.endpoint }),
+    ai: createAIProvider({ ...process.env, FELTUS_AI_ENDPOINT: policy.endpoint }),
     policy
   };
 }
@@ -136,6 +151,20 @@ const STORAGE_ROOT = path.resolve(
   process.env.FELTUS_STORAGE_ROOT ||
     path.join(projectRoot, ".feltus-storage")
 );
+
+const CODE_WORKSPACE_ROOT = path.resolve(
+  process.env.FELTUS_CODE_WORKSPACE_ROOT ||
+    path.join(STORAGE_ROOT, "code-workspaces")
+);
+fs.mkdirSync(CODE_WORKSPACE_ROOT, { recursive: true });
+const canonicalCodeWorkspaceRoot = fs.realpathSync(CODE_WORKSPACE_ROOT);
+if (
+  process.platform === "win32"
+    ? canonicalCodeWorkspaceRoot.toLowerCase() !== CODE_WORKSPACE_ROOT.toLowerCase()
+    : canonicalCodeWorkspaceRoot !== CODE_WORKSPACE_ROOT
+) {
+  throw new Error("FELTUS_CODE_WORKSPACE_ROOT cannot resolve through a symlink.");
+}
 
 const DOCUMENT_STORAGE_ROOT =
   path.join(
@@ -245,6 +274,18 @@ if (IS_PRODUCTION) {
     throw new Error("FELTUS_GATEWAY_URL is required in production.");
   }
 
+  if (!SERVICE_ROLE_KEY) {
+    throw new Error("FELTUS_SERVICE_ROLE_KEY is required for internal platform operations in production.");
+  }
+
+  if (serviceKeyRole !== "service_role") {
+    throw new Error("FELTUS_SERVICE_ROLE_KEY must be a service_role JWT in production.");
+  }
+
+  if (SECRET_ENCRYPTION_KEY.length < 32) {
+    throw new Error("FELTUS_SECRET_ENCRYPTION_KEY must contain at least 32 characters in production.");
+  }
+
   let evidenceExtractionUrl;
   try {
     evidenceExtractionUrl = new URL(EVIDENCE_EXTRACTION_URL);
@@ -329,14 +370,14 @@ function trustedOrigin(
   return ALLOWED_ORIGINS.has(origin);
 }
 
-async function readBody(req) {
+async function readBody(req, maxBytes = 32768) {
   let body = "";
   let bytes = 0;
 
   for await (const chunk of req) {
     bytes += chunk.length;
 
-    if (bytes > 32768) {
+    if (bytes > maxBytes) {
       const error =
         new Error("Request too large.");
 
@@ -2075,6 +2116,479 @@ async function tableRequest(
   return result;
 }
 
+
+async function serviceRequest(
+  endpoint,
+  {
+    method = "GET",
+    body = null,
+    prefer = ""
+  } = {}
+) {
+  if (!SERVICE_ROLE_KEY) {
+    return {
+      status: 503,
+      data: {
+        error: "FELTUS service operations are not configured."
+      }
+    };
+  }
+  return upstream(endpoint, {
+    method,
+    headers: {
+      apikey: SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+      ...(prefer ? { Prefer: prefer } : {})
+    },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+}
+
+
+async function authorizedProject(appId) {
+  if (typeof appId !== "string" || !UUID_PATTERN.test(appId)) {
+    return null;
+  }
+  const result = await tableRequest("feltus_applications", "GET", {
+    query:
+      "?select=id,app_name,environment,owner_id" +
+      "&id=eq." + encodeURIComponent(appId) +
+      "&limit=1"
+  });
+  return result.status >= 200 && result.status < 300 && Array.isArray(result.data)
+    ? result.data[0] || null
+    : null;
+}
+
+async function authorizedCodeProject(appId, permission = "read") {
+  const app = await authorizedProject(appId);
+  const actorId = activeSession()?.user?.id;
+  if (!app || !actorId) return null;
+  if (permission === "read" || app.owner_id === actorId) return app;
+
+  const membershipResult = await tableRequest("feltus_project_memberships", "GET", {
+    query:
+      "?select=role,permissions,disabled_at" +
+      "&app_id=eq." + encodeURIComponent(appId) +
+      "&user_id=eq." + encodeURIComponent(actorId) +
+      "&limit=1"
+  });
+  const membership = Array.isArray(membershipResult.data) ? membershipResult.data[0] : null;
+  if (membershipResult.status < 200 || membershipResult.status >= 300 || !membership || membership.disabled_at) return null;
+  const writeRoles = new Set(["owner", "admin", "developer", "operator"]);
+  const explicitWrite = membership.permissions?.write === true;
+  return writeRoles.has(membership.role) || explicitWrite ? app : null;
+}
+
+function codeRepositoryRoot(appId) {
+  if (!UUID_PATTERN.test(String(appId || ""))) throw Object.assign(new Error("Valid application ID required."), { status: 400, code: "INVALID_PROJECT_ID" });
+  return path.join(CODE_WORKSPACE_ROOT, appId);
+}
+
+async function ensureCodeSession(app, { create = true, title = "Code session", model = null } = {}) {
+  const actorId = activeSession()?.user?.id;
+  if (!actorId) throw Object.assign(new Error("Authentication required."), { status: 401, code: "AUTH_REQUIRED" });
+  const query =
+    "?select=id,app_id,owner_id,created_by,title,repo_ref,model,status,created_at,updated_at" +
+    "&app_id=eq." + encodeURIComponent(app.id) +
+    "&owner_id=eq." + encodeURIComponent(app.owner_id) +
+    "&status=eq.ACTIVE&order=updated_at.desc&limit=1";
+  const result = await tableRequest("feltus_code_sessions", "GET", { query });
+  if (result.status < 200 || result.status >= 300) throw Object.assign(new Error("FELTUS CODE session storage is unavailable."), { status: result.status, code: "CODE_SESSION_STORAGE_UNAVAILABLE" });
+  const existing = Array.isArray(result.data) ? result.data[0] : null;
+  if (existing || !create) return existing;
+
+  const created = await tableRequest("feltus_code_sessions", "POST", {
+    body: {
+      app_id: app.id,
+      owner_id: app.owner_id,
+      created_by: actorId,
+      title: String(title || "Code session").slice(0, 120),
+      repo_ref: app.id,
+      model,
+      status: "ACTIVE"
+    }
+  });
+  const session = Array.isArray(created.data) ? created.data[0] : null;
+  if (created.status === 409) {
+    const raced = await tableRequest("feltus_code_sessions", "GET", { query });
+    if (raced.status >= 200 && raced.status < 300 && Array.isArray(raced.data) && raced.data[0]) return raced.data[0];
+  }
+  if (created.status < 200 || created.status >= 300 || !session) throw Object.assign(new Error("FELTUS CODE session could not be created."), { status: created.status || 500, code: "CODE_SESSION_CREATE_FAILED" });
+  return session;
+}
+
+async function recordCodeAction(app, session, {
+  actionType,
+  targetPath = null,
+  taskName = null,
+  model = null,
+  prompt = null,
+  summary = null,
+  resultStatus = "complete",
+  usage = {},
+  details = {}
+}) {
+  const actorId = activeSession()?.user?.id;
+  const cleanedDetails = JSON.parse(JSON.stringify(details, (_key, value) => {
+    if (typeof value === "string") return value.slice(0, 200000);
+    return value;
+  }));
+  const saved = await tableRequest("feltus_code_actions", "POST", {
+    body: {
+      session_id: session.id,
+      app_id: app.id,
+      actor_id: actorId,
+      action_type: String(actionType).slice(0, 80),
+      target_path: targetPath ? String(targetPath).slice(0, 1024) : null,
+      task_name: taskName,
+      model,
+      prompt: prompt ? String(prompt).slice(0, 12000) : null,
+      summary: summary ? String(summary).slice(0, 4000) : null,
+      result_status: resultStatus,
+      request_id: requestContext.getStore()?.requestId || null,
+      usage: usage && typeof usage === "object" ? usage : {},
+      details: cleanedDetails && typeof cleanedDetails === "object" ? cleanedDetails : {}
+    }
+  });
+  if (saved.status < 200 || saved.status >= 300) throw Object.assign(new Error("FELTUS CODE activity could not be persisted."), { status: saved.status, code: "CODE_ACTION_PERSIST_FAILED" });
+  await tableRequest("feltus_code_sessions", "PATCH", {
+    query: "?id=eq." + encodeURIComponent(session.id) + "&app_id=eq." + encodeURIComponent(app.id),
+    body: { updated_at: new Date().toISOString(), ...(model ? { model } : {}) }
+  });
+}
+
+function codeStructuredError(res, error, fallbackStatus = 400) {
+  const status = Number.isInteger(error?.status) ? error.status : fallbackStatus;
+  return send(res, status, {
+    ok: false,
+    code: error?.code || "FELTUS_CODE_REQUEST_FAILED",
+    error: status >= 500 ? "FELTUS CODE request failed." : (error?.message || "FELTUS CODE request failed."),
+    request_id: requestContext.getStore()?.requestId || null
+  });
+}
+
+function requestAbortController(req, res) {
+  const controller = new AbortController();
+  const abort = () => { if (!controller.signal.aborted) controller.abort(); };
+  req.once("aborted", abort);
+  res.once("close", () => { if (!res.writableEnded) abort(); });
+  return controller;
+}
+
+async function handleFeltusCodeRequest(req, res, url) {
+  if (url.pathname === "/api/code/ui" && req.method === "GET") {
+    const html = await fs.promises.readFile(path.join(projectRoot, "src", "feltus-code", "web", "index.html"));
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end(html);
+    return true;
+  }
+  if (url.pathname.startsWith("/code-assets/")) {
+    if (req.method !== "GET") { send(res, 405, { code: "METHOD_NOT_ALLOWED", error: "Method not allowed." }); return true; }
+    const asset = url.pathname.slice("/code-assets/".length);
+    const contentTypes = { "feltus-code.js": "text/javascript; charset=utf-8", "feltus-code.css": "text/css; charset=utf-8" };
+    if (!Object.hasOwn(contentTypes, asset)) { send(res, 404, { error: "Code asset not found." }); return true; }
+    const content = await fs.promises.readFile(path.join(projectRoot, "src", "feltus-code", "web", asset));
+    res.writeHead(200, { "Content-Type": contentTypes[asset], "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.end(content);
+    return true;
+  }
+  if (!url.pathname.startsWith("/api/code/")) return false;
+
+  const method = String(req.method || "GET").toUpperCase();
+  if (!new Set(["GET", "POST", "PUT", "DELETE"]).has(method)) {
+    res.setHeader("Allow", "GET, POST, PUT, DELETE");
+    send(res, 405, { code: "METHOD_NOT_ALLOWED", error: "Method not allowed." });
+    return true;
+  }
+  const limit = consumeOperationRateLimit(req, "feltus-code", 120, 60 * 60 * 1000);
+  if (!limit.allowed) { sendRateLimitResponse(res, limit); return true; }
+
+  let codePlanStreamStarted = false;
+  try {
+    const body = method === "GET" ? {} : await readBody(req, 2 * 1024 * 1024);
+    const appId = body.app_id || url.searchParams.get("app_id");
+    if (!appId || !UUID_PATTERN.test(appId)) {
+      send(res, 400, { code: "INVALID_PROJECT_ID", error: "Valid FELTUS project ID required." });
+      return true;
+    }
+    const route = url.pathname;
+    const workspaceRoute = route === "/api/code/workspace";
+    const sessionRoute = route === "/api/code/session";
+    const readOnlyRoute = method === "GET";
+    const permission = readOnlyRoute ? "read" : "write";
+    const app = await authorizedCodeProject(appId, permission);
+    if (!app) {
+      send(res, 404, { code: "PROJECT_ACCESS_DENIED", error: "FELTUS project not found or access denied." });
+      return true;
+    }
+
+    if (sessionRoute) {
+      if (method === "GET") {
+        const session = await ensureCodeSession(app, { create: false });
+        send(res, 200, { ok: true, session });
+        return true;
+      }
+      if (method === "POST") {
+        const session = await ensureCodeSession(app, { title: body.title || app.app_name, model: body.model || null });
+        send(res, 200, { ok: true, session });
+        return true;
+      }
+    }
+
+    const repoRoot = codeRepositoryRoot(app.id);
+    if (workspaceRoute) {
+      if (method === "GET") {
+        const exists = fs.existsSync(repoRoot);
+        let git = { available: false };
+        if (exists) git = await createFeltusCodeHandlers({ repoRoot }).gitStatus().then(() => ({ available: true })).catch(() => ({ available: false }));
+        send(res, 200, { ok: true, initialized: exists && git.available, git_available: git.available });
+        return true;
+      }
+      if (method !== "POST" || body.action !== "initialize") {
+        send(res, 400, { code: "WORKSPACE_ACTION_REQUIRED", error: "Use action=initialize to create this project's private code workspace." });
+        return true;
+      }
+      fs.mkdirSync(CODE_WORKSPACE_ROOT, { recursive: true });
+      fs.mkdirSync(repoRoot, { recursive: true });
+      await assertNoSymlinkTraversal(CODE_WORKSPACE_ROOT, app.id);
+      const code = createFeltusCodeHandlers({ repoRoot });
+      const initialized = await code.gitInitialize();
+      const session = await ensureCodeSession(app, { title: body.title || app.app_name });
+      await recordCodeAction(app, session, { actionType: "workspace.initialize", summary: initialized.initialized ? "Initialized private project repository" : "Project repository already initialized" });
+      send(res, 200, { ok: true, workspace: { initialized: true }, result: initialized, session });
+      return true;
+    }
+
+    if (!fs.existsSync(repoRoot)) {
+      send(res, 409, { code: "CODE_WORKSPACE_NOT_INITIALIZED", error: "Initialize this project's private code workspace first." });
+      return true;
+    }
+    await assertNoSymlinkTraversal(CODE_WORKSPACE_ROOT, app.id);
+    const session = method === "GET" ? null : await ensureCodeSession(app, { title: app.app_name });
+    const code = createFeltusCodeHandlers({ repoRoot });
+    const requestSignal = requestAbortController(req, res).signal;
+
+    if (route === "/api/code/tree" && method === "GET") {
+      const result = await code.listTree({ path: url.searchParams.get("path") || "." });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/file" && method === "GET") {
+      const result = await code.readFile({ path: url.searchParams.get("path") || "" });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/file" && method === "PUT") {
+      const result = await code.writeFile({ path: body.path, content: body.content, expected_sha256: body.expected_sha256 });
+      await recordCodeAction(app, session, { actionType: "file.write", targetPath: body.path, summary: `Updated ${body.path}` });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/file/create" && method === "POST") {
+      const result = await code.createFile({ path: body.path, content: body.content || "" });
+      await recordCodeAction(app, session, { actionType: "file.create", targetPath: body.path, summary: `Created ${body.path}` });
+      send(res, 201, result); return true;
+    }
+    if (route === "/api/code/directory" && method === "POST") {
+      const result = await code.createDirectory({ path: body.path });
+      await recordCodeAction(app, session, { actionType: "directory.create", targetPath: body.path, summary: `Created ${body.path}` });
+      send(res, 201, result); return true;
+    }
+    if (route === "/api/code/rename" && method === "POST") {
+      const result = await code.rename({ from: body.from, to: body.to });
+      await recordCodeAction(app, session, { actionType: "file.rename", targetPath: body.to, summary: `Renamed ${body.from} to ${body.to}` });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/file" && method === "DELETE") {
+      const result = await code.remove({ path: url.searchParams.get("path"), confirm: url.searchParams.get("confirm") === "true" });
+      await recordCodeAction(app, session, { actionType: "file.delete", targetPath: url.searchParams.get("path"), summary: "Deleted confirmed project file" });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/search" && method === "GET") {
+      send(res, 200, await code.search({ q: url.searchParams.get("q"), limit: Number(url.searchParams.get("limit") || 50) })); return true;
+    }
+    if (route === "/api/code/repo-map" && method === "GET") {
+      send(res, 200, await code.repoMap()); return true;
+    }
+    if (route === "/api/code/git/status" && method === "GET") {
+      send(res, 200, await code.gitStatus()); return true;
+    }
+    if (route === "/api/code/git/diff" && method === "GET") {
+      send(res, 200, await code.gitDiff({ staged: url.searchParams.get("staged") === "true" })); return true;
+    }
+    if (route === "/api/code/git/log" && method === "GET") {
+      send(res, 200, await code.gitLog({ limit: Number(url.searchParams.get("limit") || 20) })); return true;
+    }
+    if (route === "/api/code/git/stage" && method === "POST") {
+      const result = await code.gitStage({ paths: body.paths });
+      await recordCodeAction(app, session, { actionType: "git.stage", summary: `Staged ${(body.paths || []).length} path(s)` });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/git/checkpoint" && method === "POST") {
+      const result = await code.checkpoint({ message: body.message, confirm: body.confirm === true });
+      const commit = await code.gitLog({ limit: 1 });
+      const commitText = commit.stdout.split("\t")[0] || "unknown";
+      const saved = await tableRequest("feltus_code_checkpoints", "POST", { body: { session_id: session.id, app_id: app.id, actor_id: activeSession().user.id, git_commit: commitText, label: String(body.message || "FELTUS CODE checkpoint").slice(0, 200) } });
+      if (saved.status < 200 || saved.status >= 300) throw Object.assign(new Error("Checkpoint succeeded but FELTUS checkpoint record could not be saved."), { status: 500, code: "CHECKPOINT_RECORD_FAILED" });
+      await recordCodeAction(app, session, { actionType: "git.checkpoint", summary: `Committed ${commitText}` });
+      send(res, 200, { ...result, commit: commitText }); return true;
+    }
+    if (route === "/api/code/tasks" && method === "GET") {
+      send(res, 200, await code.listTasks()); return true;
+    }
+    if (route === "/api/code/task" && method === "POST") {
+      const result = await code.runTask({ task: body.task });
+      await recordCodeAction(app, session, { actionType: "task.run", taskName: body.task, summary: `Task ${body.task} exited ${result.result?.code}`, resultStatus: result.result?.code === 0 ? "complete" : "failed", details: result.result });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/ai/plan" || route === "/api/code/ai/plan/stream" || route === "/api/code/ai/edit" || route === "/api/code/ai/agent") {
+      const aiLimit = consumeOperationRateLimit(req, "feltus-code-ai", 10, 60 * 60 * 1000);
+      if (!aiLimit.allowed) { sendRateLimitResponse(res, aiLimit); return true; }
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt || prompt.length > 8000) { send(res, 400, { code: "INVALID_CODE_PROMPT", error: "Prompt must contain 1 to 8000 characters." }); return true; }
+      const { ai, policy } = await createConfiguredAI();
+      if (!policy.sendProjectContext) { send(res, 403, { code: "AI_CODE_CONTEXT_NOT_APPROVED", error: "The AI endpoint trust policy does not allow sending project code context." }); return true; }
+      const installed = await ai.listModels();
+      const requestedModel = String(body.model || ai.model);
+      if (!installed.some(model => model.name === requestedModel)) { send(res, 400, { code: "FELTUS_AI_MODEL_NOT_INSTALLED", error: "Selected model is not available on the configured FELTUS AI runtime." }); return true; }
+      const handlers = createFeltusCodeHandlers({ repoRoot, aiGateway: createFeltusCodeAIGateway(ai) });
+      const streamingPlan = route === "/api/code/ai/plan/stream";
+      const actionType = route.includes("/plan") ? "ai.plan" : route.endsWith("/agent") ? "ai.agent" : "ai.edit.propose";
+      try {
+        let result;
+        if (route.includes("/plan")) {
+          if (streamingPlan) {
+            res.writeHead(200, {
+              "Content-Type": "application/x-ndjson; charset=utf-8",
+              "Cache-Control": "no-store",
+              "X-Accel-Buffering": "no"
+            });
+            codePlanStreamStarted = true;
+          }
+          result = await handlers.aiPlan({ prompt, model: requestedModel }, {
+            signal: requestSignal,
+            ...(streamingPlan ? {
+              onToken: token => {
+                if (requestSignal.aborted) throw Object.assign(new Error("Plan request was cancelled."), { status: 499, code: "REQUEST_CANCELLED" });
+                if (!res.destroyed) res.write(`${JSON.stringify({ delta: token })}\n`);
+              }
+            } : {})
+          });
+        } else if (route.endsWith("/edit")) {
+          result = await handlers.aiEdit({ prompt, paths: body.paths, model: requestedModel }, { signal: requestSignal });
+        } else {
+          const selectedPaths = Array.isArray(body.paths) ? body.paths.slice(0, 12) : [];
+          const selectedTask = String(body.task || "npm-check");
+          const allowedTasks = (await handlers.listTasks()).tasks || [];
+          if (!allowedTasks.includes(selectedTask)) throw Object.assign(new Error("Task is not allowlisted."), { status: 400, code: "TASK_NOT_ALLOWED" });
+          const planResult = await handlers.aiPlan({ prompt, model: requestedModel }, { signal: requestSignal });
+          let proposalResult = await handlers.aiEdit({ prompt, paths: selectedPaths, model: requestedModel }, { signal: requestSignal });
+          const runs = [];
+          const applied = [];
+          if (body.allow_apply === true) {
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+              if (requestSignal.aborted) throw Object.assign(new Error("Agent request was cancelled."), { status: 499, code: "REQUEST_CANCELLED" });
+              const changed = await handlers.applyEdit({ files: proposalResult.result.files, allowedPaths: proposalResult.result.allowedPaths }, { signal: requestSignal });
+              applied.push(...changed.files);
+              if (requestSignal.aborted) throw Object.assign(new Error("Agent request was cancelled."), { status: 499, code: "REQUEST_CANCELLED" });
+              const taskResult = await handlers.runTask({ task: selectedTask }, { signal: requestSignal });
+              runs.push(taskResult.result);
+              if (taskResult.result?.code === 0) break;
+              if (attempt === 1) break;
+              proposalResult = await handlers.aiEdit({
+                prompt: `${prompt}\n\nThe allowlisted validation task ${selectedTask} failed. Repair only the selected files.\n\nRedacted output:\n${String(taskResult.result?.stderr || taskResult.result?.stdout || "").slice(-12000)}`,
+                paths: selectedPaths,
+                model: requestedModel
+              }, { signal: requestSignal });
+            }
+          }
+          result = {
+            ok: true,
+            result: {
+              plan: planResult.result,
+              proposal: proposalResult.result,
+              applied,
+              taskRuns: runs,
+              appliedByAgent: body.allow_apply === true
+            }
+          };
+        }
+        const value = result.result;
+        const usage = value?.usage || value?.proposal?.usage || {};
+        await recordCodeAction(app, session, { actionType, model: requestedModel, prompt, summary: route.includes("/plan") ? String(value?.content || "Plan complete").slice(0, 3000) : String(value?.summary || value?.proposal?.summary || "Code proposal created"), usage, details: route.endsWith("/edit") ? { paths: value?.files?.map(file => file.path) || [] } : route.endsWith("/agent") ? { task: body.task || "npm-check", applied: value?.applied?.map(file => file.path) || [], taskRuns: value?.taskRuns || [] } : {} });
+        await recordUsage({ appId: app.id, category: "AI", operation: `code.${actionType}`, model: requestedModel, requestId: requestContext.getStore()?.requestId, inputUnits: usage.input_tokens || 0, outputUnits: usage.output_tokens || 0 });
+        if (streamingPlan) {
+          res.write(`${JSON.stringify({ done: true, result: value, model: requestedModel, request_id: requestContext.getStore()?.requestId })}\n`);
+          res.end();
+          return true;
+        }
+        send(res, 200, { ...result, model: requestedModel, request_id: requestContext.getStore()?.requestId });
+        return true;
+      } catch (error) {
+        await recordCodeAction(app, session, { actionType, model: requestedModel, prompt, summary: error.message, resultStatus: "failed" }).catch(() => {});
+        throw error;
+      }
+    }
+    if (route === "/api/code/ai/apply" && method === "POST") {
+      const result = await code.applyEdit({ files: body.files, allowedPaths: body.allowed_paths });
+      await recordCodeAction(app, session, { actionType: "ai.edit.apply", summary: `Applied ${(result.files || []).length} accepted file change(s)`, details: { paths: result.files?.map(file => file.path) || [] } });
+      send(res, 200, result); return true;
+    }
+
+    send(res, 404, { code: "CODE_ROUTE_NOT_FOUND", error: "FELTUS CODE route not found." });
+    return true;
+  } catch (error) {
+    if (codePlanStreamStarted) {
+      if (!res.writableEnded && !res.destroyed) {
+        const status = Number.isInteger(error?.status) ? error.status : 500;
+        res.write(`${JSON.stringify({ error: { code: error?.code || "FELTUS_CODE_REQUEST_FAILED", message: status >= 500 ? "FELTUS CODE plan stream failed." : error?.message || "FELTUS CODE plan stream failed." }, request_id: requestContext.getStore()?.requestId || null })}\n`);
+        res.end();
+      }
+      return true;
+    }
+    codeStructuredError(res, error, error?.status || 400);
+    return true;
+  }
+}
+
+
+async function recordUsage({
+  appId = null,
+  category,
+  operation,
+  model = null,
+  requestId = null,
+  inputUnits = 0,
+  outputUnits = 0,
+  durationMs = null,
+  metadata = {}
+}) {
+  const ownerId = activeSession()?.user?.id;
+  if (!ownerId || !category || !operation) return;
+  await tableRequest("feltus_usage_records", "POST", {
+    body: {
+      app_id: appId,
+      owner_id: ownerId,
+      application: "core",
+      category,
+      operation,
+      model,
+      request_id: requestId,
+      input_units: Math.max(0, Number(inputUnits) || 0),
+      output_units: Math.max(0, Number(outputUnits) || 0),
+      duration_ms: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+      metadata
+    }
+  }).catch(() => {});
+}
+
+
+function boundedNumber(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed)
+    ? Math.min(Math.max(parsed, minimum), maximum)
+    : fallback;
+}
+
 async function appRequest(
   method,
   body = null
@@ -2125,10 +2639,10 @@ async function projectAIConversation(
   }
 
   const query =
-    "?select=id,app_id,owner_id,title,status,created_at,updated_at" +
+    "?select=id,app_id,owner_id,title,status,system_prompt,selected_model,temperature,max_tokens,context_budget,created_at,updated_at" +
     "&app_id=eq." + encodeURIComponent(appId) +
     "&owner_id=eq." + encodeURIComponent(ownerId) +
-    "&limit=1";
+    "&status=eq.active&deleted_at=is.null&order=updated_at.desc&limit=1";
 
   let result = await tableRequest(
     "feltus_ai_conversations",
@@ -2210,7 +2724,7 @@ async function prepareAIConversation(
       "GET",
       {
         query:
-          "?select=id,app_id,owner_id,title,status" +
+          "?select=id,app_id,owner_id,title,status,system_prompt,selected_model,temperature,max_tokens,context_budget" +
           "&id=eq." + encodeURIComponent(requestedConversationId) +
           "&app_id=eq." + encodeURIComponent(appId) +
           "&owner_id=eq." + encodeURIComponent(ownerId || "") +
@@ -3034,23 +3548,13 @@ async function evaluateDeploymentReadiness(
   }
 
 
-  /*
-   * Local AI
-   */
+    /* Provider-neutral AI runtime. */
 
   let aiOnline =
     false;
 
 
   try {
-
-    const {
-      FeltusAI
-    } =
-      await import(
-        "./lib/feltus-ai.js"
-      );
-
 
     const { ai } = await createConfiguredAI();
 
@@ -3813,6 +4317,10 @@ async function handleHttpRequest(req, res) {
         }
 
         setActiveSession(session);
+
+        if (await handleFeltusCodeRequest(req, res, url)) {
+          return;
+        }
 
         if (
           url.pathname ===
@@ -5129,6 +5637,536 @@ async function handleHttpRequest(req, res) {
 
 
 
+        if (
+          url.pathname === "/api/ai/models" ||
+          url.pathname.startsWith("/api/ai/models/")
+        ) {
+          if (req.method !== "GET") {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          try {
+            const { buildModelRegistry } = await import("./lib/feltus-ai-router.js");
+            const { ai } = await createConfiguredAI();
+            const installed = await ai.listModels();
+            const registry = buildModelRegistry(installed, {
+              defaultModel: process.env.FELTUS_AI_MODEL || ai.model
+            }).map(item => ({
+              id: item.name,
+              name: item.name,
+              alias: item.name,
+              enabled: true,
+              default: item.default,
+              context_limit: item.details?.context_length || null,
+              capabilities: item.capabilities.map(value => ({
+                general: "TEXT",
+                fast: "TEXT",
+                reasoning: "REASONING",
+                coding: "CODE",
+                vision: "VISION",
+                "document-analysis": "TEXT",
+                "structured-output": "TEXT"
+              })[value] || value.toUpperCase()),
+              provider: ai.provider || "ollama",
+              metadata: item.details || {}
+            }));
+            const requestedId = decodeURIComponent(
+              url.pathname.slice("/api/ai/models/".length)
+            );
+            if (url.pathname !== "/api/ai/models") {
+              const model = registry.find(item => item.id === requestedId);
+              return model
+                ? send(res, 200, model)
+                : send(res, 404, { error: "Model not found." });
+            }
+            return send(res, 200, { models: registry });
+          } catch {
+            return send(res, 503, {
+              code: "FELTUS_AI_RUNTIME_UNAVAILABLE",
+              error: "AI runtime is unavailable."
+            });
+          }
+        }
+
+
+        if (url.pathname === "/api/ai/runtime/health") {
+          if (req.method !== "GET") {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const startedAt = Date.now();
+          try {
+            const { ai } = await createConfiguredAI();
+            const models = await ai.listModels();
+            return send(res, 200, {
+              status: "healthy",
+              ...publicRuntimeMetadata(ai),
+              model_count: models.length,
+              latency_ms: Date.now() - startedAt
+            });
+          } catch {
+            return send(res, 503, {
+              status: "unavailable",
+              provider: process.env.FELTUS_AI_PROVIDER || "ollama",
+              model_count: 0,
+              latency_ms: Date.now() - startedAt
+            });
+          }
+        }
+
+
+        if (url.pathname === "/api/ai/embeddings") {
+          if (req.method !== "POST") {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = await readBody(req);
+          const app = await authorizedProject(body.app_id);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const input = Array.isArray(body.input) ? body.input : [body.input];
+          if (
+            !input.length ||
+            input.length > 32 ||
+            input.some(value => typeof value !== "string" || !value.trim() || value.length > 20000)
+          ) {
+            return send(res, 400, { error: "Embedding input must contain 1 to 32 text values." });
+          }
+          try {
+            const { ai } = await createConfiguredAI();
+            const result = await ai.embeddings(input, {
+              model: String(body.model || ai.model)
+            });
+            await recordUsage({
+              appId: app.id,
+              category: "ai",
+              operation: "embeddings",
+              model: result.model,
+              requestId: requestTelemetryId,
+              inputUnits: input.reduce((sum, value) => sum + value.length, 0),
+              outputUnits: result.embeddings.length
+            });
+            return send(res, 200, result);
+          } catch {
+            return send(res, 503, { error: "Embedding runtime is unavailable." });
+          }
+        }
+
+
+        if (url.pathname === "/api/ai/conversations") {
+          if (!new Set(["GET", "POST"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          if (req.method === "GET") {
+            const search = String(url.searchParams.get("search") || "").trim().slice(0, 100);
+            const includeArchived = url.searchParams.get("archived") === "true";
+            const query =
+              "?select=id,app_id,title,status,system_prompt,selected_model,temperature,max_tokens,context_budget,created_at,updated_at,archived_at" +
+              "&app_id=eq." + encodeURIComponent(app.id) +
+              "&owner_id=eq." + encodeURIComponent(ownerId) +
+              "&deleted_at=is.null" +
+              (includeArchived ? "" : "&status=eq.active") +
+              (search ? "&title=ilike.*" + encodeURIComponent(search) + "*" : "") +
+              "&order=updated_at.desc&limit=100";
+            const result = await tableRequest("feltus_ai_conversations", "GET", { query });
+            return send(res, result.status, { conversations: result.data || [] });
+          }
+          const title = String(body.title || "New conversation").trim().slice(0, 120);
+          const result = await tableRequest("feltus_ai_conversations", "POST", {
+            body: {
+              app_id: app.id,
+              owner_id: ownerId,
+              created_by: ownerId,
+              title: title || "New conversation",
+              system_prompt: String(body.system_prompt || "").trim().slice(0, 12000) || null,
+              selected_model: String(body.model || "").trim().slice(0, 200) || null,
+              temperature: boundedNumber(body.temperature, 0.2, 0, 2),
+              max_tokens: Math.round(boundedNumber(body.max_tokens, 2048, 32, 32768)),
+              context_budget: Math.round(boundedNumber(body.context_budget, 16000, 1000, 200000))
+            }
+          });
+          return send(res, result.status, {
+            conversation: Array.isArray(result.data) ? result.data[0] : result.data
+          });
+        }
+
+
+        const conversationRoute = url.pathname.match(
+          /^\/api\/ai\/conversations\/([0-9a-f-]{36})$/i
+        );
+        if (conversationRoute) {
+          if (!new Set(["GET", "PATCH", "DELETE"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const conversationId = conversationRoute[1];
+          const routeBody = req.method === "PATCH" ? await readBody(req) : null;
+          const appId = url.searchParams.get("app_id") || routeBody?.app_id;
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          const baseQuery =
+            "?id=eq." + encodeURIComponent(conversationId) +
+            "&app_id=eq." + encodeURIComponent(app.id) +
+            "&owner_id=eq." + encodeURIComponent(ownerId);
+          if (req.method === "GET") {
+            const conversation = await tableRequest("feltus_ai_conversations", "GET", {
+              query: "?select=*&" + baseQuery.slice(1) + "&deleted_at=is.null&limit=1"
+            });
+            if (!Array.isArray(conversation.data) || !conversation.data[0]) {
+              return send(res, 404, { error: "Conversation not found." });
+            }
+            if (url.searchParams.get("export") === "true") {
+              const messages = await tableRequest("feltus_ai_messages", "GET", {
+                query:
+                  "?select=role,content,model,metadata,created_at" +
+                  "&conversation_id=eq." + encodeURIComponent(conversationId) +
+                  "&app_id=eq." + encodeURIComponent(app.id) +
+                  "&owner_id=eq." + encodeURIComponent(ownerId) +
+                  "&order=created_at.asc,id.asc"
+              });
+              return send(res, 200, {
+                exported_at: new Date().toISOString(),
+                conversation: conversation.data[0],
+                messages: messages.data || []
+              });
+            }
+            return send(res, 200, { conversation: conversation.data[0] });
+          }
+          if (req.method === "DELETE") {
+            const result = await tableRequest("feltus_ai_conversations", "PATCH", {
+              query: baseQuery,
+              body: {
+                status: "archived",
+                archived_at: new Date().toISOString(),
+                deleted_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              }
+            });
+            return send(res, result.status, { deleted: result.status >= 200 && result.status < 300 });
+          }
+          const body = routeBody;
+          const update = { updated_at: new Date().toISOString() };
+          if (body.title !== undefined) update.title = String(body.title || "").trim().slice(0, 120);
+          if (body.system_prompt !== undefined) update.system_prompt = String(body.system_prompt || "").trim().slice(0, 12000) || null;
+          if (body.model !== undefined) update.selected_model = String(body.model || "").trim().slice(0, 200) || null;
+          if (body.temperature !== undefined) update.temperature = boundedNumber(body.temperature, 0.2, 0, 2);
+          if (body.max_tokens !== undefined) update.max_tokens = Math.round(boundedNumber(body.max_tokens, 2048, 32, 32768));
+           if (body.context_budget !== undefined) update.context_budget = Math.round(boundedNumber(body.context_budget, 16000, 1000, 200000));
+          if (body.status === "archived") {
+            update.status = "archived";
+            update.archived_at = new Date().toISOString();
+          } else if (body.status === "active") {
+            update.status = "active";
+            update.archived_at = null;
+          }
+          if (update.title === "") return send(res, 400, { error: "Conversation title is required." });
+          const result = await tableRequest("feltus_ai_conversations", "PATCH", {
+            query: baseQuery,
+            body: update
+          });
+          return send(res, result.status, {
+            conversation: Array.isArray(result.data) ? result.data[0] : result.data
+          });
+        }
+
+
+        if (url.pathname === "/api/jobs") {
+          if (!new Set(["GET", "POST"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          if (req.method === "GET") {
+            const result = await tableRequest("feltus_jobs", "GET", {
+              query:
+                "?select=id,app_id,job_type,status,attempts,max_attempts,progress,worker_id,retry_at,last_error,cancellation_requested,created_at,started_at,completed_at,updated_at" +
+                "&app_id=eq." + encodeURIComponent(app.id) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&order=created_at.desc&limit=100"
+            });
+            return send(res, result.status, { jobs: result.data || [] });
+          }
+          const jobType = String(body.job_type || "").trim();
+          if (!new Set(["system.noop", "ai.generate", "knowledge.reindex"]).has(jobType)) {
+            return send(res, 400, { error: "Unsupported job type." });
+          }
+          const result = await tableRequest("feltus_jobs", "POST", {
+            body: {
+              app_id: app.id,
+              owner_id: ownerId,
+              job_type: jobType,
+              payload: body.payload && typeof body.payload === "object" ? body.payload : {},
+              max_attempts: Math.round(boundedNumber(body.max_attempts, 3, 1, 10)),
+              idempotency_key: String(body.idempotency_key || "").trim().slice(0, 200) || null
+            }
+          });
+          return send(res, result.status, {
+            job: Array.isArray(result.data) ? result.data[0] : result.data
+          });
+        }
+
+
+        const jobRoute = url.pathname.match(/^\/api\/jobs\/([0-9a-f-]{36})$/i);
+        if (jobRoute) {
+          if (!new Set(["GET", "DELETE"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const appId = url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          const query =
+            "?id=eq." + encodeURIComponent(jobRoute[1]) +
+            "&app_id=eq." + encodeURIComponent(app.id) +
+            "&owner_id=eq." + encodeURIComponent(ownerId);
+          if (req.method === "DELETE") {
+            const current = await tableRequest("feltus_jobs", "GET", {
+              query: "?select=status&" + query.slice(1) + "&limit=1"
+            });
+            const status = current.data?.[0]?.status;
+            if (!status) return send(res, 404, { error: "Job not found." });
+            const result = await tableRequest("feltus_jobs", "PATCH", {
+              query,
+              body: {
+                cancellation_requested: true,
+                ...(status === "QUEUED"
+                  ? { status: "CANCELLED", completed_at: new Date().toISOString() }
+                  : {}),
+                updated_at: new Date().toISOString()
+              }
+            });
+            return send(res, result.status, { cancellation_requested: true });
+          }
+          const result = await tableRequest("feltus_jobs", "GET", {
+            query: "?select=*&" + query.slice(1) + "&limit=1"
+          });
+          return result.data?.[0]
+            ? send(res, 200, { job: result.data[0] })
+            : send(res, 404, { error: "Job not found." });
+        }
+
+
+        if (url.pathname === "/api/tools") {
+          if (req.method !== "GET") return send(res, 405, { error: "Method not allowed." });
+          return send(res, 200, { tools: BUILT_IN_TOOLS });
+        }
+
+
+        if (url.pathname === "/api/tools/execute") {
+          if (req.method !== "POST") return send(res, 405, { error: "Method not allowed." });
+          const body = await readBody(req);
+          const app = await authorizedProject(body.app_id);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const tool = toolByKey(body.tool);
+          if (!tool) return send(res, 404, { error: "Tool not found." });
+          const ownerId = activeSession()?.user?.id;
+          const executionId = crypto.randomUUID();
+          const startedAt = Date.now();
+          await tableRequest("feltus_tool_executions", "POST", {
+            body: {
+              id: executionId,
+              app_id: app.id,
+              owner_id: ownerId,
+              tool_key: tool.key,
+              input: body.input && typeof body.input === "object" ? body.input : {}
+            }
+          });
+          try {
+            const result = await executeBuiltInTool(tool.key, body.input || {}, {
+              appId: app.id,
+              tableRequest,
+              runtimeStatus: async () => {
+                const { ai } = await createConfiguredAI();
+                const models = await ai.listModels();
+                return { ...publicRuntimeMetadata(ai), model_count: models.length, status: "healthy" };
+              }
+            });
+            await tableRequest("feltus_tool_executions", "PATCH", {
+              query: "?id=eq." + encodeURIComponent(executionId),
+              body: {
+                status: "SUCCEEDED",
+                result,
+                duration_ms: Date.now() - startedAt,
+                completed_at: new Date().toISOString()
+              }
+            });
+            return send(res, 200, { execution_id: executionId, result });
+          } catch (error) {
+            await tableRequest("feltus_tool_executions", "PATCH", {
+              query: "?id=eq." + encodeURIComponent(executionId),
+              body: {
+                status: "FAILED",
+                error: String(error?.message || "Tool failed").slice(0, 1000),
+                duration_ms: Date.now() - startedAt,
+                completed_at: new Date().toISOString()
+              }
+            });
+            return send(res, 500, { execution_id: executionId, error: "Tool execution failed." });
+          }
+        }
+
+
+        if (url.pathname === "/api/secrets") {
+          if (!new Set(["GET", "POST", "DELETE"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          if (req.method === "GET") {
+            const result = await tableRequest("feltus_project_secret_metadata", "GET", {
+              query:
+                "?select=id,name,value_fingerprint,updated_by,created_at,updated_at" +
+                "&app_id=eq." + encodeURIComponent(app.id) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&order=name.asc"
+            });
+            return send(res, result.status, { secrets: result.data || [] });
+          }
+          if (!SERVICE_ROLE_KEY || SECRET_ENCRYPTION_KEY.length < 32) {
+            return send(res, 503, { error: "Secret storage is not configured." });
+          }
+          if (req.method === "DELETE") {
+            const name = String(url.searchParams.get("name") || "").trim().toUpperCase();
+            if (!name) return send(res, 400, { error: "Secret name is required." });
+            const result = await serviceRequest(
+              "/rest/v1/feltus_project_secrets" +
+                "?app_id=eq." + encodeURIComponent(app.id) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&name=eq." + encodeURIComponent(name),
+              { method: "DELETE" }
+            );
+            return send(res, result.status, { deleted: result.status >= 200 && result.status < 300 });
+          }
+          const name = String(body.name || "").trim().toUpperCase();
+          const value = String(body.value || "");
+          if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(name) || !value || value.length > 65536) {
+            return send(res, 400, { error: "Invalid secret name or value." });
+          }
+          const result = await serviceRequest("/rest/v1/rpc/feltus_set_project_secret", {
+            method: "POST",
+            body: {
+              p_app_id: app.id,
+              p_owner_id: ownerId,
+              p_name: name,
+              p_value: value,
+              p_encryption_key: SECRET_ENCRYPTION_KEY
+            }
+          });
+          if (result.status < 200 || result.status >= 300) {
+            return send(res, result.status, { error: "Secret could not be stored." });
+          }
+          await logEvent({
+            eventType: "secret.updated",
+            eventSource: "platform.secrets",
+            message: "Project secret updated.",
+            resourceType: "project",
+            resourceId: app.id,
+            requestId: requestTelemetryId,
+            metadata: { name }
+          });
+          return send(res, 201, { name, stored: true });
+        }
+
+
+        if (url.pathname === "/api/knowledge-bases") {
+          if (!new Set(["GET", "POST"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          if (req.method === "GET") {
+            const result = await tableRequest("feltus_knowledge_bases", "GET", {
+              query:
+                "?select=id,name,embedding_model,metadata,created_at,updated_at" +
+                "&app_id=eq." + encodeURIComponent(app.id) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&order=updated_at.desc"
+            });
+            return send(res, result.status, { knowledge_bases: result.data || [] });
+          }
+          const name = String(body.name || "").trim().slice(0, 120);
+          if (!name) return send(res, 400, { error: "Knowledge base name is required." });
+          const result = await tableRequest("feltus_knowledge_bases", "POST", {
+            body: {
+              app_id: app.id,
+              owner_id: ownerId,
+              name,
+              embedding_model: String(body.embedding_model || "").trim().slice(0, 200) || null
+            }
+          });
+          return send(res, result.status, {
+            knowledge_base: Array.isArray(result.data) ? result.data[0] : result.data
+          });
+        }
+
+
+        if (url.pathname === "/api/usage") {
+          if (req.method !== "GET") return send(res, 405, { error: "Method not allowed." });
+          const appId = url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const result = await tableRequest("feltus_usage_records", "GET", {
+            query:
+              "?select=id,category,operation,model,input_units,output_units,duration_ms,metadata,created_at" +
+              "&app_id=eq." + encodeURIComponent(app.id) +
+              "&owner_id=eq." + encodeURIComponent(activeSession()?.user?.id) +
+              "&order=created_at.desc&limit=500"
+          });
+          return send(res, result.status, { usage: result.data || [] });
+        }
+
+
+        if (url.pathname === "/api/deployments/history") {
+          if (!new Set(["GET", "POST"]).has(req.method)) {
+            return send(res, 405, { error: "Method not allowed." });
+          }
+          const body = req.method === "POST" ? await readBody(req) : null;
+          const appId = body?.app_id || url.searchParams.get("app_id");
+          const app = await authorizedProject(appId);
+          if (!app) return send(res, 404, { error: "Project not found." });
+          const ownerId = activeSession()?.user?.id;
+          if (req.method === "GET") {
+            const result = await tableRequest("feltus_deployments", "GET", {
+              query:
+                "?select=*" +
+                "&app_id=eq." + encodeURIComponent(app.id) +
+                "&owner_id=eq." + encodeURIComponent(ownerId) +
+                "&order=created_at.desc&limit=100"
+            });
+            return send(res, result.status, { deployments: result.data || [] });
+          }
+          const environment = String(body.environment || "").trim();
+          if (!new Set(["development", "staging", "production"]).has(environment)) {
+            return send(res, 400, { error: "Invalid deployment environment." });
+          }
+          const result = await tableRequest("feltus_deployments", "POST", {
+            body: {
+              app_id: app.id,
+              owner_id: ownerId,
+              environment,
+              branch: String(body.branch || "").trim().slice(0, 200) || null,
+              commit_sha: String(body.commit_sha || "").trim().slice(0, 64) || null,
+              status: "QUEUED",
+              provider: "coolify",
+              metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : {}
+            }
+          });
+          return send(res, result.status, {
+            deployment: Array.isArray(result.data) ? result.data[0] : result.data
+          });
+        }
+
+
         /*
          * FELTUS AI CORE v2
          * Deterministic owner-controlled model router.
@@ -5155,14 +6193,6 @@ async function handleHttpRequest(req, res) {
 
 
           try {
-
-            const {
-              FeltusAI
-            } =
-              await import(
-                "./lib/feltus-ai.js"
-              );
-
 
             const {
               AI_CAPABILITIES,
@@ -5236,7 +6266,7 @@ async function handleHttpRequest(req, res) {
                   "ready",
 
                 engine:
-                  "ollama",
+                  ai.provider || "ollama",
 
                 default_model:
                   defaultModel,
@@ -5434,14 +6464,6 @@ async function handleHttpRequest(req, res) {
 
 
           try {
-            const {
-              FeltusAI
-            } =
-              await import(
-                "./lib/feltus-ai.js"
-              );
-
-
             const { ai } = await createConfiguredAI();
 
 
@@ -5457,7 +6479,7 @@ async function handleHttpRequest(req, res) {
                   "online",
 
                 engine:
-                  "ollama",
+                  ai.provider || "ollama",
 
                 default_model:
                   ai.model,
@@ -5489,7 +6511,7 @@ async function handleHttpRequest(req, res) {
                 "ai.status",
 
               message:
-                "Local Ollama service is unavailable.",
+                "Configured AI runtime is unavailable.",
 
               severity:
                 "error",
@@ -5498,7 +6520,7 @@ async function handleHttpRequest(req, res) {
                 "runtime",
 
               resourceId:
-                "ollama",
+                process.env.FELTUS_AI_PROVIDER || "ollama",
 
               requestId:
                 requestTelemetryId,
@@ -5509,7 +6531,7 @@ async function handleHttpRequest(req, res) {
 
               metadata: {
                 runtime:
-                  "ollama",
+                  process.env.FELTUS_AI_PROVIDER || "ollama",
 
                 error:
                   "AI endpoint is unavailable."
@@ -5525,7 +6547,7 @@ async function handleHttpRequest(req, res) {
                   "offline",
 
                 engine:
-                  "ollama",
+                  process.env.FELTUS_AI_PROVIDER || "ollama",
 
                 error:
                   "AI endpoint is unavailable."
@@ -5584,6 +6606,21 @@ async function handleHttpRequest(req, res) {
                 "checking"
             },
 
+            storage: {
+              status:
+                "checking"
+            },
+
+            realtime: {
+              status:
+                "checking"
+            },
+
+            worker: {
+              status:
+                "checking"
+            },
+
             ai: {
               status:
                 "checking"
@@ -5623,6 +6660,53 @@ async function handleHttpRequest(req, res) {
               error:
                 "Gateway unavailable."
             };
+          }
+
+
+          /* Self-hosted object storage. */
+          try {
+            const result = await upstream("/storage/v1/status");
+            services.storage = {
+              status: result.status >= 200 && result.status < 300 ? "online" : "offline",
+              http_status: result.status
+            };
+          } catch {
+            services.storage = { status: "offline", error: "Storage service unavailable." };
+          }
+
+
+          /* Realtime has its own private gateway health endpoint. */
+          try {
+            const result = await upstream("/realtime/v1/health", {
+              headers: {
+                Authorization: `Bearer ${activeSession()?.access_token || ""}`
+              }
+            });
+            services.realtime = {
+              status: result.status >= 200 && result.status < 300 ? "online" : "offline",
+              http_status: result.status
+            };
+          } catch {
+            services.realtime = { status: "offline", error: "Realtime service unavailable." };
+          }
+
+
+          /* Durable worker liveness is reported through a service heartbeat. */
+          try {
+            const result = await tableRequest("feltus_worker_heartbeats", "GET", {
+              query: "?select=worker_id,status,last_seen_at&order=last_seen_at.desc&limit=1"
+            });
+            const heartbeat = Array.isArray(result.data) ? result.data[0] : null;
+            const ageMs = heartbeat ? Date.now() - Date.parse(heartbeat.last_seen_at) : Number.POSITIVE_INFINITY;
+            services.worker = {
+              status: result.status >= 200 && result.status < 300 && heartbeat && ageMs < 90_000 && heartbeat.status === "online"
+                ? "online"
+                : "offline",
+              worker_id: heartbeat?.worker_id || null,
+              last_seen_at: heartbeat?.last_seen_at || null
+            };
+          } catch {
+            services.worker = { status: "offline", error: "Worker heartbeat unavailable." };
           }
 
 
@@ -5725,18 +6809,10 @@ async function handleHttpRequest(req, res) {
 
 
           /*
-           * Native Ollama
+           * Configured AI runtime
            */
 
           try {
-
-            const {
-              FeltusAI
-            } =
-              await import(
-                "./lib/feltus-ai.js"
-              );
-
 
             const { ai } = await createConfiguredAI();
 
@@ -5750,7 +6826,7 @@ async function handleHttpRequest(req, res) {
                 "online",
 
               runtime:
-                "ollama",
+                ai.provider || "ollama",
 
               model_count:
                 Array.isArray(models)
@@ -5773,7 +6849,7 @@ async function handleHttpRequest(req, res) {
                 "offline",
 
               runtime:
-                "ollama",
+                process.env.FELTUS_AI_PROVIDER || "ollama",
 
               error:
                 "AI endpoint is unavailable."
@@ -6127,14 +7203,6 @@ async function handleHttpRequest(req, res) {
 
 
           try {
-            const {
-              FeltusAI
-            } =
-              await import(
-                "./lib/feltus-ai.js"
-              );
-
-
             const { ai, policy } = await createConfiguredAI();
 
 
@@ -6293,6 +7361,31 @@ async function handleHttpRequest(req, res) {
                 }
               );
             }
+
+            const conversationSettings = conversationState.conversation;
+            const generationTemperature = boundedNumber(
+              body.temperature ?? conversationSettings.temperature,
+              0.2,
+              0,
+              2
+            );
+            const generationMaxTokens = Math.round(boundedNumber(
+              body.max_tokens ?? conversationSettings.max_tokens,
+              2048,
+              32,
+              32768
+            ));
+            const systemInstructions = String(
+              body.system_prompt ??
+              conversationSettings.system_prompt ??
+              "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts."
+            ).trim().slice(0, 12000);
+            const contextBudget = Math.round(boundedNumber(
+              conversationSettings.context_budget,
+              16000,
+              1000,
+              200000
+            ));
 
 
             const assetResult =
@@ -6481,12 +7574,12 @@ async function handleHttpRequest(req, res) {
               ? await buildDocumentContext(appId, prompt)
               : "";
             const groundedPrompt = composeAIPrompt({
-              systemInstructions:
-                "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.",
+              systemInstructions,
               projectContext,
               history: conversationState.history,
               retrievedContext,
-              currentPrompt: prompt
+              currentPrompt: prompt,
+              maxCharacters: contextBudget
             });
 
 
@@ -6557,6 +7650,12 @@ async function handleHttpRequest(req, res) {
 
             let assistantResponseText = "";
             let assistantPersistenceFailed = false;
+            let inputTokens = 0;
+            let outputTokens = 0;
+            const generationController = new AbortController();
+            res.once("close", () => {
+              if (!res.writableEnded) generationController.abort();
+            });
 
             for await (
               const event
@@ -6566,13 +7665,17 @@ async function handleHttpRequest(req, res) {
                   model,
 
                   temperature:
-                    0.1,
+                    generationTemperature,
 
                   numPredict:
-                    256,
+                    generationMaxTokens,
 
                   keepAlive:
-                    "10m"
+                    "10m",
+
+                  systemPrompt: systemInstructions,
+
+                  signal: generationController.signal
                 }
               )
             ) {
@@ -6604,6 +7707,13 @@ async function handleHttpRequest(req, res) {
                 event.done === true
               ) {
 
+                inputTokens = Number(
+                  event.prompt_eval_count ?? event.usage?.prompt_tokens ?? 0
+                ) || 0;
+                outputTokens = Number(
+                  event.eval_count ?? event.usage?.completion_tokens ?? 0
+                ) || 0;
+
                 if (assistantResponseText.trim()) {
                   const savedAssistant = await tableRequest(
                     "feltus_ai_messages",
@@ -6616,6 +7726,9 @@ async function handleHttpRequest(req, res) {
                         role: "assistant",
                         content: assistantResponseText.slice(0, 40000),
                         model,
+                        status: "complete",
+                        input_tokens: inputTokens,
+                        output_tokens: outputTokens,
                         metadata: {
                           capability,
                           request_id: aiTelemetryRequestId
@@ -6640,6 +7753,18 @@ async function handleHttpRequest(req, res) {
                     }
                   );
                 }
+
+                await recordUsage({
+                  appId,
+                  category: "ai",
+                  operation: "chat.stream",
+                  model,
+                  requestId: aiTelemetryRequestId,
+                  inputUnits: inputTokens,
+                  outputUnits: outputTokens,
+                  durationMs: Date.now() - aiTelemetryStartedAt,
+                  metadata: { provider: ai.provider || "ollama", capability }
+                });
                 
             await logEvent({
               eventType:
@@ -6674,7 +7799,7 @@ async function handleHttpRequest(req, res) {
                 streaming:
                   true,
                 runtime:
-                  "ollama"
+                  ai.provider || "ollama"
               }
             });
 
@@ -7087,6 +8212,31 @@ res.write(
               );
             }
 
+            const conversationSettings = conversationState.conversation;
+            const generationTemperature = boundedNumber(
+              body.temperature ?? conversationSettings.temperature,
+              0.2,
+              0,
+              2
+            );
+            const generationMaxTokens = Math.round(boundedNumber(
+              body.max_tokens ?? conversationSettings.max_tokens,
+              2048,
+              32,
+              32768
+            ));
+            const systemInstructions = String(
+              body.system_prompt ??
+              conversationSettings.system_prompt ??
+              "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts."
+            ).trim().slice(0, 12000);
+            const contextBudget = Math.round(boundedNumber(
+              conversationSettings.context_budget,
+              16000,
+              1000,
+              200000
+            ));
+
 
             const assetResult =
               await tableRequest(
@@ -7274,12 +8424,12 @@ res.write(
               ? await buildDocumentContext(appId, prompt)
               : "";
             const groundedPrompt = composeAIPrompt({
-              systemInstructions:
-                "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.",
+              systemInstructions,
               projectContext,
               history: conversationState.history,
               retrievedContext,
-              currentPrompt: prompt
+              currentPrompt: prompt,
+              maxCharacters: contextBudget
             });
 
 
@@ -7290,13 +8440,15 @@ res.write(
                   model,
 
                   temperature:
-                    0.1,
+                    generationTemperature,
 
                   numPredict:
-                    256,
+                    generationMaxTokens,
 
                   keepAlive:
-                    "10m"
+                    "10m",
+
+                  systemPrompt: systemInstructions
                 }
               );
 
@@ -7314,6 +8466,9 @@ res.write(
                     role: "assistant",
                     content: assistantText,
                     model,
+                    status: "complete",
+                    input_tokens: Number(result.prompt_eval_count || 0),
+                    output_tokens: Number(result.eval_count || 0),
                     metadata: {
                       capability,
                       request_id: aiTelemetryRequestId
@@ -7338,6 +8493,18 @@ res.write(
                 }
               );
             }
+
+            await recordUsage({
+              appId,
+              category: "ai",
+              operation: "chat.generate",
+              model,
+              requestId: aiTelemetryRequestId,
+              inputUnits: Number(result.prompt_eval_count || 0),
+              outputUnits: Number(result.eval_count || 0),
+              durationMs: Date.now() - aiTelemetryStartedAt,
+              metadata: { provider: ai.provider || "ollama", capability }
+            });
 
             await logEvent({
               eventType:
@@ -7372,7 +8539,7 @@ res.write(
                 streaming:
                   false,
                 runtime:
-                  "ollama"
+                  ai.provider || "ollama"
               }
             });
 

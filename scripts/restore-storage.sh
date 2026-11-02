@@ -9,7 +9,7 @@ case "$stamp" in
     ;;
 esac
 
-for entry in documents object-storage; do
+for entry in documents object-storage code-workspaces; do
   archive="/backups/$stamp/feltus-$entry.tar.gz"
   destination="/data/$entry"
   if [ ! -f "$archive" ]; then

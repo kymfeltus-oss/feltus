@@ -6,6 +6,9 @@
 .feltus-storage
 .feltus-runtime
 node_modules
+src/feltus-code/dev-server.mjs
+src/feltus-code/package.json
+src/feltus-code/migrations/
 __pycache__
 *.py[cod]
 *.zip

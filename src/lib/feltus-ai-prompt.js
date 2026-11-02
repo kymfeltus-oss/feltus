@@ -3,7 +3,8 @@ export function composeAIPrompt({
   projectContext = "",
   history = [],
   retrievedContext = "",
-  currentPrompt
+  currentPrompt,
+  maxCharacters = 200000
 }) {
   if (typeof currentPrompt !== "string" || !currentPrompt.trim()) {
     throw new Error("Current AI prompt is required.");
@@ -28,6 +29,17 @@ export function composeAIPrompt({
   if (String(retrievedContext).trim()) {
     sections.push(`RETRIEVED PROJECT/DOCUMENT CONTEXT\n${String(retrievedContext).trim()}`);
   }
-  sections.push(`CURRENT USER PROMPT\n${currentPrompt.trim()}`);
-  return sections.filter(Boolean).join("\n\n");
+  const currentSection = `CURRENT USER PROMPT\n${currentPrompt.trim()}`;
+  sections.push(currentSection);
+  const prompt = sections.filter(Boolean).join("\n\n");
+  const budget = Number(maxCharacters);
+  if (!Number.isInteger(budget) || budget < 1000 || prompt.length <= budget) {
+    return prompt;
+  }
+
+  // Never truncate the current user instruction. Earlier context is optional
+  // and is deliberately cut first when a per-conversation budget is reached.
+  const prefixBudget = Math.max(0, budget - currentSection.length - 2);
+  const prefix = sections.slice(0, -1).filter(Boolean).join("\n\n").slice(0, prefixBudget);
+  return [prefix, currentSection].filter(Boolean).join("\n\n");
 }

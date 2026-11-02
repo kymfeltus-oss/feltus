@@ -39,6 +39,12 @@ jobs:
       - name: Run production regression
         run: npm run regression
 
+      - name: Test core AI adapters and built-in tools
+        run: npm run test:core
+
+      - name: Test FELTUS CODE workspace isolation and safety
+        run: npm run test:code
+
       - name: Test PDF extraction service
         working-directory: services/evidence-extractor
         run: python -m unittest discover -s tests -v
@@ -46,5 +52,5 @@ jobs:
       - name: Validate production Compose configuration
         run: docker compose --env-file .env.example --file compose.production.yaml config --quiet
 
-      - name: Build production app and extractor images
-        run: docker compose --env-file .env.example --file compose.production.yaml build app evidence-extractor
+      - name: Build production app, worker, and extractor images
+        run: docker compose --env-file .env.example --file compose.production.yaml build app evidence-extractor worker
