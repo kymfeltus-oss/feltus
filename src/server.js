@@ -13,6 +13,7 @@ import { createAIProvider, publicRuntimeMetadata } from "./lib/feltus-ai-provide
 import { BUILT_IN_TOOLS, executeBuiltInTool, toolByKey } from "./lib/feltus-tools.js";
 import { createFeltusCodeHandlers } from "./feltus-code/server/routes.mjs";
 import { createFeltusCodeAIGateway } from "./feltus-code/server/ai-gateway.mjs";
+import { runValidatedAgent } from "./feltus-code/server/agent-workflow.mjs";
 import { assertNoSymlinkTraversal } from "./feltus-code/server/security.mjs";
 
 dotenv.config();
@@ -2483,44 +2484,25 @@ async function handleFeltusCodeRequest(req, res, url) {
         } else if (route.endsWith("/edit")) {
           result = await handlers.aiEdit({ prompt, paths: body.paths, model: requestedModel }, { signal: requestSignal });
         } else {
-          const selectedTask = String(body.task || "npm-check");
-          const allowedTasks = (await handlers.listTasks()).tasks || [];
-          if (!allowedTasks.includes(selectedTask)) throw Object.assign(new Error("Task is not allowlisted."), { status: 400, code: "TASK_NOT_ALLOWED" });
-          const planResult = await handlers.aiPlan({ prompt, paths: selectedPaths, model: requestedModel }, { signal: requestSignal });
-          let proposalResult = await handlers.aiEdit({ prompt, paths: selectedPaths, model: requestedModel }, { signal: requestSignal });
-          const runs = [];
-          const applied = [];
-          if (body.allow_apply === true) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-              if (requestSignal.aborted) throw Object.assign(new Error("Agent request was cancelled."), { status: 499, code: "REQUEST_CANCELLED" });
-              const changed = await handlers.applyEdit({ files: proposalResult.result.files, allowedPaths: proposalResult.result.allowedPaths }, { signal: requestSignal });
-              applied.push(...changed.files);
-              if (requestSignal.aborted) throw Object.assign(new Error("Agent request was cancelled."), { status: 499, code: "REQUEST_CANCELLED" });
-              const taskResult = await handlers.runTask({ task: selectedTask }, { signal: requestSignal });
-              runs.push(taskResult.result);
-              if (taskResult.result?.code === 0) break;
-              if (attempt === 1) break;
-              proposalResult = await handlers.aiEdit({
-                prompt: `${prompt}\n\nThe allowlisted validation task ${selectedTask} failed. Repair only the selected files.\n\nRedacted output:\n${String(taskResult.result?.stderr || taskResult.result?.stdout || "").slice(-12000)}`,
-                paths: selectedPaths,
-                model: requestedModel
-              }, { signal: requestSignal });
-            }
-          }
-          result = {
-            ok: true,
-            result: {
-              plan: planResult.result,
-              proposal: proposalResult.result,
-              applied,
-              taskRuns: runs,
-              appliedByAgent: body.allow_apply === true
-            }
-          };
+          const taskCatalog = await handlers.listTasks();
+          const selectedTask = String(body.task || taskCatalog.default_task || "");
+          const allowedTasks = taskCatalog.tasks || [];
+          const knownUnavailable = (taskCatalog.unavailable || []).some(item => item.task === selectedTask);
+          if (!selectedTask) throw Object.assign(new Error("No applicable validation task is available for this project."), { status: 400, code: "TASK_UNAVAILABLE" });
+          if (!allowedTasks.includes(selectedTask) && !knownUnavailable) throw Object.assign(new Error("Task is not allowlisted."), { status: 400, code: "TASK_NOT_ALLOWED" });
+          result = await runValidatedAgent({
+            handlers,
+            prompt,
+            paths: selectedPaths,
+            model: requestedModel,
+            task: selectedTask,
+            allowApply: body.allow_apply === true,
+            signal: requestSignal
+          });
         }
         const value = result.result;
         const usage = value?.usage || value?.proposal?.usage || {};
-        await recordCodeAction(app, session, { actionType, model: requestedModel, prompt, summary: route.includes("/plan") ? String(value?.content || "Plan complete").slice(0, 3000) : String(value?.summary || value?.proposal?.summary || "Code proposal created"), usage, details: route.endsWith("/edit") ? { paths: value?.files?.map(file => file.path) || [] } : route.endsWith("/agent") ? { task: body.task || "npm-check", applied: value?.applied?.map(file => file.path) || [], taskRuns: value?.taskRuns || [] } : {} });
+        await recordCodeAction(app, session, { actionType, model: requestedModel, prompt, summary: route.includes("/plan") ? String(value?.content || "Plan complete").slice(0, 3000) : String(value?.summary || value?.proposal?.summary || "Code proposal created"), usage, details: route.endsWith("/edit") ? { paths: value?.files?.map(file => file.path) || [] } : route.endsWith("/agent") ? { task: value?.task || body.task || "applicable-default", validationPassed: value?.validationPassed, applied: value?.applied?.map(file => file.path) || [], taskRuns: value?.taskRuns || [] } : {} });
         await recordUsage({ appId: app.id, category: "AI", operation: `code.${actionType}`, model: requestedModel, requestId: requestContext.getStore()?.requestId, inputUnits: usage.input_tokens || 0, outputUnits: usage.output_tokens || 0 });
         if (streamingPlan) {
           res.write(`${JSON.stringify({ done: true, result: value, model: requestedModel, request_id: requestContext.getStore()?.requestId })}\n`);

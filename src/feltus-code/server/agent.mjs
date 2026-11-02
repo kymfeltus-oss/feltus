@@ -122,14 +122,17 @@ export function createCodeAgent({ repoRoot, aiGateway, fileTools }) {
       throw Object.assign(new Error("AI edit proposal did not match the selected files."), { code: "AI_EDIT_INVALID_RESPONSE" });
     }
     const beforeHashes = new Map(selected.map(item => [item.path, item.sha256]));
+    const proposedPaths = new Set();
     const files = proposal.files.map(item => {
       if (
         typeof item?.path !== "string" ||
         !beforeHashes.has(item.path) ||
-        typeof item.content !== "string"
+        typeof item.content !== "string" ||
+        proposedPaths.has(item.path)
       ) {
         throw Object.assign(new Error("AI edit proposal referenced an unselected file."), { code: "AI_EDIT_INVALID_RESPONSE" });
       }
+      proposedPaths.add(item.path);
       return {
         path: item.path,
         content: item.content,

@@ -289,7 +289,7 @@ async function requestAI(mode) {
   }
 }
 
-function renderProposal(proposal) {
+function renderProposal(proposal, { allowApply = true } = {}) {
   const container = $("proposal");
   container.replaceChildren();
   for (const item of proposal.files || []) {
@@ -303,7 +303,7 @@ function renderProposal(proposal) {
     details.append(summary, diff);
     container.append(details);
   }
-  $("apply-edit").hidden = !proposal.files?.length;
+  $("apply-edit").hidden = !allowApply || !proposal.files?.length;
 }
 
 async function runAgent() {
@@ -313,6 +313,9 @@ async function runAgent() {
   if (!prompt) return setStatus("Enter an agent task.", true);
   if (state.files.get(state.activePath)?.dirty) return setStatus("Save the selected file before using Agent so FELTUS CODE reads the current workspace contents.", true);
   if (!window.confirm("Allow FELTUS CODE Agent to edit the selected file and run the selected allowlisted validation task?")) return;
+  state.proposal = null;
+  $("proposal").replaceChildren();
+  $("apply-edit").hidden = true;
   const controller = new AbortController();
   state.request = controller;
   $("cancel-ai").hidden = false;
@@ -331,11 +334,22 @@ async function runAgent() {
         allow_apply: true
       })
     });
-    showOutput("Agent plan and validation", data.result);
+    const agentResult = data.result;
+    state.proposal = null;
+    renderProposal(agentResult.proposal, { allowApply: false });
+    showOutput("Agent proposal and validation", agentResult);
     const refreshed = await api(projectQuery(`/api/code/file?path=${encodeURIComponent(state.activePath)}`));
     state.files.set(state.activePath, { content: refreshed.content, original: refreshed.content, sha256: refreshed.sha256, editable: refreshed.editable, redacted: refreshed.redacted, dirty: false });
     renderTabs(); renderEditor(); await refreshGitStatus();
-    setStatus("Agent stopped after the allowlisted validation run.");
+    if (agentResult.validationPassed === true) {
+      setStatus(`Validation passed; ${agentResult.applied.length} file(s) applied.`);
+    } else if (agentResult.validationPassed === false) {
+      const validation = agentResult.taskRuns?.[0];
+      const reason = validation?.reason || validation?.stderr || validation?.stdout || "The validation task failed.";
+      setStatus(`Validation ${validation?.skipped ? "unavailable" : "failed"}; no files were applied. ${reason}`, true);
+    } else {
+      setStatus("Agent proposal ready; no changes were applied.");
+    }
   } catch (error) {
     setStatus(`${error.code || "AGENT_FAILED"}: ${error.message}`, true);
     showOutput("Agent stopped", error.message);
@@ -371,16 +385,25 @@ async function loadWorkspace() {
   $("workspace-app").hidden = false;
   const session = await api(projectQuery("/api/code/session"));
   $("session-title").textContent = session.session?.title || "Project code session";
-  const [tasks] = await Promise.all([
-    api(projectQuery("/api/code/tasks")).then(result => result.tasks || []),
+  const [taskCatalog] = await Promise.all([
+    api(projectQuery("/api/code/tasks")),
     loadModels()
   ]);
+  const tasks = taskCatalog.tasks || [];
   state.tasks = tasks;
   $("agent-task").replaceChildren();
   for (const task of tasks) {
     const option = document.createElement("option"); option.value = task; option.textContent = task; $("agent-task").append(option);
   }
-  if (tasks.includes("npm-check")) $("agent-task").value = "npm-check";
+  for (const unavailable of taskCatalog.unavailable || []) {
+    const option = document.createElement("option");
+    option.value = unavailable.task;
+    option.textContent = `${unavailable.task} — unavailable: ${unavailable.reason}`;
+    option.disabled = true;
+    $("agent-task").append(option);
+  }
+  const defaultTask = tasks.includes(taskCatalog.default_task) ? taskCatalog.default_task : tasks[0];
+  if (defaultTask) $("agent-task").value = defaultTask;
   await Promise.all([loadTree("."), refreshGitStatus()]);
 }
 

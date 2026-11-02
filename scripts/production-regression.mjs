@@ -80,6 +80,8 @@ const codeMigration = fs.readFileSync(
 );
 const codeServer = fs.readFileSync(path.join(root, "src/feltus-code/server/routes.mjs"), "utf8");
 const codeAgent = fs.readFileSync(path.join(root, "src/feltus-code/server/agent.mjs"), "utf8");
+const codeAgentWorkflow = fs.readFileSync(path.join(root, "src/feltus-code/server/agent-workflow.mjs"), "utf8");
+const codeTaskRunner = fs.readFileSync(path.join(root, "src/feltus-code/server/task-runner.mjs"), "utf8");
 const codeGateway = fs.readFileSync(path.join(root, "src/feltus-code/server/ai-gateway.mjs"), "utf8");
 const codeGitTools = fs.readFileSync(path.join(root, "src/feltus-code/server/git-tools.mjs"), "utf8");
 const codeSecurity = fs.readFileSync(path.join(root, "src/feltus-code/server/security.mjs"), "utf8");
@@ -143,13 +145,28 @@ check("FELTUS CODE AI grounds every action in server-read selected files", () =>
   assert.match(codeAgent, /required: true, max: 12/);
   assert.match(codeServer, /aiPlan: async \(\{ prompt, paths, model \}/);
   assert.match(server, /handlers\.aiPlan\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
-  assert.match(server, /const planResult = await handlers\.aiPlan\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
-  assert.match(server, /let proposalResult = await handlers\.aiEdit\(\{ prompt, paths: selectedPaths, model: requestedModel \}/);
+  assert.match(codeAgentWorkflow, /handlers\.aiPlan\(\{ prompt, paths, model \}/);
+  assert.match(codeAgentWorkflow, /handlers\.aiEdit\(\{ prompt, paths, model \}/);
   assert.match(server, /code: "FILE_CONTEXT_REQUIRED"/);
   assert.match(codeWeb, /paths: requestPaths/);
   assert.match(codeWeb, /state\.files\.get\(state\.activePath\)\?\.dirty/);
   assert.match(codeWeb, /mode: mode\.toLowerCase\(\)/);
   assert.match(codeWeb, /Select a project file before using/);
+});
+
+check("FELTUS CODE Agent validates a temporary proposal before one-time application", () => {
+  assert.match(server, /runValidatedAgent\(\{/);
+  assert.ok(codeAgentWorkflow.indexOf("await handlers.validateTask") < codeAgentWorkflow.indexOf("await handlers.applyEdit"));
+  assert.match(codeAgentWorkflow, /if \(!value\.validationPassed\) return/);
+  assert.match(codeTaskRunner, /runAgainstProposed/);
+  assert.match(codeServer, /validateTask: async \(\{ task, files \}.*tasks\.runAgainstProposed/s);
+  assert.match(codeTaskRunner, /package\.json is missing; npm validation tasks are unavailable/);
+  assert.match(codeTaskRunner, /"git-status"\s*\|\|\s*taskName === "git-diff"/);
+  const codeWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
+  assert.match(codeWeb, /state\.proposal = null;\s*\$\("proposal"\)\.replaceChildren\(\);\s*\$\("apply-edit"\)\.hidden = true/);
+  assert.match(codeWeb, /renderProposal\(agentResult\.proposal, \{ allowApply: false \}\)/);
+  assert.match(codeWeb, /option\.disabled = true/);
+  assert.match(codeWeb, /window\.confirm\("Allow FELTUS CODE Agent to edit/);
 });
 
 check("AI capability controls and auto model", () => {

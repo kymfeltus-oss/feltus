@@ -18,6 +18,7 @@ const files = [
   "src/lib/feltus-tools.js",
   "src/worker.js",
   "src/feltus-code/server/agent.mjs",
+  "src/feltus-code/server/agent-workflow.mjs",
   "src/feltus-code/server/ai-gateway.mjs",
   "src/feltus-code/server/file-tools.mjs",
   "src/feltus-code/server/git-tools.mjs",

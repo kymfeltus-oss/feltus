@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { buildRepoMap } from "../server/repo-map.mjs";
 import { createFileTools } from "../server/file-tools.mjs";
 import { createCodeAgent } from "../server/agent.mjs";
+import { runValidatedAgent } from "../server/agent-workflow.mjs";
+import { createFeltusCodeHandlers } from "../server/routes.mjs";
 import { createGitTools, assertExactGitRoot } from "../server/git-tools.mjs";
 import { createTaskRunner, DEFAULT_TASKS } from "../server/task-runner.mjs";
 
@@ -26,6 +28,7 @@ function git(args, cwd) {
 try {
   const stagingFileContent = "FELTUS CODE STAGING TEST\n";
   await fs.writeFile(path.join(root, "hello.txt"), stagingFileContent, "utf8");
+  await fs.writeFile(path.join(root, "workflow.txt"), "Original validation content\n", "utf8");
   await fs.writeFile(path.join(otherProject, "hello.txt"), "SECOND PROJECT PRIVATE\n", "utf8");
   await fs.writeFile(path.join(root, "config.yml"), 'password: "must-not-leak-this-value"\n', "utf8");
   await fs.writeFile(path.join(root, "runtime-config.json"), '{"SERVICE_ROLE_KEY":"must-not-leak-this-key","endpoint":"http://local"}\n', "utf8");
@@ -127,6 +130,23 @@ try {
   assert.match(editMessages[1].content, /"path":"hello.txt"/);
   assert.equal(editProposal.files[0].before_sha256, await files.hash("hello.txt"));
 
+  const duplicateAgent = createCodeAgent({
+    repoRoot: root,
+    fileTools: files,
+    aiGateway: {
+      async complete() {
+        return { content: JSON.stringify({ summary: "Duplicate proposal", files: [
+          { path: "hello.txt", content: "first" },
+          { path: "hello.txt", content: "second" }
+        ] }) };
+      }
+    }
+  });
+  await assert.rejects(
+    () => duplicateAgent.proposeEdit({ prompt: "Edit once", paths: ["hello.txt"] }),
+    error => error.code === "AI_EDIT_INVALID_RESPONSE"
+  );
+
   await files.createDirectory("nested");
   await files.createFile("nested/new.txt", "new content");
   assert.equal(await files.read("nested/new.txt"), "new content");
@@ -198,15 +218,126 @@ try {
     () => gitTools.checkpoint({ message: "missing confirmation" }),
     error => error.code === "CONFIRMATION_REQUIRED"
   );
+
+  const validationTasks = createTaskRunner({ repoRoot: root });
+  const routeHandlers = createFeltusCodeHandlers({ repoRoot: root, aiGateway: { async complete() { throw new Error("AI not expected"); } } });
+  assert.deepEqual(validationTasks.list(), ["git-status", "git-diff"]);
+  assert.equal(validationTasks.defaultTask(), "git-diff");
+  assert.match(validationTasks.unavailable().find(item => item.task === "npm-check")?.reason || "", /package\.json is missing/);
+  await assert.rejects(
+    () => validationTasks.run("npm-check"),
+    error => error.code === "TASK_UNAVAILABLE" && /package\.json is missing/.test(error.message)
+  );
+  const currentHelloHash = await files.hash("hello.txt");
+  const proposedHello = `${stagingFileContent}VERIFIED\n`;
+  const textValidation = await routeHandlers.validateTask({ task: "git-diff", files: [{
+    path: "hello.txt",
+    content: proposedHello,
+    before_sha256: currentHelloHash
+  }] });
+  assert.equal(textValidation.result.code, 0);
+  assert.match(textValidation.result.stdout, /VERIFIED/);
+  const statusValidation = await routeHandlers.validateTask({ task: "git-status", files: [{
+    path: "hello.txt",
+    content: proposedHello,
+    before_sha256: currentHelloHash
+  }] });
+  assert.equal(statusValidation.result.code, 0);
+  assert.match(statusValidation.result.stdout, /hello\.txt/);
+  assert.equal(await files.read("hello.txt"), stagingFileContent, "temporary validation must leave the original file unchanged");
+
+  let applyCalls = 0;
+  let validationCalls = 0;
+  const failingValidationTasks = createTaskRunner({
+    repoRoot: root,
+    tasks: { "fixture-validation": { command: process.execPath, args: ["-e", "process.exit(1)"] } }
+  });
+  const passingValidationTasks = createTaskRunner({
+    repoRoot: root,
+    tasks: { "fixture-validation": { command: process.execPath, args: ["-e", "process.exit(0)"] } }
+  });
+  let validationRunner = failingValidationTasks;
+  const workflowFileOriginal = "Original validation content\n";
+  const workflowFileProposed = "Validated proposal content\n";
+  const workflowHandlers = {
+    async aiPlan() { return { result: { content: "Plan" } }; },
+    async aiEdit() {
+      return { result: {
+        summary: "Update workflow fixture",
+        files: [{ path: "workflow.txt", content: workflowFileProposed, before_sha256: await files.hash("workflow.txt") }],
+        allowedPaths: ["workflow.txt"]
+      } };
+    },
+    async validateTask({ task, files: proposedFiles }) {
+      validationCalls += 1;
+      return { result: await validationRunner.runAgainstProposed(task, proposedFiles) };
+    },
+    async applyEdit({ files: proposedFiles }) {
+      applyCalls += 1;
+      const applied = [];
+      for (const item of proposedFiles) applied.push(await files.write(item.path, item.content, { expectedSha256: item.before_sha256 }));
+      return { files: applied };
+    }
+  };
+  const failedAgent = await runValidatedAgent({
+    handlers: workflowHandlers, prompt: "Validate before applying", paths: ["workflow.txt"], model: "local-coder", task: "fixture-validation", allowApply: true
+  });
+  assert.equal(failedAgent.result.validationPassed, false);
+  assert.deepEqual(failedAgent.result.applied, []);
+  assert.equal(applyCalls, 0);
+  assert.equal(validationCalls, 1, "a failed validation must not trigger an automatic second run");
+  assert.equal(await files.read("workflow.txt"), workflowFileOriginal, "failed validation must not modify the project file");
+
+  const unavailableAgent = await runValidatedAgent({
+    handlers: {
+      ...workflowHandlers,
+      async validateTask({ files: proposedFiles }) {
+        return validationTasks.runAgainstProposed("npm-check", proposedFiles);
+      }
+    },
+    prompt: "Do not run missing package scripts",
+    paths: ["workflow.txt"],
+    model: "local-coder",
+    task: "npm-check",
+    allowApply: true
+  });
+  assert.equal(unavailableAgent.result.validationPassed, false);
+  assert.equal(unavailableAgent.result.taskRuns[0].skipped, true);
+  assert.match(unavailableAgent.result.taskRuns[0].reason, /package\.json is missing/);
+  assert.equal(applyCalls, 0);
+  assert.equal(validationCalls, 1);
+  assert.equal(await files.read("workflow.txt"), workflowFileOriginal);
+
+  validationRunner = passingValidationTasks;
+  const passedAgent = await runValidatedAgent({
+    handlers: workflowHandlers, prompt: "Validate before applying", paths: ["workflow.txt"], model: "local-coder", task: "fixture-validation", allowApply: true
+  });
+  assert.equal(passedAgent.result.validationPassed, true);
+  assert.equal(applyCalls, 1);
+  assert.equal(validationCalls, 2, "each Agent attempt should run its selected validation once");
+  assert.equal(passedAgent.result.applied.length, 1, "successful Agent result must include each file once");
+  assert.equal(passedAgent.result.applied[0].path, "workflow.txt");
+  assert.equal(await files.read("workflow.txt"), workflowFileProposed);
+  await files.write("workflow.txt", workflowFileOriginal, { expectedSha256: await files.hash("workflow.txt") });
+
+  const duplicateApplyHash = await files.hash("hello.txt");
+  await assert.rejects(() => routeHandlers.applyEdit({
+    files: [
+      { path: "hello.txt", content: "first", before_sha256: duplicateApplyHash },
+      { path: "hello.txt", content: "second", before_sha256: duplicateApplyHash }
+    ],
+    allowedPaths: ["hello.txt"]
+  }), error => error.code === "INVALID_EDIT_PROPOSAL");
+  assert.equal(await files.read("hello.txt"), stagingFileContent, "duplicate paths must be rejected before any write");
+
   await gitTools.stage(["hello.txt"]);
   assert.match((await gitTools.diff({ staged: true })).stdout, /FELTUS CODE STAGING TEST/);
 
   const tasks = createTaskRunner({ repoRoot: root });
-  assert.ok(tasks.list().includes("npm-check"));
-  assert.ok(tasks.list().includes("npm-regression"));
-  assert.ok(tasks.list().includes("npm-test-core"));
-  assert.ok(tasks.list().includes("compose-config"));
-  assert.deepEqual(Object.keys(DEFAULT_TASKS), tasks.list());
+  assert.ok(tasks.list().includes("git-status"));
+  assert.ok(tasks.list().includes("git-diff"));
+  assert.deepEqual(tasks.list(), ["git-status", "git-diff"]);
+  assert.deepEqual(Object.keys(DEFAULT_TASKS), ["git-status", "git-diff", "npm-check", "npm-test-core", "npm-regression", "compose-config"]);
   assert.ok(Object.values(DEFAULT_TASKS).every(task => typeof task.command === "string" && !task.shell));
   const statusTask = await tasks.run("git-status");
   assert.equal(statusTask.code, 0);
@@ -231,6 +362,7 @@ try {
   await assert.rejects(taskPromise, error => error.code === "REQUEST_CANCELLED");
 
   process.stdout.write("PASS FELTUS CODE selected-file AI grounding, staging marker, cross-project isolation, and edit hash tests\n");
+  process.stdout.write("PASS FELTUS CODE validation gating, temporary validation, no duplicate apply, and task applicability tests\n");
   process.stdout.write("PASS FELTUS CODE file, redaction, search, repo map, write-conflict, rename, and delete tests\n");
   process.stdout.write(`PASS FELTUS CODE symlink traversal test${symlinkTested ? "" : " (platform capability unavailable; skipped)"}\n`);
   process.stdout.write("PASS FELTUS CODE exact Git-root isolation, status, stage, and checkpoint-confirmation tests\n");

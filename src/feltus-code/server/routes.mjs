@@ -40,8 +40,9 @@ export function createFeltusCodeHandlers({ repoRoot, aiGateway, approvedTasks })
     gitLog: async ({ limit = 20 }) => ({ ok: true, ...(await git.log(limit)) }),
     gitStage: async ({ paths }) => ({ ok: true, ...(await git.stage(paths)) }),
     checkpoint: async ({ message, confirm }) => ({ ok: true, ...(await git.checkpoint({ message, confirm })) }),
-    listTasks: async () => ({ ok: true, tasks: tasks.list() }),
+    listTasks: async () => ({ ok: true, tasks: tasks.list(), unavailable: tasks.unavailable(), default_task: tasks.defaultTask() }),
     runTask: async ({ task }, { signal } = {}) => ({ ok: true, result: await tasks.run(task, { signal }) }),
+    validateTask: async ({ task, files }, { signal } = {}) => ({ ok: true, result: await tasks.runAgainstProposed(task, files, { signal }) }),
     aiPlan: async ({ prompt, paths, model }, { signal, onToken } = {}) => ({
       ok: true,
       result: await getAgent().plan({ prompt, paths, model, signal, onToken })
@@ -55,18 +56,22 @@ export function createFeltusCodeHandlers({ repoRoot, aiGateway, approvedTasks })
         throw Object.assign(new Error("Accept between 1 and 12 proposed files."), { code: "INVALID_EDIT_PROPOSAL" });
       }
       const allowed = new Set(Array.isArray(allowedPaths) ? allowedPaths : []);
-      const applied = [];
+      const pending = [];
+      const seen = new Set();
       for (const file of proposedFiles) {
         if (signal?.aborted) throw Object.assign(new Error("Edit request was cancelled."), { code: "REQUEST_CANCELLED" });
-        if (!allowed.has(file?.path) || typeof file?.content !== "string") {
+        if (!allowed.has(file?.path) || typeof file?.content !== "string" || seen.has(file.path)) {
           throw Object.assign(new Error("Edit proposal contains an unselected path."), { code: "INVALID_EDIT_PROPOSAL" });
         }
-        const currentHash = await files.hash(file.path);
-        if (currentHash !== file.before_sha256) {
+        const currentFile = await files.inspect(file.path, { forAI: true });
+        if (currentFile.sha256 !== file.before_sha256) {
           throw Object.assign(new Error(`File changed since the proposal was generated: ${file.path}`), { code: "EDIT_CONFLICT" });
         }
-        applied.push(await files.write(file.path, file.content, { expectedSha256: file.before_sha256 }));
+        seen.add(file.path);
+        if (currentFile.content !== file.content) pending.push(file);
       }
+      const applied = [];
+      for (const file of pending) applied.push(await files.write(file.path, file.content, { expectedSha256: file.before_sha256 }));
       return { ok: true, files: applied };
     }
   };
