@@ -15,7 +15,8 @@
     "db:stop": "supabase stop",
     "db:types": "supabase gen types typescript local > src/types/supabase.ts",
     "ai:ingest": "node src/ai-ingest.js",
-    "ui:start": "node src/server.js"
+    "ui:start": "node src/server.js",
+    "test:deployment-control-plane": "node scripts/deployment-control-plane-tests.mjs"
   },
   "keywords": [],
   "author": "Feltus Labs",

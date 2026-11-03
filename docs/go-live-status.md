@@ -21,6 +21,7 @@ Status for the core-platform branch as of 2026-11-02. Local code checks do not v
 - `npm run check`, `npm run test:core`, `npm run test:code`, and `npm run regression` passed for the current working tree. Regression covers anonymous FELTUS CODE API/UI denial, project-scoped migration policies, model selection, cancellation, secret scan, and Compose validation.
 - PDF extractor tests passed (2 tests); Compose configuration and production workflow YAML validation passed.
 - Native Windows Ollama is the only local runtime verified in this session: `ollama.exe` owns loopback port `11434`, `llama3:8b` is installed, and a harmless local-only inference prompt returned successfully. No Docker Ollama container was started; Docker Desktop's Linux engine is unavailable.
+- FELTUS Deployment Control Plane Database v1 migration and schema documentation have been added on `codex/feltus-code-integration`. The design reuses existing project and deployment records and adds organization/RBAC, environments, Git/build/artifact records, deployment history, secret metadata, audit events, and a transactionally enqueued leased outbox. This is a code artifact only; it is not evidence of a successful database migration or live RLS verification.
 
 ## BLOCKED
 
@@ -28,6 +29,8 @@ Status for the core-platform branch as of 2026-11-02. Local code checks do not v
 - Staging deployment and clean staging database migrations: not completed.
 - Live project/data isolation against a running self-hosted stack: not completed.
 - FELTUS CODE migration `20261102010000_feltus_code.sql` has not been applied to a clean staging Postgres database; its RLS behavior has only been checked through static regression plus unit tests, not a live database.
+- Deployment control plane migration `20261102020000_feltus_deployment_control_plane.sql` has not been executed or validated by PostgreSQL. The local Docker Engine was unavailable during this implementation, so migration syntax, existing-data backfill, grants, triggers, and RLS must be verified against a disposable clean database and then staging before workers or UI use these tables.
+- Deployment/build/outbox worker RPCs have not been exercised under concurrent transactions. Do not enable an infrastructure worker until duplicate delivery, lease recovery, rollback, and cross-tenant integration cases pass against the applied schema.
 - A browser-level FELTUS CODE flow against authenticated live project data (workspace initialization, file edit, streamed Plan, accepted Edit, and persisted action/checkpoint) has not been run.
 - Coolify production configuration and production secrets: not configured or verified.
 - Production Docker image build and runtime behavior: local Compose validation is separate from building/running the production stack; production-environment verification remains open.
@@ -48,6 +51,8 @@ Status for the core-platform branch as of 2026-11-02. Local code checks do not v
 - Cross-project FELTUS CODE workspace isolation with two authenticated live project memberships.
 - Browser visual/usability verification of the embedded FELTUS CODE UI.
 - The configured self-hosted AI runtime endpoint has not been verified from this workspace shell or Coolify.
+- The new deployment control plane migration has not been applied to any database; DDL/RLS behavior and legacy project/deployment backfills are untested.
+- No Git provider webhook, build runner, OCI registry publisher, Coolify deployment adapter, promotion, or infrastructure outbox worker has been implemented or run by this database-only phase.
 
 ## REQUIRES PRODUCTION INFRASTRUCTURE
 
