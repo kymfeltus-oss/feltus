@@ -3,6 +3,7 @@
 This phase adds the PostgreSQL data model and database access boundaries for the deployment control plane. It uses FELTUS's existing self-hosted Postgres/Supabase-compatible stack; it adds no paid service, runtime, or container.
 
 Migration: `supabase/migrations/20261102020000_feltus_deployment_control_plane.sql`
+Forward compatibility repair: `supabase/migrations/20261103000000_feltus_deployment_digest_search_path.sql` redefines the validator for databases that already recorded the original control-plane migration.
 
 ## Existing records reused
 
@@ -56,8 +57,14 @@ Use these RPCs as the worker state machine:
 
 Coolify API credentials stay in trusted runtime configuration, not in targets or outbox payloads. Deployment targets store only the Coolify resource references. Builds are represented independently and do not run through the Coolify deployment adapter.
 
+The private worker now consumes these commands through the leased RPC contract. It re-reads the deployment, environment, target, and artifact before dispatch, and requires the target's Coolify resource UUID to match `FELTUS_COOLIFY_RESOURCE_MAP` for that FELTUS environment. Production is not eligible unless both the environment allowlist includes it and `FELTUS_COOLIFY_PRODUCTION_ENABLED=true`. Production teardown is always blocked. The worker sends the Coolify token only from its own runtime, requires read/write/deploy API permissions, and does not request access to sensitive Coolify values. Its deployment path accepts only Coolify Docker Image resources and sets the immutable artifact digest before triggering a deployment.
+
+After Coolify accepts an operation, the worker reconciles in-flight deployment records. A provider success is not marked healthy until the environment's HTTPS `/api/health` and `/api/ready` endpoints both return HTTP 200. Health probes pin DNS results and reject private, loopback, link-local, and reserved addresses. A verified probe also marks the domain's TLS status active. Staging/production network isolation, Coolify resource mapping, token scope, and actual deployment behavior still require verification against the real environments.
+
+`configure_domain_tls` requires a scoped `domain_id` in `command_payload`, adds that existing database domain to a non-Compose Coolify application, forces HTTPS, and asks Coolify to deploy. It does not create DNS records. `teardown_environment` requires the environment already be marked `tearing_down`, refuses production, and stops the Coolify application without deleting resources or volumes. Unsupported Coolify resource shapes fail closed.
+
 ## Scope and rollout state
 
-This migration establishes schema and RLS only. It does not implement the Git webhook endpoint, build runner, artifact publisher, Coolify adapter, domain provisioning, secret-encryption code, or deployment worker. The existing deployment-history route creates record-only rows when no artifact is supplied; only artifact-backed rows enter the new outbox.
+This migration establishes schema and RLS; the private worker consumes the outbox and calls the Coolify v1 API for artifact deployment, domain configuration, teardown, and reconciliation. The repository still does not implement the Git webhook endpoint, build runner, artifact publisher, or secret-encryption code. The existing deployment-history route creates record-only rows when no artifact is supplied; only artifact-backed rows enter the new outbox. Real staging acceptance remains required before enabling Coolify credentials or production dispatch.
 
 The migration is picked up by the existing `migrate` Compose service on the next stack startup. It has not been applied to staging or a clean database in this change. Staging migration and isolation checks remain required before any deployment worker is enabled.

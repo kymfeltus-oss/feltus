@@ -6690,16 +6690,19 @@ async function handleHttpRequest(req, res) {
           /* Durable worker liveness is reported through a service heartbeat. */
           try {
             const result = await tableRequest("feltus_worker_heartbeats", "GET", {
-              query: "?select=worker_id,status,last_seen_at&order=last_seen_at.desc&limit=1"
+              query: "?select=worker_id,status,last_seen_at,metadata&order=last_seen_at.desc&limit=1"
             });
             const heartbeat = Array.isArray(result.data) ? result.data[0] : null;
             const ageMs = heartbeat ? Date.now() - Date.parse(heartbeat.last_seen_at) : Number.POSITIVE_INFINITY;
+            const heartbeatFresh = result.status >= 200 && result.status < 300 && heartbeat && ageMs < 90_000;
             services.worker = {
-              status: result.status >= 200 && result.status < 300 && heartbeat && ageMs < 90_000 && heartbeat.status === "online"
+              status: !heartbeatFresh ? "offline" : heartbeat.status === "online"
                 ? "online"
-                : "offline",
+                : heartbeat.status === "degraded" ? "degraded" : "offline",
               worker_id: heartbeat?.worker_id || null,
-              last_seen_at: heartbeat?.last_seen_at || null
+              last_seen_at: heartbeat?.last_seen_at || null,
+              infrastructure_outbox: heartbeat?.metadata?.infrastructure_outbox || "unknown",
+              infrastructure_error_code: heartbeat?.metadata?.infrastructure_error_code || null
             };
           } catch {
             services.worker = { status: "offline", error: "Worker heartbeat unavailable." };

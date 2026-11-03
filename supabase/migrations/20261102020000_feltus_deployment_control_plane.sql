@@ -313,6 +313,11 @@ BEGIN
 END
 $$;
 
+-- Validate the deferred role FK backfill before DDL touches the membership
+-- tables. PostgreSQL rejects CREATE INDEX or ALTER TABLE while deferred
+-- trigger events remain queued in the migration transaction.
+SET CONSTRAINTS feltus_organization_memberships_role_id_scope_key_fkey IMMEDIATE;
+
 CREATE INDEX IF NOT EXISTS feltus_organization_memberships_user_idx
     ON public.feltus_organization_memberships (user_id, organization_id)
     WHERE status = 'active';
@@ -1050,7 +1055,7 @@ CREATE OR REPLACE FUNCTION public.feltus_validate_deployment_record()
 RETURNS trigger
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = pg_catalog, public
+SET search_path = pg_catalog, extensions, public
 AS $$
 DECLARE
     v_org_id UUID;
@@ -1135,7 +1140,7 @@ BEGIN
                     USING ERRCODE = '23514';
             END IF;
         END IF;
-        NEW.request_fingerprint := encode(public.digest(
+        NEW.request_fingerprint := encode(digest(
             NEW.app_id::TEXT || ':' || NEW.environment_id::TEXT || ':' || NEW.artifact_id::TEXT,
             'sha256'
         ), 'hex');

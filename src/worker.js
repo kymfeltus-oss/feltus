@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import dotenv from "dotenv";
 import { createAIProvider } from "./lib/feltus-ai-providers.js";
 import { resolveAIEndpointPolicy } from "./lib/feltus-ai-policy.js";
+import { createCoolifyClient } from "./lib/feltus-coolify.js";
+import { createInfrastructureWorker } from "./lib/feltus-infrastructure-worker.js";
 
 dotenv.config();
 
@@ -12,6 +14,21 @@ const WORKER_ID = process.env.FELTUS_WORKER_ID || `worker-${crypto.randomUUID()}
 const PORT = Number(process.env.FELTUS_WORKER_PORT || 8081);
 const POLL_MS = Math.max(250, Number(process.env.FELTUS_WORKER_POLL_MS || 1000));
 const LEASE_SECONDS = Math.max(30, Number(process.env.FELTUS_JOB_LEASE_SECONDS || 180));
+const COOLIFY_URL = String(process.env.FELTUS_COOLIFY_URL || "").trim();
+const COOLIFY_TOKEN = String(process.env.FELTUS_COOLIFY_API_TOKEN || "").trim();
+const ALLOWED_DEPLOYMENT_ENVIRONMENTS = String(process.env.FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS || "")
+  .split(",").map(value => value.trim().toLowerCase()).filter(value => ["development", "staging", "production"].includes(value));
+let COOLIFY_RESOURCE_MAP = {};
+if (String(process.env.FELTUS_COOLIFY_RESOURCE_MAP || "").trim()) {
+  try {
+    COOLIFY_RESOURCE_MAP = JSON.parse(process.env.FELTUS_COOLIFY_RESOURCE_MAP);
+    if (!COOLIFY_RESOURCE_MAP || typeof COOLIFY_RESOURCE_MAP !== "object" || Array.isArray(COOLIFY_RESOURCE_MAP)) {
+      throw new Error("Expected an object keyed by environment name.");
+    }
+  } catch {
+    throw new Error("FELTUS_COOLIFY_RESOURCE_MAP must be valid JSON keyed by environment.");
+  }
+}
 let running = true;
 let lastLoopAt = null;
 let lastError = null;
@@ -22,6 +39,25 @@ if (!GATEWAY || !SERVICE_KEY) {
 
 const aiPolicy = await resolveAIEndpointPolicy(process.env);
 const ai = createAIProvider({ ...process.env, FELTUS_AI_ENDPOINT: aiPolicy.endpoint });
+const coolify = COOLIFY_URL && COOLIFY_TOKEN
+  ? createCoolifyClient({
+      baseUrl: COOLIFY_URL,
+      apiToken: COOLIFY_TOKEN,
+      allowHttp: process.env.FELTUS_COOLIFY_ALLOW_HTTP === "true"
+    })
+  : null;
+const infrastructureWorker = coolify && ALLOWED_DEPLOYMENT_ENVIRONMENTS.length
+  ? createInfrastructureWorker({
+      rest,
+      coolify,
+      workerId: WORKER_ID,
+      leaseSeconds: Number(process.env.FELTUS_INFRASTRUCTURE_LEASE_SECONDS || 180),
+      allowedEnvironments: ALLOWED_DEPLOYMENT_ENVIRONMENTS,
+      resourceMap: COOLIFY_RESOURCE_MAP,
+      productionEnabled: process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED === "true",
+      healthGraceMs: Number(process.env.FELTUS_DEPLOYMENT_HEALTH_GRACE_MS || 180000)
+    })
+  : null;
 
 async function rest(path, { method = "GET", body = null, prefer = "" } = {}) {
   const response = await fetch(`${GATEWAY}${path}`, {
@@ -52,14 +88,22 @@ async function rest(path, { method = "GET", body = null, prefer = "" } = {}) {
 }
 
 async function heartbeat(status = "online") {
+  const infrastructureHealth = infrastructureWorker?.health() || { enabled: false, last_error_code: null };
+  const reportedStatus = status === "online" && (lastError || infrastructureHealth.last_error_code)
+    ? "degraded"
+    : status;
   await rest("/rest/v1/feltus_worker_heartbeats?on_conflict=worker_id", {
     method: "POST",
     prefer: "resolution=merge-duplicates,return=minimal",
     body: {
       worker_id: WORKER_ID,
       worker_type: "core",
-      status,
-      metadata: { provider: ai.provider || "ollama" },
+      status: reportedStatus,
+      metadata: {
+        provider: ai.provider || "ollama",
+        infrastructure_outbox: infrastructureHealth.enabled ? "enabled" : "disabled",
+        infrastructure_error_code: infrastructureHealth.last_error_code
+      },
       last_seen_at: new Date().toISOString()
     }
   });
@@ -203,6 +247,10 @@ async function loop() {
       lastLoopAt = new Date().toISOString();
       await heartbeat();
       await rest("/rest/v1/rpc/feltus_recover_stale_jobs", { method: "POST", body: {} });
+      if (infrastructureWorker) {
+        await infrastructureWorker.reconcileActiveDeployments();
+        await infrastructureWorker.processNext();
+      }
       const jobs = await rest("/rest/v1/rpc/feltus_claim_jobs", {
         method: "POST",
         body: { p_worker_id: WORKER_ID, p_limit: 1, p_lease_seconds: LEASE_SECONDS }
@@ -226,12 +274,15 @@ http.createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
-  res.writeHead(lastError ? 503 : 200, { "Content-Type": "application/json" });
+  const infrastructureHealth = infrastructureWorker?.health() || { enabled: false, last_error_code: null };
+  const healthError = lastError || infrastructureHealth.last_error_code;
+  res.writeHead(healthError ? 503 : 200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({
-    status: lastError ? "degraded" : "healthy",
+    status: healthError ? "degraded" : "healthy",
     worker_id: WORKER_ID,
+    infrastructure_outbox: infrastructureHealth.enabled ? "enabled" : "disabled",
     last_loop_at: lastLoopAt,
-    last_error: lastError
+    last_error: lastError || infrastructureHealth.last_error_code
   }));
 }).listen(PORT, "0.0.0.0");
 

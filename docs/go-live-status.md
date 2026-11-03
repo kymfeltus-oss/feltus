@@ -1,6 +1,22 @@
 # FELTUS go-live status
 
-Status for the core-platform branch as of 2026-11-02. Local code checks do not verify a public deployment. FELTUS remains a **production candidate**, not a production-ready service, until every blocked infrastructure gate below is completed.
+Status for the production recovery work as of 2026-11-03. Local code checks do not verify a public deployment. FELTUS remains a **production candidate**, not a production-ready service, until the blocked staging and production gates below are completed.
+
+## Recovery update — 2026-11-03
+
+- Reproduced the reported pending-trigger index failure in a disposable copy of the existing schema. The migration's deferred organization-membership role foreign key had queued events when PostgreSQL reached the membership indexes and later RLS DDL. The repair validates that specific constraint immediately; it does not disable or bypass it.
+- The migration runner wraps each SQL migration and ledger insert in one transaction. The reproduced failed run left the control-plane ledger row absent. This proves the runner's rollback behavior on the disposable database; the production ledger itself remains unavailable for direct inspection.
+- The corrected migration sequence passed on disposable existing-project and fresh databases. The named deferred-constraint flush passed with a real membership insert and index creation inside a rolled-back transaction. A forward-only digest repair then applied over an already-recorded 16-migration database; its ledger recorded the 17th migration. Existing fixture application and membership records remained present. The deployment-control-plane PostgreSQL integration suite passed after its test database was given the required active target fixture.
+- The same test image places `pgcrypto.digest` in `extensions`; the deployment trigger previously called `public.digest`, which would fail when an artifact-backed deployment was inserted. The function now resolves `digest` through `extensions` first and `public` second.
+- A private infrastructure-outbox consumer and server-side Coolify v1 client were added. Local tests cover lease RPCs, scope/artifact checks, exact environment-to-resource mapping, digest pinning, production gating, server-only credentials, HTTPS enforcement, and redirect refusal. This is code-level verification only; no Coolify API or real deployment was contacted.
+- `npm run check`, `npm run test:core`, `npm run test:code`, `npm run test:infrastructure-worker`, `npm run regression`, and the disposable-database `npm run test:deployment-control-plane` passed. Compose configuration parsing and local image builds for `app`, `worker`, and `evidence-extractor` passed.
+
+## Still blocked
+
+- No Coolify URL/token or verified isolated staging database/stack is available from this checkout. The actual staging migration, acceptance script, container health, outbox-to-Coolify deployment, domain/TLS verification, and reconciliation have not been run.
+- `FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS` and `FELTUS_COOLIFY_RESOURCE_MAP` default empty, so infrastructure outbox processing remains disabled until isolated environment mappings and token permissions are verified. Production dispatch additionally requires the production allowlist entry and `FELTUS_COOLIFY_PRODUCTION_ENABLED=true`.
+- No production backup, migration-ledger inspection, Coolify deployment, or owner approval has occurred. The code is committed locally on `codex/feltus-production-recovery` and has not been pushed.
+- Public domain health could not be independently checked from this environment; HTTPS requests to the two public domains were unreachable here. The owner-reported 503 condition has not been cleared or rechecked from an external network.
 
 ## PASS
 
@@ -20,27 +36,26 @@ Status for the core-platform branch as of 2026-11-02. Local code checks do not v
 - FELTUS CODE planning streams through the configured provider when supported. The provider adapter stream/usage mapping and cancellation path pass automated tests; endpoint policy gates source context and code prompts never append stored conversation history.
 - `npm run check`, `npm run test:core`, `npm run test:code`, and `npm run regression` passed for the current working tree. Regression covers anonymous FELTUS CODE API/UI denial, project-scoped migration policies, model selection, cancellation, secret scan, and Compose validation.
 - PDF extractor tests passed (2 tests); Compose configuration and production workflow YAML validation passed.
-- Native Windows Ollama is the only local runtime verified in this session: `ollama.exe` owns loopback port `11434`, `llama3:8b` is installed, and a harmless local-only inference prompt returned successfully. No Docker Ollama container was started; Docker Desktop's Linux engine is unavailable.
-- FELTUS Deployment Control Plane Database v1 migration and schema documentation have been added on `codex/feltus-code-integration`. The design reuses existing project and deployment records and adds organization/RBAC, environments, Git/build/artifact records, deployment history, secret metadata, audit events, and a transactionally enqueued leased outbox. This is a code artifact only; it is not evidence of a successful database migration or live RLS verification.
+- Native Windows Ollama was previously verified for local development. No Docker Ollama container was started. Docker access in this recovery run was limited to disposable Postgres validation containers.
+- FELTUS Deployment Control Plane Database v1 has passed isolated PostgreSQL migration checks. This does not verify live staging/production RLS, Coolify integration, or public availability.
 
 ## BLOCKED
 
-- PR and clean-checkout CI: no PR has been opened and a GitHub Actions run has not been confirmed for this revision.
+- PR and clean-checkout CI: PR #2 was merged before this recovery diff; these local recovery changes are uncommitted and have no CI run.
 - Staging deployment and clean staging database migrations: not completed.
 - Live project/data isolation against a running self-hosted stack: not completed.
 - FELTUS CODE migration `20261102010000_feltus_code.sql` has not been applied to a clean staging Postgres database; its RLS behavior has only been checked through static regression plus unit tests, not a live database.
-- Deployment control plane migration `20261102020000_feltus_deployment_control_plane.sql` has not been executed or validated by PostgreSQL. The local Docker Engine was unavailable during this implementation, so migration syntax, existing-data backfill, grants, triggers, and RLS must be verified against a disposable clean database and then staging before workers or UI use these tables.
-- Deployment/build/outbox worker RPCs have not been exercised under concurrent transactions. Do not enable an infrastructure worker until duplicate delivery, lease recovery, rollback, and cross-tenant integration cases pass against the applied schema.
+- The migration has passed the disposable PostgreSQL checks described above. Live staging grants/RLS, concurrent delivery, and worker lease recovery still need verification on the isolated staging stack before enabling the Coolify worker.
 - A browser-level FELTUS CODE flow against authenticated live project data (workspace initialization, file edit, streamed Plan, accepted Edit, and persisted action/checkpoint) has not been run.
 - Coolify production configuration and production secrets: not configured or verified.
 - Production Docker image build and runtime behavior: local Compose validation is separate from building/running the production stack; production-environment verification remains open.
-- Local production image build: Docker Desktop's Linux engine was unavailable in this workspace, so `docker compose ... build app worker evidence-extractor` could not connect to the Docker API. Run the existing CI build or a Coolify/staging build and retain its logs.
+- Production runtime startup and health: local images built successfully, but no Compose services were started. Run an isolated staging deployment and retain startup/health logs.
 - Owner bootstrap and production login: not verified.
 - SMTP and owner password recovery end-to-end: not verified.
 - Backup and restore: automated backup artifacts exist, but a successful off-host backup and full restore drill have not been verified.
 - Rollback drill: not completed.
 - Production/runtime AI provider ownership and network access: not verified from Coolify or the actual runtime environment. Select and verify one supported provider, its exact trust classification, and any runtime credential.
-- Branch is not yet pushed through a PR/clean-checkout CI run; open the PR only after reviewing the complete branch diff and confirm all required CI jobs pass.
+- The recovery diff still needs a reviewed PR/clean-checkout CI run before promotion.
 
 ## NOT TESTED
 
@@ -51,8 +66,8 @@ Status for the core-platform branch as of 2026-11-02. Local code checks do not v
 - Cross-project FELTUS CODE workspace isolation with two authenticated live project memberships.
 - Browser visual/usability verification of the embedded FELTUS CODE UI.
 - The configured self-hosted AI runtime endpoint has not been verified from this workspace shell or Coolify.
-- The new deployment control plane migration has not been applied to any database; DDL/RLS behavior and legacy project/deployment backfills are untested.
-- No Git provider webhook, build runner, OCI registry publisher, Coolify deployment adapter, promotion, or infrastructure outbox worker has been implemented or run by this database-only phase.
+- Live staging and production migration/RLS behavior and legacy-data preservation have not been verified; only disposable databases were used.
+- No Git provider webhook, build runner, OCI registry publisher, or artifact promotion flow has been implemented. The outbox worker and Coolify adapter are implemented locally but have not been run against Coolify.
 
 ## REQUIRES PRODUCTION INFRASTRUCTURE
 

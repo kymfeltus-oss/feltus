@@ -45,6 +45,9 @@ jobs:
       - name: Test FELTUS CODE workspace isolation and safety
         run: npm run test:code
 
+      - name: Test infrastructure outbox and Coolify worker safety
+        run: npm run test:infrastructure-worker
+
       - name: Test PDF extraction service
         working-directory: services/evidence-extractor
         run: python -m unittest discover -s tests -v

@@ -11,6 +11,7 @@
     "regression": "node scripts/production-regression.mjs",
     "test:core": "node scripts/core-platform-tests.mjs",
     "test:code": "node src/feltus-code/tests/smoke.mjs",
+    "test:infrastructure-worker": "node scripts/infrastructure-worker-tests.mjs",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:types": "supabase gen types typescript local > src/types/supabase.ts",

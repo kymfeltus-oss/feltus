@@ -70,6 +70,8 @@ const aiConversationMigration = fs.readFileSync(
 const aiClient = fs.readFileSync(path.join(root, "src/lib/feltus-ai.js"), "utf8");
 const aiProviders = fs.readFileSync(path.join(root, "src/lib/feltus-ai-providers.js"), "utf8");
 const worker = fs.readFileSync(path.join(root, "src/worker.js"), "utf8");
+const infrastructureWorker = fs.readFileSync(path.join(root, "src/lib/feltus-infrastructure-worker.js"), "utf8");
+const coolifyClient = fs.readFileSync(path.join(root, "src/lib/feltus-coolify.js"), "utf8");
 const coreMigration = fs.readFileSync(
   path.join(root, "supabase/migrations/20261102000000_feltus_core_platform.sql"),
   "utf8"
@@ -231,6 +233,28 @@ check("provider-neutral AI and durable worker are wired for production", () => {
   assert.match(compose, /FELTUS_SECRET_ENCRYPTION_KEY/);
 });
 
+check("infrastructure outbox uses fenced leases and a server-only Coolify adapter", () => {
+  assert.match(worker, /FELTUS_COOLIFY_API_TOKEN/);
+  assert.match(worker, /FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS/);
+  assert.match(worker, /FELTUS_COOLIFY_RESOURCE_MAP/);
+  assert.match(infrastructureWorker, /feltus_claim_infrastructure_outbox/);
+  assert.match(infrastructureWorker, /feltus_heartbeat_infrastructure_outbox/);
+  assert.match(infrastructureWorker, /feltus_complete_infrastructure_outbox/);
+  assert.match(infrastructureWorker, /feltus_retry_infrastructure_outbox/);
+  assert.match(infrastructureWorker, /lease_token/);
+  assert.match(infrastructureWorker, /verification_status !== "passed"/);
+  assert.match(infrastructureWorker, /PRODUCTION_TEARDOWN_BLOCKED/);
+  assert.match(infrastructureWorker, /COOLIFY_TARGET_NOT_MAPPED/);
+  assert.match(infrastructureWorker, /HEALTHCHECK_ADDRESS_NOT_PUBLIC/);
+  assert.match(server, /infrastructure_outbox: heartbeat\?\.metadata/);
+  assert.match(coolifyClient, /Authorization: `Bearer \$\{apiToken\}`/);
+  assert.match(coolifyClient, /redirect: "manual"/);
+  assert.match(infrastructureWorker, /docker_registry_image_tag/);
+  assert.match(compose, /FELTUS_COOLIFY_API_TOKEN/);
+  const appEnvironment = compose.match(/^  app:[\s\S]*?(?=^  worker:)/m)?.[0] || "";
+  assert.doesNotMatch(appEnvironment, /FELTUS_COOLIFY_API_TOKEN|FELTUS_COOLIFY_RESOURCE_MAP/);
+});
+
 check("first-class chat controls remain project-scoped", () => {
   for (const id of [
     "newAIConversationButton", "archiveAIConversationButton", "exportAIConversationButton",
@@ -254,6 +278,7 @@ check("CI runs production checks on every branch update", () => {
   assert.match(productionWorkflow, /^on:\s*\r?\n\s+push:\s*\r?\n\s+pull_request:/m);
   assert.match(productionWorkflow, /node-version: 22/);
   assert.match(productionWorkflow, /npm run regression/);
+  assert.match(productionWorkflow, /npm run test:infrastructure-worker/);
   assert.match(productionWorkflow, /python -m unittest discover/);
   assert.match(productionWorkflow, /docker compose .* build app evidence-extractor/);
 });

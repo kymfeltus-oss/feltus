@@ -17,6 +17,8 @@ const files = [
   "src/lib/feltus-client.js",
   "src/lib/feltus-tools.js",
   "src/worker.js",
+  "src/lib/feltus-coolify.js",
+  "src/lib/feltus-infrastructure-worker.js",
   "src/feltus-code/server/agent.mjs",
   "src/feltus-code/server/agent-workflow.mjs",
   "src/feltus-code/server/ai-gateway.mjs",
@@ -32,6 +34,7 @@ const files = [
   "scripts/check.js",
   "scripts/bootstrap-owner.mjs",
   "scripts/production-regression.mjs",
+  "scripts/infrastructure-worker-tests.mjs",
   "scripts/core-platform-tests.mjs",
   "scripts/production-smoke.mjs"
 ];
