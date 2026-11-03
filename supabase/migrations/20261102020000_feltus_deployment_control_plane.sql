@@ -202,7 +202,7 @@ BEGIN
     INSERT INTO public.feltus_organizations (name, slug, personal_owner_id, created_by)
     VALUES (
         'Personal workspace',
-        'personal-' || substr(replace(p_user_id::TEXT, '-', ''), 1, 12),
+        'personal-' || replace(p_user_id::TEXT, '-', ''),
         p_user_id,
         p_user_id
     )
