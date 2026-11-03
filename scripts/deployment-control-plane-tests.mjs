@@ -9,6 +9,9 @@ BEGIN;
 DO $$
 DECLARE
   v_org_id uuid;
+  v_environment_id uuid;
+  v_passed_artifact_id uuid;
+  v_revoked_artifact_id uuid;
   v_deployment_id uuid := gen_random_uuid();
   v_complete_deployment_id uuid := gen_random_uuid();
   v_exclusive_deployment_id uuid := gen_random_uuid();
@@ -30,6 +33,42 @@ BEGIN
 
   IF v_org_id IS NULL THEN
     RAISE EXCEPTION 'Validation fixture project is missing';
+  END IF;
+
+  SELECT id
+  INTO v_environment_id
+  FROM public.feltus_environments
+  WHERE app_id = '10000000-0000-0000-0000-000000000001'
+    AND kind = 'development'
+  ORDER BY created_at
+  LIMIT 1;
+
+  SELECT id
+  INTO v_passed_artifact_id
+  FROM public.feltus_artifacts
+  WHERE app_id = '10000000-0000-0000-0000-000000000001'
+    AND verification_status = 'passed'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  SELECT id
+  INTO v_revoked_artifact_id
+  FROM public.feltus_artifacts
+  WHERE app_id = '10000000-0000-0000-0000-000000000001'
+    AND verification_status = 'revoked'
+  ORDER BY created_at DESC
+  LIMIT 1;
+
+  IF v_environment_id IS NULL THEN
+    RAISE EXCEPTION 'Development environment fixture is missing';
+  END IF;
+
+  IF v_passed_artifact_id IS NULL THEN
+    RAISE EXCEPTION 'Passed artifact fixture is missing';
+  END IF;
+
+  IF v_revoked_artifact_id IS NULL THEN
+    RAISE EXCEPTION 'Revoked artifact fixture is missing';
   END IF;
 
   -- Verified artifact deployment + transactional outbox.
@@ -54,8 +93,8 @@ BEGIN
     'QUEUED',
     'coolify',
     v_org_id,
-    '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-    '60000000-0000-0000-0000-000000000002',
+    v_environment_id,
+    v_passed_artifact_id,
     '20000000-0000-0000-0000-000000000001',
     v_idempotency
   );
@@ -110,8 +149,8 @@ BEGIN
       'QUEUED',
       'coolify',
       v_org_id,
-      '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-      '60000000-0000-0000-0000-000000000002',
+      v_environment_id,
+      v_passed_artifact_id,
       '20000000-0000-0000-0000-000000000001',
       v_idempotency
     );
@@ -137,8 +176,8 @@ BEGIN
       'QUEUED',
       'coolify',
       v_org_id,
-      '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-      '60000000-0000-0000-0000-000000000001',
+      v_environment_id,
+      v_revoked_artifact_id,
       '20000000-0000-0000-0000-000000000001',
       'cp-revoked-' || gen_random_uuid()::text
     );
@@ -165,8 +204,8 @@ BEGIN
       'QUEUED',
       'coolify',
       v_org_id,
-      '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-      '60000000-0000-0000-0000-000000000002',
+      v_environment_id,
+      v_passed_artifact_id,
       '20000000-0000-0000-0000-000000000001'
     );
 
@@ -310,8 +349,8 @@ BEGIN
     'QUEUED',
     'coolify',
     v_org_id,
-    '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-    '60000000-0000-0000-0000-000000000002',
+    v_environment_id,
+    v_passed_artifact_id,
     '20000000-0000-0000-0000-000000000001',
     v_complete_idempotency
   );
@@ -367,8 +406,8 @@ BEGIN
     'QUEUED',
     'coolify',
     v_org_id,
-    '44347f33-6bf9-45e2-8047-7c4f62b3d105',
-    '60000000-0000-0000-0000-000000000002',
+    v_environment_id,
+    v_passed_artifact_id,
     '20000000-0000-0000-0000-000000000001',
     v_exclusive_idempotency
   );
@@ -390,10 +429,11 @@ BEGIN
     'permanent-worker-B',
     1,
     300
-  );
+  )
+  WHERE deployment_id = v_exclusive_deployment_id;
 
   IF v_count <> 0 THEN
-    RAISE EXCEPTION 'Second worker claimed an already leased task';
+    RAISE EXCEPTION 'Second worker claimed the same already leased task';
   END IF;
 
   -- Audit creation + append-only enforcement.
