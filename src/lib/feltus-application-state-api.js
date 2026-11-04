@@ -48,8 +48,7 @@ function query(table, tableRequest, params) {
 }
 
 async function buildRunnerAvailable(tableRequest) {
-  if (process.env.FELTUS_BUILD_RUNNER_ENABLED !== "true" ||
-      !process.env.FELTUS_ARTIFACT_REGISTRY || !process.env.FELTUS_ARTIFACT_REGISTRY_TOKEN) return false;
+  if (process.env.FELTUS_BUILD_RUNNER_ENABLED !== "true") return false;
   const cutoff = Date.now() - BUILD_WORKER_MAX_AGE_MS;
   try {
     const result = await query("feltus_worker_heartbeats", tableRequest, {
@@ -65,6 +64,29 @@ async function buildRunnerAvailable(tableRequest) {
     );
   } catch {
     return false;
+  }
+}
+
+async function deploymentWorkerAvailability(tableRequest) {
+  const cutoff = Date.now() - 90_000;
+  try {
+    const result = await query("feltus_worker_heartbeats", tableRequest, {
+      select: "worker_id,worker_type,status,last_seen_at,metadata",
+      worker_type: "eq.core",
+      status: "in.(online,degraded)",
+      last_seen_at: "gte." + new Date(cutoff).toISOString(),
+      limit: "5"
+    });
+    const rows = firstSuccessful(result, "Deployment worker status");
+    const worker = rows.find(row => row.worker_type === "core" && ["online", "degraded"].includes(row.status) &&
+      Date.parse(row.last_seen_at) >= cutoff && row.metadata?.infrastructure_outbox === "enabled" &&
+      !row.metadata?.infrastructure_error_code);
+    const configured = Array.isArray(worker?.metadata?.infrastructure_environments)
+      ? worker.metadata.infrastructure_environments.filter(kind => ENVIRONMENTS.includes(kind))
+      : [];
+    return { ready: Boolean(worker), allowedEnvironments: configured };
+  } catch {
+    return { ready: false, allowedEnvironments: [] };
   }
 }
 
@@ -386,6 +408,7 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
         const inputs = await loadInputs(app);
         const result = makeState(app, inputs, inputs.blueprints[0] || null);
         const buildRunnerReady = await buildRunnerAvailable(tableRequest);
+        const deploymentWorker = await deploymentWorkerAvailability(tableRequest);
         response(res, 200, {
           contract: APPLICATION_STATE_CONTRACT,
           state: result.state,
@@ -395,7 +418,7 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
           features: {
             build_runner: buildRunnerReady,
             github: isGithubIntegrationConfigured(),
-            deployment_provider: Boolean(process.env.FELTUS_COOLIFY_URL && process.env.FELTUS_COOLIFY_API_TOKEN)
+            deployment_provider: deploymentWorker.ready
           },
           latest_blueprint: result.blueprint ? {
             id: result.blueprint.id,
@@ -470,6 +493,7 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
       if (resource === "environments" && method === "GET") {
         const inputs = await loadInputs(app);
         const states = makeState(app, inputs, inputs.blueprints[0] || null);
+        const deploymentWorker = await deploymentWorkerAvailability(tableRequest);
         const environments = states.state.desired_state.environments.map(environment => {
           const deployments = inputs.deployments.filter(item => item.environment === environment.kind);
           const current = deployments[0] || null;
@@ -486,10 +510,10 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
             })(),
             health: observation?.health || "unknown",
             deployment: current ? { id: current.id, status: current.status, provider: current.provider, updated_at: current.completed_at || current.started_at || current.created_at } : null,
-            can_configure_target: Boolean(process.env.FELTUS_COOLIFY_URL && process.env.FELTUS_COOLIFY_API_TOKEN &&
+            can_configure_target: Boolean(deploymentWorker.ready && deploymentWorker.allowedEnvironments.includes(environment.kind) &&
               (environment.kind !== "production" || (process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED === "true" && process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED === "true"))),
-            can_deploy: Boolean(process.env.FELTUS_COOLIFY_URL && process.env.FELTUS_COOLIFY_API_TOKEN &&
-              String(process.env.FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS || "").split(",").map(value => value.trim().toLowerCase()).includes(environment.kind) &&
+            can_deploy: Boolean(deploymentWorker.ready && deploymentWorker.allowedEnvironments.includes(environment.kind) &&
+              environment.provider === "coolify" && environment.resource_reference &&
               (environment.kind !== "production" || (process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED === "true" && process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED === "true")))
           };
         });
@@ -518,12 +542,32 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
       }
       if (resource === "builds" && method === "GET") {
         const result = await query("feltus_builds", tableRequest, {
-          select: "id,repository_id,blueprint_id,source_branch,commit_sha,status,attempt_count,created_at,started_at,completed_at,failure_code",
+          select: "id,repository_id,blueprint_id,source_branch,commit_sha,status,attempt_count,exit_code,created_at,started_at,completed_at,failure_code",
           app_id: appFilter,
           order: "created_at.desc",
           limit: "100"
         });
-        response(res, 200, { builds: firstSuccessful(result, "Build history") });
+        const builds = firstSuccessful(result, "Build history");
+        if (!builds.length) {
+          response(res, 200, { builds: [] });
+          return true;
+        }
+        const buildIds = builds.map(build => build.id).filter(id => UUID.test(String(id)));
+        if (!buildIds.length) {
+          response(res, 200, { builds: builds.map(build => ({ ...build, steps: [] })) });
+          return true;
+        }
+        const stepsResult = await query("feltus_build_steps", tableRequest, {
+          select: "id,build_id,step_key,attempt,status,exit_code,error_code,log_text,started_at,completed_at,created_at",
+          app_id: appFilter,
+          build_id: "in.(" + buildIds.join(",") + ")",
+          order: "created_at.asc",
+          limit: "500"
+        });
+        const steps = firstSuccessful(stepsResult, "Build steps");
+        response(res, 200, { builds: builds.map(build => ({
+          ...build, steps: steps.filter(step => step.build_id === build.id)
+        })) });
         return true;
       }
       if (resource === "builds" && method === "POST" && !record) {
@@ -589,8 +633,9 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
         if (!ENVIRONMENTS.includes(environment) || !/^[A-Za-z0-9-]{3,80}$/.test(reference)) {
           throw fail(400, "Choose a valid environment and deployment resource reference.");
         }
-        if (!process.env.FELTUS_COOLIFY_URL || !process.env.FELTUS_COOLIFY_API_TOKEN) {
-          throw fail(503, "Environment targets are unavailable because the deployment provider is not configured.");
+        const deploymentWorker = await deploymentWorkerAvailability(tableRequest);
+        if (!deploymentWorker.ready || !deploymentWorker.allowedEnvironments.includes(environment)) {
+          throw fail(503, "Environment targets are unavailable because the deployment worker or this environment is not configured.");
         }
         if (environment === "production" && !productionEnabled) {
           throw fail(403, "Production target configuration is disabled.");
@@ -630,12 +675,15 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
         const idempotencyKey = String(body.idempotency_key || crypto.randomUUID());
         const productionEnabled = process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED === "true" &&
           process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED === "true";
-        const allowed = String(process.env.FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS || "")
-          .split(",").map(value => value.trim().toLowerCase());
+        const deploymentWorker = await deploymentWorkerAvailability(tableRequest);
+        const allowed = environment === "production"
+          ? String(process.env.FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS || "").split(",").map(value => value.trim().toLowerCase())
+          : deploymentWorker.allowedEnvironments;
         if (!ENVIRONMENTS.includes(environment) || !UUID.test(artifactId) || idempotencyKey.length > 200) {
           throw fail(400, "Choose a valid environment and verified artifact.");
         }
-        if (!process.env.FELTUS_COOLIFY_URL || !process.env.FELTUS_COOLIFY_API_TOKEN || !allowed.includes(environment)) {
+        if ((environment === "production" && (!process.env.FELTUS_COOLIFY_URL || !process.env.FELTUS_COOLIFY_API_TOKEN)) ||
+            (environment !== "production" && !deploymentWorker.ready) || !allowed.includes(environment)) {
           throw fail(503, "This deployment environment is unavailable because its provider path is not configured.");
         }
         if (environment === "preview") throw fail(409, "Temporary Preview deployment is not enabled until isolated preview provisioning is configured.");

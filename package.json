@@ -12,6 +12,8 @@
     "test:core": "node scripts/core-platform-tests.mjs",
     "test:state-contract": "node scripts/application-state-contract-tests.mjs",
     "test:state-api": "node scripts/application-state-api-tests.mjs",
+    "test:build-worker": "node scripts/build-worker-tests.mjs",
+    "test:artifact": "node scripts/artifact-tests.mjs",
     "test:github": "node scripts/github-integration-tests.mjs",
     "test:wizard": "node scripts/app-wizard-tests.mjs",
     "test:code": "node src/feltus-code/tests/smoke.mjs",

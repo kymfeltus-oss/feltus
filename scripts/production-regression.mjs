@@ -65,6 +65,13 @@ const extractorMain = fs.readFileSync(
   path.join(root, "services/evidence-extractor/app/main.py"),
   "utf8"
 );
+const buildWorker = fs.readFileSync(path.join(root, "src/lib/feltus-build-worker.js"), "utf8");
+const buildWorkerService = fs.readFileSync(path.join(root, "src/build-worker.js"), "utf8");
+const buildWorkerDockerfile = fs.readFileSync(path.join(root, "services/build-worker/Dockerfile"), "utf8");
+const buildWorkerMigration = fs.readFileSync(
+  path.join(root, "supabase/migrations/20261104010000_feltus_build_worker_delivery.sql"),
+  "utf8"
+);
 const aiConversationMigration = fs.readFileSync(
   path.join(root, "supabase/migrations/20261030100000_project_scoped_ai_conversations.sql"),
   "utf8"
@@ -256,6 +263,33 @@ check("infrastructure outbox uses fenced leases and a server-only Coolify adapte
   assert.match(compose, /FELTUS_COOLIFY_API_TOKEN/);
   const appEnvironment = compose.match(/^  app:[\s\S]*?(?=^  worker:)/m)?.[0] || "";
   assert.doesNotMatch(appEnvironment, /FELTUS_COOLIFY_API_TOKEN|FELTUS_COOLIFY_RESOURCE_MAP/);
+});
+
+check("application builds use a separate mTLS BuildKit worker and immutable verified digests", () => {
+  assert.match(compose, /^  build-worker:/m);
+  assert.match(compose, /profiles: \["build"\]/);
+  const workerService = compose.split(/^  build-worker:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] || "";
+  assert.doesNotMatch(workerService, /docker\.sock|privileged:\s*true/);
+  assert.match(workerService, /FELTUS_BUILDKIT_CLIENT_KEY_PEM/);
+  assert.match(buildWorkerDockerfile, /moby\/buildkit:.*rootless/);
+  assert.match(buildWorkerDockerfile, /COPY --from=buildkit \/usr\/bin\/buildctl/);
+  assert.match(buildWorkerService, /createBuildWorker/);
+  assert.match(buildWorker, /feltus_claim_builds/);
+  assert.match(buildWorker, /feltus_heartbeat_build/);
+  assert.match(buildWorker, /GIT_CONFIG_VALUE_0/);
+  assert.match(buildWorker, /--tlscacert/);
+  assert.match(buildWorker, /--tlscert/);
+  assert.match(buildWorker, /--tlskey/);
+  assert.match(buildWorker, /feltus_finish_application_build/);
+  assert.match(buildWorker, /docker-content-digest/);
+  assert.match(buildWorker, /redactBuildLog/);
+  assert.match(buildWorkerMigration, /feltus_build_exit_code_check/);
+  assert.match(buildWorkerMigration, /build\.queued/);
+  assert.match(buildWorkerMigration, /deployment\.started/);
+  assert.match(buildWorkerMigration, /state\.reconciled/);
+  assert.match(buildWorker, /BUILD_TIMEOUT/);
+  assert.match(buildWorker, /BUILD_CANCELLED/);
+  assert.doesNotMatch(buildWorker, /docker\.sock/);
 });
 
 check("first-class chat controls remain project-scoped", () => {

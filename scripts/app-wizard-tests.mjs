@@ -264,7 +264,13 @@ const capabilityFixtures = [
   ["/api/ai/models", { models: [{ id: "local-model", name: "Local model", provider: "ollama", default: true }] }],
   ["/api/ai/runtime/health", { status: "healthy" }],
   ["/api/code/workspace?", { initialized: true }],
-  [`/api/apps/${ids[0]}/state`, { state_hash: "current-hash", latest_blueprint: null, state: { desired_state: { data: { models: [] } } } }],
+  [`/api/apps/${ids[0]}/state`, { state_hash: "current-hash", latest_blueprint: null, features: { build_runner: false }, state: { desired_state: { data: { models: [] }, code: {} } } }],
+  [`/api/apps/${ids[0]}/builds`, { builds: [{
+    id: "55000000-0000-4000-8000-000000000001", source_branch: "main", commit_sha: "c".repeat(40),
+    blueprint_id: "56000000-0000-4000-8000-000000000001", status: "failed", exit_code: 1,
+    failure_code: "BUILD_COMMAND_FAILED", created_at: "2026-11-04T12:00:00Z",
+    steps: [{ step_key: "build", status: "failed", exit_code: 1, error_code: "BUILD_COMMAND_FAILED", log_text: "[REDACTED] build output" }]
+  }] }],
   [`/api/apps/${ids[0]}/environments`, { environments: [
     { kind: "development", status: "not_configured", health: "unknown" },
     { kind: "staging", status: "active", health: "unknown", can_deploy: true, provider: "coolify", resource_reference: "staging-app" },
@@ -361,6 +367,10 @@ try {
   const deploymentsPanel = await renderCapabilityPanel(capabilityApp, "deployments", "workspace");
   assert.match(deploymentsPanel, /Promote same artifact to Production/);
   assert.match(deploymentsPanel, /data-rollback-current=/);
+  const buildsPanel = await renderCapabilityPanel(capabilityApp, "builds", "workspace");
+  assert.match(buildsPanel, /Exit code: 1/);
+  assert.match(buildsPanel, /BUILD_COMMAND_FAILED/);
+  assert.match(buildsPanel, /\[REDACTED\] build output/);
   const activityPanel = await renderCapabilityPanel(capabilityApp, "activity", "workspace");
   assert.match(activityPanel, /Blueprint saved/);
   assert.match(activityPanel, /Technical trace/);

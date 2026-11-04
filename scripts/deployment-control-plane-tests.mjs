@@ -12,6 +12,7 @@ DECLARE
   v_environment_id uuid;
   v_passed_artifact_id uuid;
   v_revoked_artifact_id uuid;
+  v_blueprint_id uuid;
   v_deployment_id uuid := gen_random_uuid();
   v_complete_deployment_id uuid := gen_random_uuid();
   v_exclusive_deployment_id uuid := gen_random_uuid();
@@ -43,8 +44,8 @@ BEGIN
   ORDER BY created_at
   LIMIT 1;
 
-  SELECT id
-  INTO v_passed_artifact_id
+  SELECT id, blueprint_id
+  INTO v_passed_artifact_id, v_blueprint_id
   FROM public.feltus_artifacts
   WHERE app_id = '10000000-0000-0000-0000-000000000001'
     AND verification_status = 'passed'
@@ -82,6 +83,7 @@ BEGIN
     organization_id,
     environment_id,
     artifact_id,
+    blueprint_id,
     requested_by,
     idempotency_key
   )
@@ -95,6 +97,7 @@ BEGIN
     v_org_id,
     v_environment_id,
     v_passed_artifact_id,
+    v_blueprint_id,
     '20000000-0000-0000-0000-000000000001',
     v_idempotency
   );
@@ -138,7 +141,7 @@ BEGIN
   BEGIN
     INSERT INTO public.feltus_deployments (
       id, app_id, owner_id, environment, status, provider,
-      organization_id, environment_id, artifact_id,
+      organization_id, environment_id, artifact_id, blueprint_id,
       requested_by, idempotency_key
     )
     VALUES (
@@ -151,6 +154,7 @@ BEGIN
       v_org_id,
       v_environment_id,
       v_passed_artifact_id,
+      v_blueprint_id,
       '20000000-0000-0000-0000-000000000001',
       v_idempotency
     );
@@ -165,7 +169,7 @@ BEGIN
   BEGIN
     INSERT INTO public.feltus_deployments (
       id, app_id, owner_id, environment, status, provider,
-      organization_id, environment_id, artifact_id,
+      organization_id, environment_id, artifact_id, blueprint_id,
       requested_by, idempotency_key
     )
     VALUES (
@@ -178,6 +182,7 @@ BEGIN
       v_org_id,
       v_environment_id,
       v_revoked_artifact_id,
+      v_blueprint_id,
       '20000000-0000-0000-0000-000000000001',
       'cp-revoked-' || gen_random_uuid()::text
     );
@@ -194,7 +199,7 @@ BEGIN
   BEGIN
     INSERT INTO public.feltus_deployments (
       id, app_id, owner_id, environment, status, provider,
-      organization_id, environment_id, artifact_id, requested_by
+      organization_id, environment_id, artifact_id, blueprint_id, requested_by
     )
     VALUES (
       gen_random_uuid(),
@@ -206,6 +211,7 @@ BEGIN
       v_org_id,
       v_environment_id,
       v_passed_artifact_id,
+      v_blueprint_id,
       '20000000-0000-0000-0000-000000000001'
     );
 
@@ -338,7 +344,7 @@ BEGIN
   -- Completion path.
   INSERT INTO public.feltus_deployments (
     id, app_id, owner_id, environment, status, provider,
-    organization_id, environment_id, artifact_id,
+    organization_id, environment_id, artifact_id, blueprint_id,
     requested_by, idempotency_key
   )
   VALUES (
@@ -351,6 +357,7 @@ BEGIN
     v_org_id,
     v_environment_id,
     v_passed_artifact_id,
+    v_blueprint_id,
     '20000000-0000-0000-0000-000000000001',
     v_complete_idempotency
   );
@@ -395,7 +402,7 @@ BEGIN
   -- Worker exclusivity.
   INSERT INTO public.feltus_deployments (
     id, app_id, owner_id, environment, status, provider,
-    organization_id, environment_id, artifact_id,
+    organization_id, environment_id, artifact_id, blueprint_id,
     requested_by, idempotency_key
   )
   VALUES (
@@ -408,6 +415,7 @@ BEGIN
     v_org_id,
     v_environment_id,
     v_passed_artifact_id,
+    v_blueprint_id,
     '20000000-0000-0000-0000-000000000001',
     v_exclusive_idempotency
   );

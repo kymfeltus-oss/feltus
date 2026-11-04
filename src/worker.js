@@ -102,6 +102,9 @@ async function heartbeat(status = "online") {
       metadata: {
         provider: ai.provider || "ollama",
         infrastructure_outbox: infrastructureHealth.enabled ? "enabled" : "disabled",
+        infrastructure_environments: infrastructureHealth.enabled
+          ? ALLOWED_DEPLOYMENT_ENVIRONMENTS.filter(kind => Boolean(COOLIFY_RESOURCE_MAP[kind]))
+          : [],
         infrastructure_error_code: infrastructureHealth.last_error_code
       },
       last_seen_at: new Date().toISOString()

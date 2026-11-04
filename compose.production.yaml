@@ -21,6 +21,9 @@ services:
       FELTUS_PUBLISHABLE_KEY: ${ANON_KEY:?set ANON_KEY}
       FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
       FELTUS_SECRET_ENCRYPTION_KEY: ${FELTUS_SECRET_ENCRYPTION_KEY:?set FELTUS_SECRET_ENCRYPTION_KEY}
+      FELTUS_GITHUB_CLIENT_ID: ${FELTUS_GITHUB_CLIENT_ID:-}
+      FELTUS_GITHUB_CLIENT_SECRET: ${FELTUS_GITHUB_CLIENT_SECRET:-}
+      FELTUS_BUILD_RUNNER_ENABLED: ${FELTUS_BUILD_RUNNER_ENABLED:-false}
       FELTUS_OWNER_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
       FELTUS_ALLOWED_ORIGINS: ${FELTUS_ALLOWED_ORIGINS:-https://feltuslabs.com,https://www.feltuslabs.com}
       FELTUS_AI_ENDPOINT: ${FELTUS_AI_ENDPOINT:-}
@@ -114,6 +117,52 @@ services:
       - ALL
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  build-worker:
+    profiles: ["build"]
+    build:
+      context: .
+      dockerfile: services/build-worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,noexec,nosuid,nodev
+    environment:
+      NODE_ENV: production
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_BUILD_WORKER_ENABLED: ${FELTUS_BUILD_WORKER_ENABLED:-false}
+      FELTUS_BUILD_WORKER_PORT: 8082
+      FELTUS_BUILD_WORKER_POLL_MS: ${FELTUS_BUILD_WORKER_POLL_MS:-2500}
+      FELTUS_BUILD_WORKER_HEARTBEAT_MS: ${FELTUS_BUILD_WORKER_HEARTBEAT_MS:-30000}
+      FELTUS_BUILD_LEASE_SECONDS: ${FELTUS_BUILD_LEASE_SECONDS:-600}
+      FELTUS_BUILD_TIMEOUT_SECONDS: ${FELTUS_BUILD_TIMEOUT_SECONDS:-1800}
+      FELTUS_SECRET_ENCRYPTION_KEY: ${FELTUS_SECRET_ENCRYPTION_KEY:-}
+      FELTUS_BUILDKIT_ADDR: ${FELTUS_BUILDKIT_ADDR:-}
+      FELTUS_BUILDKIT_CA_PEM: ${FELTUS_BUILDKIT_CA_PEM:-}
+      FELTUS_BUILDKIT_CLIENT_CERT_PEM: ${FELTUS_BUILDKIT_CLIENT_CERT_PEM:-}
+      FELTUS_BUILDKIT_CLIENT_KEY_PEM: ${FELTUS_BUILDKIT_CLIENT_KEY_PEM:-}
+      FELTUS_ARTIFACT_REGISTRY: ${FELTUS_ARTIFACT_REGISTRY:-}
+      FELTUS_ARTIFACT_REGISTRY_USERNAME: ${FELTUS_ARTIFACT_REGISTRY_USERNAME:-}
+      FELTUS_ARTIFACT_REGISTRY_PASSWORD: ${FELTUS_ARTIFACT_REGISTRY_PASSWORD:-}
+    expose:
+      - "8082"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8082/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 20s

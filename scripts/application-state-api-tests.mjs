@@ -58,6 +58,7 @@ const data = {
   feltus_repositories: [],
   feltus_application_blueprints: [],
   feltus_builds: [],
+  feltus_build_steps: [],
   feltus_artifacts: [],
   feltus_deployments: [],
   feltus_observed_application_states: [],
@@ -124,6 +125,7 @@ assert.equal(stateResult.handled, true);
 assert.equal(stateResult.status, 200);
 assert.equal(stateResult.body.contract, APPLICATION_STATE_CONTRACT);
 assert.equal(stateResult.body.persisted, false);
+assert.equal(stateResult.body.features.deployment_provider, false);
 assert.equal(stateResult.body.state.desired_state.data.models[0].fields[0].name, "name");
 assert.equal(stateResult.body.state.desired_state.ai.context_permissions.documents, false);
 assert.equal(stateResult.body.state.desired_state.ai.assistant_purpose, "Help support agents find customer information.");
@@ -173,11 +175,9 @@ assert.equal(lastRpc.p_identity_json, canonicalJson(applicationStateIdentity(las
 assert.equal(lastRpc.p_source_wizard_state.setup_status, "configuring");
 console.log("PASS blueprint API submits canonical identity and a safe wizard progress snapshot");
 
-const buildEnvKeys = ["FELTUS_BUILD_RUNNER_ENABLED", "FELTUS_ARTIFACT_REGISTRY", "FELTUS_ARTIFACT_REGISTRY_TOKEN"];
+const buildEnvKeys = ["FELTUS_BUILD_RUNNER_ENABLED"];
 const previousBuildEnv = Object.fromEntries(buildEnvKeys.map(key => [key, process.env[key]]));
 process.env.FELTUS_BUILD_RUNNER_ENABLED = "true";
-process.env.FELTUS_ARTIFACT_REGISTRY = "registry.example.test/feltus";
-process.env.FELTUS_ARTIFACT_REGISTRY_TOKEN = "test-only-registry-token";
 const runnerFlaggedState = await invoke(`/api/apps/${APP_ID}/state`);
 assert.equal(runnerFlaggedState.body.features.build_runner, false);
 const disabledBuild = await invoke(`/api/apps/${APP_ID}/builds`, "POST");
@@ -187,7 +187,46 @@ for (const key of buildEnvKeys) {
   if (previousBuildEnv[key] === undefined) delete process.env[key];
   else process.env[key] = previousBuildEnv[key];
 }
-console.log("PASS build stays disabled without a fresh isolated build-worker heartbeat, even when registry flags are set");
+console.log("PASS build stays disabled without a fresh isolated build-worker heartbeat");
+
+const BUILD_ID = "99999999-9999-4999-8999-999999999999";
+data.feltus_builds.push({
+  id: BUILD_ID, app_id: APP_ID, repository_id: "88888888-8888-4888-8888-888888888888",
+  blueprint_id: "77777777-7777-4777-8777-777777777777", source_branch: "main",
+  commit_sha: "c".repeat(40), status: "failed", attempt_count: 1, exit_code: 1,
+  failure_code: "BUILD_COMMAND_FAILED", created_at: "2026-11-04T10:06:00.000Z"
+});
+data.feltus_build_steps.push({
+  id: "66666666-6666-4666-8666-666666666666", build_id: BUILD_ID, step_key: "build",
+  attempt: 1, status: "failed", exit_code: 1, error_code: "BUILD_COMMAND_FAILED",
+  log_text: "build output redacted", started_at: "2026-11-04T10:06:01.000Z",
+  completed_at: "2026-11-04T10:06:03.000Z", created_at: "2026-11-04T10:06:01.000Z"
+});
+const buildHistory = await invoke("/api/apps/" + APP_ID + "/builds");
+assert.equal(buildHistory.status, 200);
+assert.equal(buildHistory.body.builds[0].exit_code, 1);
+assert.equal(buildHistory.body.builds[0].steps[0].log_text, "build output redacted");
+console.log("PASS build history returns persisted exit codes and redacted step logs");
+data.feltus_builds.length = 0;
+data.feltus_build_steps.length = 0;
+
+data.feltus_worker_heartbeats.push({
+  worker_id: "core-worker-test", worker_type: "core", status: "online",
+  last_seen_at: new Date().toISOString(),
+  metadata: { infrastructure_outbox: "enabled", infrastructure_environments: ["staging"] }
+});
+const environmentAvailability = await invoke("/api/apps/" + APP_ID + "/environments");
+const stagingEnvironment = environmentAvailability.body.environments.find(item => item.kind === "staging");
+assert.equal(stagingEnvironment.can_configure_target, true);
+assert.equal(stagingEnvironment.can_deploy, false);
+const stagingTarget = await invoke("/api/apps/" + APP_ID + "/environments/target", "POST", {
+  environment: "staging", resource_reference: "staging-resource"
+});
+assert.equal(stagingTarget.status, 201);
+assert.match(lastServiceRequest.path, /feltus_set_environment_target/);
+assert.equal(Object.hasOwn(lastServiceRequest.body, "p_coolify_token"), false);
+console.log("PASS Staging target configuration depends on the live private worker without exposing Coolify credentials to the app API");
+data.feltus_worker_heartbeats.length = 0;
 
 const previousEnvironment = { ...process.env };
 Object.assign(process.env, {
