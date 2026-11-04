@@ -92,7 +92,8 @@ function assertSafeSetupValue(value, path = "setup_data", depth = 0) {
   }
   if (typeof value !== "object") throw Object.assign(new Error("Setup data must contain JSON values."), { status: 400 });
   for (const [key, child] of Object.entries(value)) {
-    if (/(secret|password|token|credential|private[_-]?key|api[_-]?key)/i.test(key)) {
+    const isGenerationTokenLimit = /^max[_-]?tokens$/i.test(key);
+    if (!isGenerationTokenLimit && /(secret|password|token|credential|private[_-]?key|api[_-]?key)/i.test(key)) {
       throw Object.assign(new Error("Secrets must be stored through FELTUS secret settings, not app setup data."), { status: 400 });
     }
     assertSafeSetupValue(child, `${path}.${key}`, depth + 1);

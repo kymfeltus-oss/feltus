@@ -1,5 +1,5 @@
 import { APP_TYPES, SETUP_STEPS, resolveAppRoute, resumeSetupPath, nextSetupRoute, previousSetupRoute } from "/app-wizard-lib.js";
-import { renderCapabilityPanel, mountCapabilityPanel } from "/app-wizard-capabilities.js";
+import { renderCapabilityPanel, mountCapabilityPanel, collectCapabilityDraft } from "/app-wizard-capabilities.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const view = $("#view");
@@ -162,10 +162,11 @@ function setupShell(app, currentStep, content) {
   }).join("");
   const backPath = app.id ? previousSetupRoute(app.id, currentStep) : "/apps/new";
   const continuePath = currentStep === "build" || currentStep === "review" ? null : (app.id ? nextSetupRoute(app.id, currentStep) : "/apps/new/basics");
-  const label = currentStep === "basics" ? "Continue to Data" : currentStep === "review" ? "Open App Workspace" : "Continue";
+  const nextLabel = stepLabels[SETUP_STEPS[currentIndex + 1]];
+  const label = currentStep === "basics" ? "Continue to Data" : currentStep === "review" ? "Open App Workspace" : `Continue to ${nextLabel || "next step"}`;
   const mobileProgress = Math.round(((currentIndex + 1) / SETUP_STEPS.length) * 100);
   const navAction = currentStep === "review" ? `<button class="button button-primary" type="button" data-action="continue">${label} →</button>` : continuePath ? `<button class="button button-primary" type="button" data-action="continue">${label} →</button>` : `<button class="button" type="button" disabled title="Build and deployment orchestration are part of a later phase.">Build unavailable</button>`;
-  const actions = currentStep === "build" ? `<a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/setup/review" data-nav>Return to Review</a>` : `<button type="button" class="button button-quiet" data-action="save" ${currentStep === "basics" ? "" : 'title="Saves your place in the wizard. Save capability settings in their section before leaving."'}>${currentStep === "basics" ? "Save Draft" : "Save Progress"}</button><button type="button" class="button button-quiet" data-action="exit">Exit Setup</button>`;
+  const actions = currentStep === "build" ? `<a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/setup/review" data-nav>Return to Review</a>` : `<button type="button" class="button button-quiet" data-action="save" ${currentStep === "basics" ? "" : 'title="Saves the app draft and current wizard fields. File uploads must be submitted separately."'}>Save Draft</button><button type="button" class="button button-quiet" data-action="exit">Exit Setup</button>`;
   return `<div class="wizard-layout"><aside class="wizard-rail card"><a class="rail-app" href="/apps" data-nav><span class="app-icon" style="color:${esc(app.accent_color || "var(--accent)")}">${esc(app.app_icon || "✦")}</span><span><strong>${esc(app.app_name || "New application")}</strong><span>Application setup</span></span></a><p class="progress-count">Step ${currentIndex + 1} of ${SETUP_STEPS.length}</p><nav class="step-list" aria-label="Setup progress">${stepLinks}</nav><div class="mobile-stepper"><span>Step ${currentIndex + 1} of ${SETUP_STEPS.length}</span><span class="mobile-progress"><span style="width:${mobileProgress}%"></span></span><b>${stepLabels[currentStep]}</b></div></aside><section class="wizard-main"><div class="wizard-actions">${actions}</div><div class="wizard-content card">${content}</div><div class="wizard-nav"><a class="button button-quiet" href="${backPath}" data-nav>← Back</a><div class="wizard-nav-right">${navAction}</div></div></section></div>`;
 }
 
@@ -286,6 +287,7 @@ function bindWizardShell(app, step) {
     if (leave) navigate("/apps");
   }));
   view.querySelectorAll('[data-action="continue"]').forEach(button => button.addEventListener("click", () => continueSetup(app, step, button)));
+  view.querySelectorAll('[data-action="skip"]').forEach(button => button.addEventListener("click", () => continueSetup(app, step, button)));
   if (step === "basics") {
     view.querySelectorAll("a[data-nav]").forEach(link => link.addEventListener("click", async event => {
       const target = link.getAttribute("href");
@@ -373,15 +375,17 @@ async function saveDraft(app, step, { quiet = false } = {}) {
       savedApp = result.app;
       history.replaceState({}, "", `/apps/${encodeURIComponent(savedApp.id)}/setup/basics`);
     } else {
-      const payload = step === "basics" ? { ...values, setup_current_step: step, ...(["draft", "configuring"].includes(savedApp.setup_status) ? { setup_status: "draft" } : {}) } : { setup_current_step: step };
+      const capabilityDraft = step === "basics" ? null : collectCapabilityDraft($(".wizard-content", view), savedApp, step);
+      const payload = step === "basics" ? { ...values, setup_current_step: step, ...(["draft", "configuring"].includes(savedApp.setup_status) ? { setup_status: "draft" } : {}) } : { setup_current_step: step, ...(capabilityDraft ? { setup_data: capabilityDraft } : {}) };
       const result = await api(`/api/apps/${encodeURIComponent(savedApp.id)}/setup`, { method: "PATCH", body: JSON.stringify(payload) });
       savedApp = result.app;
     }
     state.app = savedApp;
+    if (["data", "relationships", "ai"].includes(step)) delete $(".wizard-content", view)?.dataset.capabilityDirty;
     await loadApps();
     formValues = { app_name: savedApp.app_name, description: savedApp.description || "", app_type: savedApp.app_type, app_icon: savedApp.app_icon, accent_color: savedApp.accent_color };
     setSaved("Draft saved");
-    if (!quiet) showToast(step === "basics" ? "Your draft is saved and ready to resume." : "Your place in setup is saved and ready to resume.");
+    if (!quiet) showToast("Your app draft is saved and ready to resume.");
     if (step === "basics" && !quiet) renderSetup(savedApp, step);
     return true;
   } catch (error) {
@@ -413,7 +417,7 @@ async function continueSetup(app, step, button) {
   if (step === "basics" && !values) return;
   state.formBusy = true;
   button.disabled = true;
-  view.querySelectorAll('.wizard-actions button, .wizard-nav a').forEach(control => { control.dataset.wasDisabled = String(control.disabled || false); control.disabled = true; });
+  view.querySelectorAll('.wizard-actions button, .wizard-nav a, [data-action="skip"]').forEach(control => { control.dataset.wasDisabled = String(control.disabled || false); control.disabled = true; });
   const original = button.innerHTML;
   button.textContent = "Saving app…";
   setSaved("Saving…");
@@ -449,7 +453,7 @@ async function continueSetup(app, step, button) {
   } finally {
     state.formBusy = false;
     if (button.isConnected) { button.disabled = false; button.innerHTML = original; }
-    view.querySelectorAll('.wizard-actions button, .wizard-nav a').forEach(control => { if (control.dataset.wasDisabled !== "true") control.disabled = false; delete control.dataset.wasDisabled; });
+    view.querySelectorAll('.wizard-actions button, .wizard-nav a, [data-action="skip"]').forEach(control => { if (control.dataset.wasDisabled !== "true") control.disabled = false; delete control.dataset.wasDisabled; });
   }
 }
 

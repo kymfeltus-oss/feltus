@@ -27,19 +27,20 @@ The wizard saves its current step and reviewed steps through `/api/apps/:id/setu
 | Add field / Remove field | Adds or removes an unsaved field row in the create form. |
 | RLS On/Off | `POST /api/models/rls` for the selected model. |
 | Edit, delete, duplicate model / preview rows | Not shown as enabled actions. The existing API has no model mutation or row-preview endpoint. The page states this limitation and shows the real schema preview. |
-| Create foreign key | `POST /api/relationships` with a pre-existing UUID source field, target model primary key, and supported delete action. This is the existing many-to-one foreign-key behavior. |
+| Create relationship | `POST /api/relationships` with a pre-existing UUID source field, target-column selector, target model primary key, and supported delete action. `id` is the only target column currently guaranteed by model creation. |
 | Remove relationship | Confirmation followed by `POST /api/relationships/delete`. Changing a relationship requires removing and recreating it because no update endpoint exists. |
 | Upload file | Raw file bytes sent to `POST /api/documents/upload`; the UI accepts TXT, MD, CSV, JSON, PDF, DOCX, and XLSX up to 20 MB. |
-| Process document | `POST /api/documents/process`; status is reloaded from `/api/documents`. |
+| Process document | `POST /api/documents/process`; status is reloaded from `/api/documents`. FELTUS's actual successful status is `ready`, which marks the document as available to AI retrieval. Failed items can be retried. |
 | Download extraction evidence | Opens the existing `/api/documents/extraction` response for that document. Processed documents are eligible for the existing AI retrieval pipeline. Source trust policy remains server-managed. |
 | Save assistant settings | Persists model, instructions, temperature, response tokens, and context budget as non-secret app setup JSON via `/api/apps/:id/setup`. No credentials are accepted in that field. |
-| Send test prompt | Creates an app-scoped AI conversation, streams `/api/ai/chat/stream`, displays actual output, then deletes the temporary conversation. Disabled with a reason while the runtime is unavailable. |
+| Send test prompt | Creates an app-scoped AI conversation, streams `/api/ai/chat/stream`, displays actual output, then deletes the temporary conversation. Saves only the pass/fail status and test time for Review; changed assistant settings reset the status to not run. Disabled with a reason while the runtime is unavailable. |
 | CODE editor | Embeds `/api/code/ui?app_id=...`; controls inside that existing workspace retain its server-side path and task restrictions. |
 | Logs search/severity | Filters the latest 100 events returned by `/api/activity?app_id=...`. |
 | Infrastructure refresh | Reads `/api/system-health` and `/api/assets?app_id=...`. It is informational; no create/deploy action is exposed. |
-| Review edit links | Navigate to the corresponding wizard route. Counts and readiness text come from current APIs and saved app setup values. |
-| Save Progress | On capability steps, saves the resume location; each model/relationship/document/assistant action has its own explicit save operation. Unsaved form values trigger a discard confirmation before leaving. |
+| Review details and edit links | Shows each model's custom field count and RLS state, relationship columns and delete policy, document processing/AI-context state, saved assistant model/runtime/test state, and CODE initialization. Edit links navigate to the matching wizard route. |
+| Save Draft | Saves the app and current wizard step. Data model and relationship form values persist as non-secret setup draft JSON; AI settings save as assistant configuration. Documents must be uploaded separately because a browser file selection cannot be serialized into setup JSON. |
 | Continue | Saves the next setup step and marks the current step reviewed. It does not imply that optional resources exist; unsaved forms require confirmation before discard. |
+| Skip Data | Saves Data as reviewed and continues to Relationships without creating a model. |
 | Open App Workspace | Marks Review as reviewed and opens the app overview. Build/deploy state remains unprovisioned. |
 | Build / Deploy / Promote / Roll back / Invite team | Omitted or disabled with the later-phase reason; no action is simulated. |
 

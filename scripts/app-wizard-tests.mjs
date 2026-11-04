@@ -124,6 +124,7 @@ assert.throws(() => validateAppBasics({ app_name: " " }), error => error.field =
 assert.throws(() => validateAppBasics({ app_name: "Good", app_type: "unknown" }), error => error.field === "app_type");
 assert.throws(() => validateAppBasics({ app_name: "Good", accent_color: "red" }), error => error.field === "accent_color");
 assert.throws(() => validateSetupData({ github_token: "never store" }), /Secrets must be stored/);
+assert.deepEqual(validateSetupData({ ai: { max_tokens: 2048 } }), { ai: { max_tokens: 2048 } });
 assert.deepEqual(validateAppBasics({ app_name: "  Scout  ", app_type: "web_application" }), {
   app_name: "Scout", description: "", app_type: "web_application", app_icon: "✦", accent_color: "#62D6C9"
 });
@@ -218,7 +219,7 @@ const capabilityApp = {
   app_type: "internal_tool",
   description: "Support operations",
   environment: "development",
-  setup_data: { ai: { model: "local-model", instructions: "Use app data." } }
+  setup_data: { ai: { model: "local-model", instructions: "Use app data.", test_status: "passed", tested_at: "2026-01-01T00:00:00Z" } }
 };
 const capabilityFixtures = [
   ["/api/models?", [
@@ -231,8 +232,8 @@ const capabilityFixtures = [
     { column_name: "created_at", data_type: "timestamptz", system: true },
     { column_name: "name", data_type: "text", is_nullable: false }
   ] }],
-  ["/api/relationships?", []],
-  ["/api/documents?", [{ id: ids[1], original_name: "guide.pdf", mime_type: "application/pdf", size_bytes: 42, processing_status: "processed", metadata: { extraction_artifact: { storage_key: "private/evidence.json" } }, created_at: "2026-01-01T00:00:00Z" }]],
+  ["/api/relationships?", [{ id: "40000000-0000-4000-8000-000000000001", source_model_id: "30000000-0000-4000-8000-000000000001", source_column: "customer_id", target_model_id: ids[1], target_column: "id", on_delete_action: "SET NULL" }]],
+  ["/api/documents?", [{ id: ids[1], original_name: "guide.pdf", mime_type: "application/pdf", size_bytes: 42, processing_status: "ready", metadata: { extraction_artifact: { storage_key: "private/evidence.json" } }, created_at: "2026-01-01T00:00:00Z" }]],
   ["/api/ai/models", { models: [{ id: "local-model", name: "Local model", provider: "ollama", default: true }] }],
   ["/api/ai/runtime/health", { status: "healthy" }],
   ["/api/code/workspace?", { initialized: true }],
@@ -255,20 +256,36 @@ try {
   assert.match(dataPanel, /name · text · required/);
   assert.equal((dataPanel.match(/id · uuid · primary key/g) || []).length, 2, "each model should list its primary key once");
   assert.match(dataPanel, /schema editing, deletion, duplication, and row preview are not exposed/);
+  const fieldRow = dataPanel.match(/<div class="cap-column-row">([\s\S]*?)<\/div>/)?.[1] || "";
+  assert.match(fieldRow, /<span>Field name<\/span><input[^>]*name="column_name"/);
+  assert.match(fieldRow, /<span>Field type<\/span><select[^>]*name="column_type"/);
+  assert.match(fieldRow, /<input name="column_nullable" type="checkbox"/);
+  assert.match(fieldRow, /data-remove-column[^>]*>Remove<\/button>/);
+  for (const supportedType of ["text", "integer", "bigint", "numeric", "boolean", "date", "timestamptz", "uuid", "jsonb"]) {
+    assert.match(fieldRow, new RegExp(`<option value="${supportedType}"`));
+  }
+  assert.doesNotMatch(fieldRow, /<option value="(?:serial|float|varchar|timestamp)"/);
+  assert.match(dataPanel, /Skip Data and continue to Relationships/);
 
   const relationshipsPanel = await renderCapabilityPanel(capabilityApp, "relationships", "workspace");
   assert.match(relationshipsPanel, /Relationship map/);
   assert.match(relationshipsPanel, /Add a relationship/);
   assert.match(relationshipsPanel, /many-to-one foreign keys/);
+  assert.match(relationshipsPanel, /<span>Target column<\/span><select[^>]*name="target_column"/);
+  assert.match(relationshipsPanel, /On delete: SET NULL/, "relationship cards should render the persisted API on_delete_action field");
 
   const documentsPanel = await renderCapabilityPanel(capabilityApp, "documents", "setup");
   assert.match(documentsPanel, /Upload a document/);
   assert.match(documentsPanel, /Download extraction evidence/);
   assert.match(documentsPanel, /Maximum size: 20 MB/);
+  assert.match(documentsPanel, /AI context ready/);
 
   const aiPanel = await renderCapabilityPanel(capabilityApp, "ai", "workspace");
   assert.match(aiPanel, /Save assistant settings/);
-  assert.match(aiPanel, /Send test prompt/);
+  assert.match(aiPanel, /Test Assistant/);
+  assert.match(aiPanel, /Assistant type/);
+  assert.match(aiPanel, /Project context/);
+  assert.match(aiPanel, /Document context/);
   assert.match(aiPanel, /local-model/);
 
   const codePanel = await renderCapabilityPanel(capabilityApp, "code", "setup");
@@ -278,6 +295,13 @@ try {
   const infrastructurePanel = await renderCapabilityPanel(capabilityApp, "infrastructure", "workspace");
   assert.match(infrastructurePanel, /Platform health/);
   const reviewPanel = await renderCapabilityPanel(capabilityApp, "review", "setup");
+  assert.match(reviewPanel, /customers · 1 field · RLS on/);
+  assert.match(reviewPanel, /orders\.customer_id → customers\.id · ON DELETE SET NULL/);
+  assert.match(reviewPanel, /guide\.pdf · ready · AI context ready/);
+  assert.match(reviewPanel, /Configured · local-model · runtime healthy · test passed/);
+  for (const page of ["basics", "data", "relationships", "documents", "ai", "code", "environment"]) {
+    assert.match(reviewPanel, new RegExp(`href="/apps/${ids[0]}/setup/${page}"`), `Review should link to the ${page} step`);
+  }
   assert.match(reviewPanel, /Private workspace initialized/);
   assert.match(reviewPanel, /Build, deployment, promotion, and rollback are not part of this phase/);
   assert.ok(capabilityRequests.length >= 12, "capability panels load app-scoped existing APIs");
