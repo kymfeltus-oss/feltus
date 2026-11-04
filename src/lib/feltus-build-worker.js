@@ -187,9 +187,18 @@ export function createBuildWorker({
     const dockerConfigDir = path.join(directory, "docker");
     try {
       await mkdir(dockerConfigDir, { mode: 0o700 });
-      await writeFile(ca, env.FELTUS_BUILDKIT_CA_PEM, { mode: 0o600 });
-      await writeFile(cert, env.FELTUS_BUILDKIT_CLIENT_CERT_PEM, { mode: 0o600 });
-      await writeFile(key, env.FELTUS_BUILDKIT_CLIENT_KEY_PEM, { mode: 0o600 });
+      const normalizePem = (value, label) => {
+        const body = String(value || "")
+          .replace(/-----BEGIN [^-]+-----/g, "")
+          .replace(/-----END [^-]+-----/g, "")
+          .replace(/\s+/g, "");
+        const lines = body.match(/.{1,64}/g) || [];
+        return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+      };
+
+      await writeFile(ca, normalizePem(env.FELTUS_BUILDKIT_CA_PEM, "CERTIFICATE"), { mode: 0o600 });
+      await writeFile(cert, normalizePem(env.FELTUS_BUILDKIT_CLIENT_CERT_PEM, "CERTIFICATE"), { mode: 0o600 });
+      await writeFile(key, normalizePem(env.FELTUS_BUILDKIT_CLIENT_KEY_PEM, "PRIVATE KEY"), { mode: 0o600 });
       const registry = parseArtifactRegistry(env.FELTUS_ARTIFACT_REGISTRY);
       const auth = Buffer.from(`${env.FELTUS_ARTIFACT_REGISTRY_USERNAME}:${env.FELTUS_ARTIFACT_REGISTRY_PASSWORD}`).toString("base64");
       await writeFile(path.join(dockerConfigDir, "config.json"), JSON.stringify({
