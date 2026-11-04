@@ -291,8 +291,9 @@ export function createAppWizardHandler({ tableRequest, readBody, getUser }) {
             respond(res, 400, { error: "Setup progress is invalid." });
             return true;
           }
-          if (body.setup_completed_steps.some(step => step !== "basics")) {
-            respond(res, 400, { error: "Only App Details can be marked complete in this phase." });
+          const completableSteps = SETUP_STEPS.filter(step => step !== "build");
+          if (body.setup_completed_steps.some(step => !completableSteps.includes(step))) {
+            respond(res, 400, { error: "Build orchestration cannot be marked complete in this phase." });
             return true;
           }
           patch.setup_completed_steps = [...new Set(body.setup_completed_steps)];

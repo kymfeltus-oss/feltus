@@ -1,5 +1,7 @@
 # Create App Wizard — Phase 1
 
+This document records the Phase 1 baseline. The current capability wiring and updated button/action matrix are in [Phase 2](create-app-wizard-phase2.md).
+
 The app launcher replaces the platform dashboard as the default experience. The prior console remains available at `/platform` while existing capabilities move into dedicated app routes.
 
 ## Routes

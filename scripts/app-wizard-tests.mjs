@@ -12,6 +12,7 @@ import {
   validateAppBasics,
   validateSetupData
 } from "../src/lib/feltus-app-wizard.js";
+import { escapeCapabilityHtml, renderCapabilityPanel } from "../src/app-wizard/capabilities.js";
 
 const ids = [
   "00000000-0000-4000-8000-000000000001",
@@ -117,6 +118,7 @@ assert.equal(isAppShellRoute("/not-a-route"), false);
 assert.equal(nextSetupRoute(ids[0], "basics"), `/apps/${ids[0]}/setup/data`);
 assert.equal(previousSetupRoute(ids[0], "data"), `/apps/${ids[0]}/setup/basics`);
 assert.equal(resumeSetupPath({ id: ids[0], setup_current_step: "data" }), `/apps/${ids[0]}/setup/data`);
+assert.equal(escapeCapabilityHtml(`<script title="x">'&</script>`), "&lt;script title=&quot;x&quot;&gt;&#39;&amp;&lt;/script&gt;");
 
 assert.throws(() => validateAppBasics({ app_name: " " }), error => error.field === "app_name");
 assert.throws(() => validateAppBasics({ app_name: "Good", app_type: "unknown" }), error => error.field === "app_type");
@@ -192,9 +194,95 @@ assert.equal(immediateContinue.json().app.setup_status, "configuring");
 assert.equal(immediateContinue.json().app.setup_current_step, "data");
 assert.deepEqual(immediateContinue.json().app.setup_completed_steps, ["basics"]);
 
+const completedDataStep = await dispatch("PATCH", `/api/apps/${immediateContinue.json().app.id}/setup`, {
+  setup_current_step: "relationships",
+  setup_completed_steps: ["basics", "data"],
+  setup_status: "configuring"
+});
+assert.equal(completedDataStep.status, 200, "existing capability steps can be saved as reviewed");
+assert.deepEqual(completedDataStep.json().app.setup_completed_steps, ["basics", "data"]);
+const cannotCompleteBuild = await dispatch("PATCH", `/api/apps/${immediateContinue.json().app.id}/setup`, {
+  setup_completed_steps: ["basics", "data", "build"]
+});
+assert.equal(cannotCompleteBuild.status, 400, "build orchestration remains deferred");
+
 const noUser = createAppWizardHandler({ tableRequest, readBody, getUser: () => null });
 const noUserResponse = response();
 await noUser({ method: "GET" }, noUserResponse, new URL("http://feltus.test/api/apps"));
 assert.equal(noUserResponse.status, 401);
 
-process.stdout.write("PASS app wizard route support, direct reload mapping, validation, draft persistence, resume, owner isolation, archive, and save/continue behavior\n");
+const capabilityRequests = [];
+const capabilityApp = {
+  id: ids[0],
+  app_name: "Northstar",
+  app_type: "internal_tool",
+  description: "Support operations",
+  environment: "development",
+  setup_data: { ai: { model: "local-model", instructions: "Use app data." } }
+};
+const capabilityFixtures = [
+  ["/api/models?", [
+    { id: ids[1], logical_name: "customers", physical_table_name: "fm_customers", rls_enabled: true },
+    { id: "30000000-0000-4000-8000-000000000001", logical_name: "orders", physical_table_name: "fm_orders", rls_enabled: true }
+  ]],
+  ["/api/model-columns?", { columns: [
+    { column_name: "id", data_type: "uuid", system: true },
+    { column_name: "owner_id", data_type: "uuid", system: true },
+    { column_name: "created_at", data_type: "timestamptz", system: true },
+    { column_name: "name", data_type: "text", is_nullable: false }
+  ] }],
+  ["/api/relationships?", []],
+  ["/api/documents?", [{ id: ids[1], original_name: "guide.pdf", mime_type: "application/pdf", size_bytes: 42, processing_status: "processed", metadata: { extraction_artifact: { storage_key: "private/evidence.json" } }, created_at: "2026-01-01T00:00:00Z" }]],
+  ["/api/ai/models", { models: [{ id: "local-model", name: "Local model", provider: "ollama", default: true }] }],
+  ["/api/ai/runtime/health", { status: "healthy" }],
+  ["/api/code/workspace?", { initialized: true }],
+  ["/api/activity?", [{ event_type: "model.created", event_source: "FELTUS", message: "Created customers", severity: "success", created_at: "2026-01-01T00:00:00Z" }]],
+  ["/api/system-health", { services: { runtime: { status: "online" }, database: { status: "online" }, ai: { status: "online" } } }],
+  ["/api/assets?", []]
+];
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async input => {
+  const path = String(input);
+  capabilityRequests.push(path);
+  const fixture = capabilityFixtures.find(([prefix]) => path.startsWith(prefix));
+  if (!fixture) throw new Error(`Unexpected capability request: ${path}`);
+  return new Response(JSON.stringify(fixture[1]), { status: 200, headers: { "Content-Type": "application/json" } });
+};
+try {
+  const dataPanel = await renderCapabilityPanel(capabilityApp, "data", "setup");
+  assert.match(dataPanel, /Create a model/);
+  assert.match(dataPanel, /customers/);
+  assert.match(dataPanel, /name · text · required/);
+  assert.equal((dataPanel.match(/id · uuid · primary key/g) || []).length, 2, "each model should list its primary key once");
+  assert.match(dataPanel, /schema editing, deletion, duplication, and row preview are not exposed/);
+
+  const relationshipsPanel = await renderCapabilityPanel(capabilityApp, "relationships", "workspace");
+  assert.match(relationshipsPanel, /Relationship map/);
+  assert.match(relationshipsPanel, /Add a relationship/);
+  assert.match(relationshipsPanel, /many-to-one foreign keys/);
+
+  const documentsPanel = await renderCapabilityPanel(capabilityApp, "documents", "setup");
+  assert.match(documentsPanel, /Upload a document/);
+  assert.match(documentsPanel, /Download extraction evidence/);
+  assert.match(documentsPanel, /Maximum size: 20 MB/);
+
+  const aiPanel = await renderCapabilityPanel(capabilityApp, "ai", "workspace");
+  assert.match(aiPanel, /Save assistant settings/);
+  assert.match(aiPanel, /Send test prompt/);
+  assert.match(aiPanel, /local-model/);
+
+  const codePanel = await renderCapabilityPanel(capabilityApp, "code", "setup");
+  assert.match(codePanel, /\/api\/code\/ui\?app_id=/);
+  const logsPanel = await renderCapabilityPanel(capabilityApp, "logs", "workspace");
+  assert.match(logsPanel, /Created customers/);
+  const infrastructurePanel = await renderCapabilityPanel(capabilityApp, "infrastructure", "workspace");
+  assert.match(infrastructurePanel, /Platform health/);
+  const reviewPanel = await renderCapabilityPanel(capabilityApp, "review", "setup");
+  assert.match(reviewPanel, /Private workspace initialized/);
+  assert.match(reviewPanel, /Build, deployment, promotion, and rollback are not part of this phase/);
+  assert.ok(capabilityRequests.length >= 12, "capability panels load app-scoped existing APIs");
+} finally {
+  globalThis.fetch = originalFetch;
+}
+
+process.stdout.write("PASS app wizard routes, draft persistence, ownership, capability panel API mapping, schema rendering, action availability, and phase boundary\n");

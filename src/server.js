@@ -4049,8 +4049,8 @@ async function handleHttpRequest(req, res) {
           return res.end(responseBody);
         }
 
-        if (req.method === "GET" && ["/app-wizard.js", "/app-wizard.css", "/app-wizard-lib.js"].includes(url.pathname)) {
-          const assetName = url.pathname === "/app-wizard.js" ? "app.js" : url.pathname === "/app-wizard.css" ? "app.css" : "feltus-app-wizard.js";
+        if (req.method === "GET" && ["/app-wizard.js", "/app-wizard.css", "/app-wizard-lib.js", "/app-wizard-capabilities.js"].includes(url.pathname)) {
+          const assetName = ({ "/app-wizard.js": "app.js", "/app-wizard.css": "app.css", "/app-wizard-lib.js": "feltus-app-wizard.js", "/app-wizard-capabilities.js": "capabilities.js" })[url.pathname];
           const assetDirectory = assetName === "feltus-app-wizard.js" ? "lib" : "app-wizard";
           const assetPath = path.join(projectRoot, "src", assetDirectory, assetName);
           return fs.readFile(assetPath, (error, content) => {

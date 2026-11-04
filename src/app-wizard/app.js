@@ -1,4 +1,5 @@
 import { APP_TYPES, SETUP_STEPS, resolveAppRoute, resumeSetupPath, nextSetupRoute, previousSetupRoute } from "/app-wizard-lib.js";
+import { renderCapabilityPanel, mountCapabilityPanel } from "/app-wizard-capabilities.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const view = $("#view");
@@ -152,17 +153,20 @@ function setupShell(app, currentStep, content) {
   const completed = new Set(Array.isArray(app.setup_completed_steps) ? app.setup_completed_steps : []);
   const stepLinks = SETUP_STEPS.map((step, index) => {
     const isCurrent = step === currentStep;
-    const done = completed.has(step);
-    const href = app.id ? `/apps/${encodeURIComponent(app.id)}/setup/${step}` : (step === "basics" ? "/apps/new/basics" : "");
+    const done = step !== "build" && completed.has(step);
+    const unavailable = step === "build";
+    const href = unavailable ? "" : app.id ? `/apps/${encodeURIComponent(app.id)}/setup/${step}` : (step === "basics" ? "/apps/new/basics" : "");
     const item = `<span class="step-index">${done ? "✓" : index + 1}</span>${stepLabels[step]}`;
-    if (!href) return `<span class="step-link" aria-disabled="true" title="Finish App Details to save this step">${item}</span>`;
+    if (!href) return `<span class="step-link" aria-disabled="true" title="${unavailable ? "Build orchestration is part of a later phase." : "Finish App Details to save this step."}">${item}${unavailable ? `<small class="step-unavailable">Later phase</small>` : ""}</span>`;
     return `<a class="step-link ${isCurrent ? "current" : ""} ${done ? "done" : ""}" href="${href}" data-nav aria-current="${isCurrent ? "step" : "false"}">${item}</a>`;
   }).join("");
   const backPath = app.id ? previousSetupRoute(app.id, currentStep) : "/apps/new";
-  const continuePath = currentStep === "basics" ? (app.id ? nextSetupRoute(app.id, currentStep) : "/apps/new/basics") : null;
-  const label = currentStep === "basics" ? "Continue to Data" : currentStep === "review" ? "Review App" : `Continue to ${stepLabels[SETUP_STEPS[currentIndex + 1]] || "next step"}`;
+  const continuePath = currentStep === "build" || currentStep === "review" ? null : (app.id ? nextSetupRoute(app.id, currentStep) : "/apps/new/basics");
+  const label = currentStep === "basics" ? "Continue to Data" : currentStep === "review" ? "Open App Workspace" : "Continue";
   const mobileProgress = Math.round(((currentIndex + 1) / SETUP_STEPS.length) * 100);
-  return `<div class="wizard-layout"><aside class="wizard-rail card"><a class="rail-app" href="/apps" data-nav><span class="app-icon" style="color:${esc(app.accent_color || "var(--accent)")}">${esc(app.app_icon || "✦")}</span><span><strong>${esc(app.app_name || "New application")}</strong><span>Application setup</span></span></a><p class="progress-count">Step ${currentIndex + 1} of ${SETUP_STEPS.length}</p><nav class="step-list" aria-label="Setup progress">${stepLinks}</nav><div class="mobile-stepper"><span>Step ${currentIndex + 1} of ${SETUP_STEPS.length}</span><span class="mobile-progress"><span style="width:${mobileProgress}%"></span></span><b>${stepLabels[currentStep]}</b></div></aside><section class="wizard-main"><div class="wizard-actions"><button type="button" class="button button-quiet" data-action="save">Save Draft</button><button type="button" class="button button-quiet" data-action="exit">Exit Setup</button></div><div class="wizard-content card">${content}</div><div class="wizard-nav"><a class="button button-quiet" href="${backPath}" data-nav>← Back</a><div class="wizard-nav-right">${continuePath ? `<button class="button button-primary" type="button" data-action="continue">${label} →</button>` : `<button class="button" type="button" disabled title="The remaining setup steps arrive in the next phase.">Continue unavailable</button>`}</div></div></section></div>`;
+  const navAction = currentStep === "review" ? `<button class="button button-primary" type="button" data-action="continue">${label} →</button>` : continuePath ? `<button class="button button-primary" type="button" data-action="continue">${label} →</button>` : `<button class="button" type="button" disabled title="Build and deployment orchestration are part of a later phase.">Build unavailable</button>`;
+  const actions = currentStep === "build" ? `<a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/setup/review" data-nav>Return to Review</a>` : `<button type="button" class="button button-quiet" data-action="save" ${currentStep === "basics" ? "" : 'title="Saves your place in the wizard. Save capability settings in their section before leaving."'}>${currentStep === "basics" ? "Save Draft" : "Save Progress"}</button><button type="button" class="button button-quiet" data-action="exit">Exit Setup</button>`;
+  return `<div class="wizard-layout"><aside class="wizard-rail card"><a class="rail-app" href="/apps" data-nav><span class="app-icon" style="color:${esc(app.accent_color || "var(--accent)")}">${esc(app.app_icon || "✦")}</span><span><strong>${esc(app.app_name || "New application")}</strong><span>Application setup</span></span></a><p class="progress-count">Step ${currentIndex + 1} of ${SETUP_STEPS.length}</p><nav class="step-list" aria-label="Setup progress">${stepLinks}</nav><div class="mobile-stepper"><span>Step ${currentIndex + 1} of ${SETUP_STEPS.length}</span><span class="mobile-progress"><span style="width:${mobileProgress}%"></span></span><b>${stepLabels[currentStep]}</b></div></aside><section class="wizard-main"><div class="wizard-actions">${actions}</div><div class="wizard-content card">${content}</div><div class="wizard-nav"><a class="button button-quiet" href="${backPath}" data-nav>← Back</a><div class="wizard-nav-right">${navAction}</div></div></section></div>`;
 }
 
 function basicsContent(app, isNew) {
@@ -175,12 +179,16 @@ function basicsContent(app, isNew) {
   return `<p class="eyebrow">Step 1 · App details</p><h1 class="page-title">${title}</h1><p class="page-lede">Start with the essentials. You can change these details later.</p><form id="basics-form" novalidate><div class="field"><label for="app-name">App name <span aria-hidden="true">*</span></label><input class="input" id="app-name" name="app_name" type="text" maxlength="200" required autocomplete="off" placeholder="e.g. Northstar Support" value="${esc(form.app_name)}"><span id="app-name-error" class="field-error" aria-live="polite"></span></div><div class="field"><label for="app-description">Description <span class="muted-line">· optional</span></label><textarea class="textarea" id="app-description" name="description" maxlength="2000" placeholder="What will this application help people do?">${esc(form.description)}</textarea><span class="field-help">A short sentence is enough. This helps keep your app easy to recognize.</span></div><div class="field"><label>App type</label><div class="type-grid" role="group" aria-label="App type">${types}</div><span id="app-type-error" class="field-error" aria-live="polite"></span></div><div class="field"><label>Visual identity <span class="muted-line">· optional</span></label><div class="identity-row"><div><span class="field-help">Choose an icon</span><div class="icon-picker" style="margin-top:9px">${["✦", "◉", "⌘", "▤", "✧", "◈", "⬡", "◒"].map(icon => `<button class="icon-option ${form.app_icon === icon ? "selected" : ""}" type="button" data-icon="${icon}" aria-label="Use ${icon} app icon" aria-pressed="${form.app_icon === icon}">${icon}</button>`).join("")}</div></div><div><label for="accent-color" class="field-help">Accent color</label><div class="color-picker" style="margin-top:6px"><input id="accent-color" type="color" value="${esc(form.accent_color)}" aria-label="App accent color"><span class="muted-line" id="accent-value">${esc(form.accent_color.toUpperCase())}</span></div></div></div></div><div class="preview-strip"><span class="app-icon" id="preview-icon" style="color:${esc(form.accent_color)};background:${esc(form.accent_color)}18;border-color:${esc(form.accent_color)}35">${esc(form.app_icon)}</span><span><strong id="preview-name">${esc(form.app_name || "Your app name")}</strong><small>${typeLabels[form.app_type] || "Application"}</small></span></div><div id="basics-error" class="field-error" role="alert"></div></form>`;
 }
 
-function renderSetup(app, step) {
+function renderSetup(app, step, capability = "") {
   topCreate.hidden = true;
   state.app = app;
-  const content = step === "basics" ? basicsContent(app, !app.id) : `<p class="eyebrow">Step ${SETUP_STEPS.indexOf(step) + 1} · ${esc(stepLabels[step])}</p><h1 class="page-title">${esc(stepLabels[step])} is coming next.</h1><p class="page-lede">Your app and setup progress are saved. This setup area will connect to the existing FELTUS ${esc(stepLabels[step].toLowerCase())} tools in the next phase.</p><div class="placeholder-card card"><span class="placeholder-badge">Saved setup</span><h2>${esc(app.app_name)}</h2><p>You can go back to App Details, leave setup, or return here when this step becomes available.</p></div>`;
+  const content = step === "basics" ? basicsContent(app, !app.id) : step === "build" ? `<p class="eyebrow">Step ${SETUP_STEPS.indexOf(step) + 1} · Build</p><h1 class="page-title">Build orchestration is not available yet.</h1><p class="page-lede">Your app setup and code workspace remain available. Builds and deployment automation belong to a later phase.</p><a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/setup/review" data-nav>Return to Review</a>` : capability;
   view.innerHTML = setupShell(app, step, content);
   if (step === "basics") bindBasicsForm(app);
+  else if (["data", "relationships", "documents", "ai", "code", "environment", "review"].includes(step)) {
+    const panel = $(".wizard-content", view);
+    mountCapabilityPanel(panel, app, step, "setup", () => renderRoute());
+  }
   bindWizardShell(app, step);
 }
 
@@ -261,6 +269,11 @@ function bindBasicsForm(app) {
 function bindWizardShell(app, step) {
   view.querySelectorAll('[data-action="save"]').forEach(button => button.addEventListener("click", () => saveDraft(app, step)));
   view.querySelectorAll('[data-action="exit"]').forEach(button => button.addEventListener("click", async () => {
+    const capabilityPanel = $(".wizard-content", view);
+    if (capabilityPanel?.dataset.capabilityDirty === "true") {
+      if (!window.confirm("This section has unsaved form values. Exit and discard them?")) return;
+      delete capabilityPanel.dataset.capabilityDirty;
+    }
     const saved = await saveDraft(app, step, { quiet: true });
     if (!saved) {
       const message = app?.id
@@ -368,7 +381,7 @@ async function saveDraft(app, step, { quiet = false } = {}) {
     await loadApps();
     formValues = { app_name: savedApp.app_name, description: savedApp.description || "", app_type: savedApp.app_type, app_icon: savedApp.app_icon, accent_color: savedApp.accent_color };
     setSaved("Draft saved");
-    if (!quiet) showToast("Your draft is saved and ready to resume.");
+    if (!quiet) showToast(step === "basics" ? "Your draft is saved and ready to resume." : "Your place in setup is saved and ready to resume.");
     if (step === "basics" && !quiet) renderSetup(savedApp, step);
     return true;
   } catch (error) {
@@ -389,10 +402,15 @@ async function saveDraft(app, step, { quiet = false } = {}) {
 }
 
 async function continueSetup(app, step, button) {
-  if (step !== "basics") return;
   if (state.formBusy) return;
-  const values = readBasics();
-  if (!values) return;
+  if (step === "build") return;
+  const capabilityPanel = $(".wizard-content", view);
+  if (capabilityPanel?.dataset.capabilityDirty === "true") {
+    if (!window.confirm("This section has unsaved form values. Continue and discard them? Submit or save them first to keep these changes.")) return;
+    delete capabilityPanel.dataset.capabilityDirty;
+  }
+  const values = step === "basics" ? readBasics() : null;
+  if (step === "basics" && !values) return;
   state.formBusy = true;
   button.disabled = true;
   view.querySelectorAll('.wizard-actions button, .wizard-nav a').forEach(control => { control.dataset.wasDisabled = String(control.disabled || false); control.disabled = true; });
@@ -403,17 +421,23 @@ async function continueSetup(app, step, button) {
     let saved;
     if (!app?.id) {
       saved = (await api("/api/apps", { method: "POST", body: JSON.stringify({ ...values, continue_setup: true }) })).app;
-    } else {
+    } else if (step === "review") {
       saved = (await api(`/api/apps/${encodeURIComponent(app.id)}/setup`, {
         method: "PATCH",
-        body: JSON.stringify({ ...values, setup_current_step: "data", setup_completed_steps: [...new Set([...(app.setup_completed_steps || []), "basics"])], setup_status: "configuring" })
+        body: JSON.stringify({ setup_current_step: "review", setup_completed_steps: [...new Set([...(app.setup_completed_steps || []), "review"])], setup_status: "configuring" })
+      })).app;
+    } else {
+      const nextStep = SETUP_STEPS[SETUP_STEPS.indexOf(step) + 1];
+      saved = (await api(`/api/apps/${encodeURIComponent(app.id)}/setup`, {
+        method: "PATCH",
+        body: JSON.stringify({ setup_current_step: nextStep, setup_completed_steps: [...new Set([...(app.setup_completed_steps || []), step])], setup_status: "configuring" })
       })).app;
     }
     state.app = saved;
     formValues = null;
     await loadApps();
     setSaved("Progress saved");
-    navigate(`/apps/${encodeURIComponent(saved.id)}/setup/data`, { replace: !app?.id });
+    navigate(step === "review" ? `/apps/${encodeURIComponent(saved.id)}` : `/apps/${encodeURIComponent(saved.id)}/setup/${SETUP_STEPS[SETUP_STEPS.indexOf(step) + 1]}`, { replace: !app?.id });
   } catch (error) {
     setSaved("Couldn’t save", true);
     if (error.field === "app_name") {
@@ -440,7 +464,10 @@ async function renderSetupRoute(route) {
     renderSetup({ app_name: "", app_type: "web_application", app_icon: "◧", accent_color: "#62D6C9", setup_completed_steps: [] }, "basics");
   } else {
     if (route.step === "basics") formValues = { app_name: app.app_name, description: app.description || "", app_type: app.app_type, app_icon: app.app_icon, accent_color: app.accent_color };
-    renderSetup(app, route.step);
+    const capability = ["data", "relationships", "documents", "ai", "code", "environment", "review"].includes(route.step)
+      ? await renderCapabilityPanel(app, route.step, "setup")
+      : "";
+    renderSetup(app, route.step, capability);
   }
 }
 
@@ -472,18 +499,27 @@ function renderWorkspacePlaceholder(app, page) {
     renderWorkspaceShell(app, page, content);
     return;
   }
-  const capability = ({ data: "Relational Modeler", relationships: "Relationship Builder", documents: "Private Documents", ai: "Private AI Hub", deployments: "Deployment Control Plane", environments: "Environment Setup", infrastructure: "Infrastructure", team: "Team Management", settings: "App Settings" })[page] || label;
-  const reason = page === "team" ? "Team access is not available in the current owner-only sign-in experience." : page === "deployments" ? "Deployment setup will be connected after the build and artifact workflow is ready." : "This screen will connect to the existing FELTUS capability in the next setup phase.";
+  const capability = ({ deployments: "Deployment Control Plane", environments: "Environment Setup", team: "Team Management", settings: "App Settings" })[page] || label;
+  const reason = page === "team" ? "Team access is not available in the current owner-only sign-in experience." : page === "deployments" ? "Build and deployment orchestration are part of a later phase." : page === "settings" ? "App settings are edited through App Details and the current app APIs." : "Environment provisioning is not available in this phase.";
   const content = `<p class="eyebrow">${esc(pageGroups.find(group => group.pages.some(item => item[0] === page))?.label || "BUILD")} · ${esc(label)}</p><h1 class="page-title">${esc(label)}</h1><p class="page-lede">${esc(capability)} for ${esc(app.app_name)}.</p><div class="placeholder-card card"><span class="placeholder-badge">Available in a later phase</span><h2>${esc(capability)}</h2><p>${esc(reason)}</p><a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}" data-nav>Back to Overview</a></div>`;
   renderWorkspaceShell(app, page, content);
 }
 
 async function renderAppRoute(route) {
   const app = await loadApp(route.appId);
-  const activityPath = `/api/activity?app_id=${encodeURIComponent(app.id)}&limit=20`;
-  state.activity = await api(activityPath).catch(() => []);
-  if (route.kind === "app-overview") renderOverview(app);
-  else renderWorkspacePlaceholder(app, route.page);
+  if (route.kind === "app-overview") {
+    const activityPath = `/api/activity?app_id=${encodeURIComponent(app.id)}&limit=20`;
+    state.activity = await api(activityPath).catch(() => []);
+    renderOverview(app);
+    return;
+  }
+  if (["code", "data", "relationships", "documents", "ai", "logs", "infrastructure"].includes(route.page)) {
+    const content = await renderCapabilityPanel(app, route.page, "workspace");
+    renderWorkspaceShell(app, route.page, content);
+    mountCapabilityPanel($(".workspace-content", view), app, route.page, "workspace", () => renderRoute());
+    return;
+  }
+  renderWorkspacePlaceholder(app, route.page);
 }
 
 function renderNotFound() {

@@ -8,6 +8,7 @@ const files = [
   "src/server.js",
   "src/lib/feltus-app-wizard.js",
   "src/app-wizard/app.js",
+  "src/app-wizard/capabilities.js",
   "scripts/app-wizard-tests.mjs",
   "src/index.js",
   "src/ai-ingest.js",
