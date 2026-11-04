@@ -273,3 +273,81 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   assert.equal(retry?.body?.p_error_code, "ARTIFACT_NOT_VERIFIED");
   console.log("PASS revoked artifacts are rejected before contacting Coolify");
 }
+
+{
+  const currentBlueprintId = "7b000000-0000-4000-8000-000000000001";
+  const deployedBlueprintId = "7b000000-0000-4000-8000-000000000002";
+  const deployment = {
+    id: deploymentId,
+    organization_id: orgId,
+    app_id: appId,
+    environment_id: environmentId,
+    environment: "staging",
+    status: "DEPLOYING",
+    provider: "coolify",
+    provider_reference: "coolify-deploy-456",
+    blueprint_id: deployedBlueprintId,
+    artifact_id: artifactId,
+    artifact_digest: digest,
+    commit_sha: "a".repeat(40),
+    started_at: "2026-11-03T12:00:00.000Z",
+    created_at: "2026-11-03T12:00:00.000Z"
+  };
+  const target = {
+    id: targetId,
+    organization_id: orgId,
+    app_id: appId,
+    environment_id: environmentId,
+    provider_key: "coolify",
+    provider_resource_reference: resourceReference
+  };
+  const environment = { id: environmentId, organization_id: orgId, app_id: appId, kind: "staging", status: "active" };
+  const calls = [];
+  const savedObservations = [];
+  const rest = async (path, options = {}) => {
+    calls.push({ path, ...options });
+    if (path.includes("/feltus_deployments?") && options.method === "PATCH") {
+      const status = options.body?.status || deployment.status;
+      deployment.status = status;
+      return [{ ...deployment, status }];
+    }
+    if (path.includes("/feltus_deployments?")) return [{ ...deployment }];
+    if (path.includes("/feltus_deployment_targets?")) return [target];
+    if (path.includes("/feltus_environments?")) return [environment];
+    if (path.includes("/feltus_deployment_health_checks")) return [];
+    if (path.includes("/feltus_observed_application_states?")) {
+      const match = /state_hash=eq\.([0-9a-f]{64})/.exec(path);
+      return savedObservations.filter(item => item.state_hash === match?.[1]);
+    }
+    if (path.includes("/rpc/feltus_record_observed_application_state")) {
+      const row = { id: "7c000000-0000-4000-8000-000000000001", blueprint_version: 1, ...options.body.p_observed };
+      savedObservations.push(row);
+      return row;
+    }
+    if (path.includes("/feltus_application_blueprints?")) return [{ id: currentBlueprintId, version: 2 }];
+    if (path.includes("/feltus_artifacts?")) return [{ id: "7d000000-0000-4000-8000-000000000001", artifact_digest: `sha256:${"b".repeat(64)}` }];
+    if (path.includes("/rpc/feltus_record_application_state_deltas")) return 2;
+    throw new Error(`Unexpected reconciliation request: ${path}`);
+  };
+  const coolify = { async getDeployment() { return { status: "finished" }; } };
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] },
+    probeEnvironmentFn: async () => ({ healthy: true, domain: "staging.example.test", durationMs: 23 })
+  });
+
+  assert.equal(await worker.reconcileActiveDeployments({ force: true }), 1);
+  const observationCall = calls.find(call => call.path?.includes("/rpc/feltus_record_observed_application_state"));
+  assert.ok(observationCall);
+  assert.match(observationCall.body.p_observed.state_hash, /^[0-9a-f]{64}$/);
+  assert.equal(observationCall.body.p_observed.health, "healthy");
+  assert.equal(observationCall.body.p_observed.blueprint_id, deployedBlueprintId);
+  const deltaCall = calls.find(call => call.path?.includes("/rpc/feltus_record_application_state_deltas"));
+  assert.deepEqual(deltaCall.body.p_deltas.map(delta => delta.key), ["blueprint.version", "artifact.digest"]);
+  assert.equal(await worker.reconcileActiveDeployments({ force: true }), 0, "an unchanged verified observation is idempotent");
+  assert.equal(calls.filter(call => call.path?.includes("/feltus_deployment_health_checks")).length, 1);
+  console.log("PASS Coolify reconciliation persists immutable observed state and factual blueprint/artifact deltas idempotently");
+}

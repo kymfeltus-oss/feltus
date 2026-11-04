@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
+import { canonicalJson } from "./feltus-application-state.js";
 
 const PRIVATE_NETWORKS = new BlockList();
 for (const [subnet, prefix, type] of [
@@ -147,7 +149,8 @@ export function createInfrastructureWorker({
   resourceMap = {},
   productionEnabled = false,
   healthGraceMs = 180_000,
-  now = () => Date.now()
+  now = () => Date.now(),
+  probeEnvironmentFn = probeEnvironment
 } = {}) {
   if (typeof rest !== "function") throw new Error("Infrastructure worker requires a database request function.");
   if (!coolify) throw new Error("Infrastructure worker requires a configured Coolify client.");
@@ -469,7 +472,7 @@ export function createInfrastructureWorker({
       checkStatus = "unhealthy";
       summary = "Coolify reported deployment failure.";
     } else {
-      const probe = await probeEnvironment(rest, deployment);
+      const probe = await probeEnvironmentFn(rest, deployment);
       health.health_check = probe;
       if (probe.healthy) {
         nextStatus = "HEALTHY";
@@ -484,6 +487,50 @@ export function createInfrastructureWorker({
         summary = "Coolify deployment completed, but HTTPS readiness checks did not pass.";
       }
     }
+
+    const observedAt = new Date(now()).toISOString();
+    const healthStatus = checkStatus === "healthy" ? "healthy" : ["unhealthy", "degraded"].includes(checkStatus) ? "unhealthy" : "unknown";
+    const observation = {
+      deployment_id: deployment.id,
+      environment: environment.kind,
+      provider: deployment.provider || "coolify",
+      provider_deployment_id: deployment.provider_reference,
+      blueprint_id: deployment.blueprint_id || null,
+      commit_sha: deployment.commit_sha || null,
+      artifact_id: deployment.artifact_id || null,
+      artifact_digest: deployment.artifact_digest || null,
+      deployment_state: nextStatus.toLowerCase(),
+      provider_status: providerStatus,
+      reconciliation_status: nextStatus === "HEALTHY" ? "verified" : nextStatus === "FAILED" ? "failed" : "degraded",
+      health: healthStatus,
+      runtime_health: health.health_check || null,
+      observed_at: observedAt
+    };
+    const identity = {
+      deployment_id: observation.deployment_id,
+      environment: observation.environment,
+      provider: observation.provider,
+      provider_deployment_id: observation.provider_deployment_id,
+      blueprint_id: observation.blueprint_id,
+      commit_sha: observation.commit_sha,
+      artifact_id: observation.artifact_id,
+      artifact_digest: observation.artifact_digest,
+      deployment_state: observation.deployment_state,
+      provider_status: observation.provider_status,
+      reconciliation_status: observation.reconciliation_status,
+      health: observation.health,
+      runtime_health_status: observation.runtime_health?.healthy === true
+        ? "healthy"
+        : observation.runtime_health?.reason || (observation.runtime_health ? "unhealthy" : null)
+    };
+    const stateHash = createHash("sha256").update(canonicalJson(identity), "utf8").digest("hex");
+    observation.state_hash = stateHash;
+
+    const existingObservation = firstRow(await rest(
+      `/rest/v1/feltus_observed_application_states?select=id,state_hash&app_id=eq.${encodeURIComponent(deployment.app_id)}` +
+      `&deployment_id=eq.${encodeURIComponent(deployment.id)}&state_hash=eq.${stateHash}&limit=1`
+    ));
+    if (existingObservation && deployment.status === nextStatus) return false;
 
     const result = await rest(
       `/rest/v1/feltus_deployments?id=eq.${encodeURIComponent(deployment.id)}` +
@@ -513,6 +560,61 @@ export function createInfrastructureWorker({
         safe_metadata: health
       }
     });
+
+    const recordedObservation = firstRow(await callRpc("feltus_record_observed_application_state", {
+      p_app_id: deployment.app_id,
+      p_observed: observation
+    }));
+    if (!recordedObservation?.id) throw failure("OBSERVED_STATE_RECORD_FAILED", true);
+
+    const deltas = [];
+    const desiredBlueprint = firstRow(await rest(
+      `/rest/v1/feltus_application_blueprints?select=id,version,state&app_id=eq.${encodeURIComponent(deployment.app_id)}` +
+      "&order=version.desc&limit=1"
+    ));
+    if (!desiredBlueprint) {
+      deltas.push({ key: "blueprint.version", path: "blueprint.version", status: "unknown", desired: null, observed: recordedObservation.blueprint_version || null });
+    } else if (desiredBlueprint.id !== deployment.blueprint_id || Number(desiredBlueprint.version) !== Number(recordedObservation.blueprint_version)) {
+      deltas.push({
+        key: "blueprint.version",
+        path: "blueprint.version",
+        status: "changed",
+        desired: { id: desiredBlueprint.id, version: Number(desiredBlueprint.version) },
+        observed: { id: deployment.blueprint_id || null, version: recordedObservation.blueprint_version || null }
+      });
+    }
+
+    if (desiredBlueprint?.id && deployment.artifact_digest) {
+      const desiredArtifact = firstRow(await rest(
+        `/rest/v1/feltus_artifacts?select=id,artifact_digest&app_id=eq.${encodeURIComponent(deployment.app_id)}` +
+        `&blueprint_id=eq.${encodeURIComponent(desiredBlueprint.id)}&verification_status=eq.passed&order=created_at.desc&limit=1`
+      ));
+      if (desiredArtifact && desiredArtifact.artifact_digest !== deployment.artifact_digest) {
+        deltas.push({
+          key: "artifact.digest",
+          path: "artifact.digest",
+          status: "changed",
+          desired: desiredArtifact.artifact_digest,
+          observed: deployment.artifact_digest
+        });
+      }
+    }
+    if (healthStatus !== "healthy") {
+      deltas.push({
+        key: "health",
+        path: "health",
+        status: healthStatus === "unknown" ? "unknown" : "changed",
+        desired: "healthy",
+        observed: healthStatus
+      });
+    }
+    if (deltas.length) {
+      await callRpc("feltus_record_application_state_deltas", {
+        p_app_id: deployment.app_id,
+        p_observed_state_id: recordedObservation.id,
+        p_deltas: deltas
+      });
+    }
     lastErrorCode = null;
     return true;
   }
@@ -522,8 +624,8 @@ export function createInfrastructureWorker({
     if (!force && now() - lastReconcileAt < intervalMs) return 0;
     lastReconcileAt = now();
     const deployments = await rest(
-      "/rest/v1/feltus_deployments?select=id,organization_id,app_id,environment_id,environment,status,provider,provider_reference,started_at,created_at" +
-      "&provider=eq.coolify&status=in.(DEPLOYING,DEGRADED)&provider_reference=not.is.null&order=started_at.asc&limit=20"
+      "/rest/v1/feltus_deployments?select=id,organization_id,app_id,environment_id,environment,status,provider,provider_reference,blueprint_id,artifact_id,artifact_digest,commit_sha,started_at,created_at" +
+      "&provider=eq.coolify&status=in.(DEPLOYING,DEGRADED,HEALTHY,FAILED)&provider_reference=not.is.null&order=started_at.asc&limit=20"
     );
     let reconciled = 0;
     for (const deployment of Array.isArray(deployments) ? deployments : []) {

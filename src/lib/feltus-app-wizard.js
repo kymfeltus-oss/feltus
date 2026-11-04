@@ -10,24 +10,25 @@ export const APP_TYPES = Object.freeze([
 export const SETUP_STEPS = Object.freeze([
   "basics",
   "data",
-  "relationships",
-  "documents",
+  "knowledge",
   "ai",
   "code",
   "environment",
-  "review",
-  "build"
+  "review"
 ]);
 
 export const WORKSPACE_PAGES = Object.freeze([
   "overview",
   "code",
+  "source",
   "data",
   "relationships",
   "documents",
   "ai",
+  "builds",
   "deployments",
   "environments",
+  "activity",
   "infrastructure",
   "logs",
   "team",
@@ -112,9 +113,9 @@ export function validateSetupData(value = {}) {
 }
 
 export function resumeSetupPath(app) {
-  const step = SETUP_STEPS.includes(app?.setup_current_step) && app.setup_current_step !== "build"
-    ? app.setup_current_step
-    : "basics";
+  const aliases = { documents: "knowledge", relationships: "data", build: "review" };
+  const current = aliases[app?.setup_current_step] || app?.setup_current_step;
+  const step = SETUP_STEPS.includes(current) ? current : "basics";
   return `/apps/${encodeURIComponent(app.id)}/setup/${step}`;
 }
 
@@ -132,6 +133,9 @@ export function resolveAppRoute(pathname) {
   if (!rest) return { kind: "app-overview", appId };
 
   const setup = /^setup\/([a-z-]+)$/.exec(rest);
+  if (setup?.[1] === "relationships") return { kind: "workspace-page", appId, page: "relationships" };
+  if (setup?.[1] === "documents") return { kind: "setup-step", appId, step: "knowledge" };
+  if (setup?.[1] === "build") return { kind: "setup-step", appId, step: "review" };
   if (setup && SETUP_STEPS.includes(setup[1])) return { kind: "setup-step", appId, step: setup[1] };
   if (WORKSPACE_PAGES.includes(rest)) return { kind: "workspace-page", appId, page: rest };
   return { kind: "not-found" };
@@ -216,6 +220,7 @@ export function createAppWizardHandler({ tableRequest, readBody, getUser }) {
       if (collectionRoute && method === "POST") {
         const body = await readBody(req, 32768);
         const basics = validateAppBasics(body);
+        const setupData = validateSetupData(body.setup_data || {});
         const environment = String(body.environment || "development").trim().toLowerCase();
         if (!["development", "staging", "production"].includes(environment)) {
           respond(res, 400, { error: "Choose a valid environment." });
@@ -229,7 +234,7 @@ export function createAppWizardHandler({ tableRequest, readBody, getUser }) {
             setup_status: body.continue_setup === true ? "configuring" : "draft",
             setup_current_step: body.continue_setup === true ? "data" : "basics",
             setup_completed_steps: body.continue_setup === true ? ["basics"] : [],
-            setup_data: {}
+            setup_data: setupData
           }
         });
         if (result.status < 200 || result.status >= 300) {
@@ -292,16 +297,16 @@ export function createAppWizardHandler({ tableRequest, readBody, getUser }) {
             respond(res, 400, { error: "Setup progress is invalid." });
             return true;
           }
-          const completableSteps = SETUP_STEPS.filter(step => step !== "build");
-          if (body.setup_completed_steps.some(step => !completableSteps.includes(step))) {
-            respond(res, 400, { error: "Build orchestration cannot be marked complete in this phase." });
-            return true;
-          }
           patch.setup_completed_steps = [...new Set(body.setup_completed_steps)];
         }
         if (Object.hasOwn(body, "setup_status")) {
-          if (!["draft", "configuring"].includes(body.setup_status)) {
+          if (!["draft", "configuring", "active"].includes(body.setup_status)) {
             respond(res, 400, { error: "This setup status is not available in this phase." });
+            return true;
+          }
+          if (body.setup_status === "active" && !SETUP_STEPS.every(step =>
+            (patch.setup_completed_steps || app.setup_completed_steps || []).includes(step))) {
+            respond(res, 409, { error: "Complete every setup step before creating the app." });
             return true;
           }
           patch.setup_status = body.setup_status;

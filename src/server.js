@@ -16,6 +16,8 @@ import { createFeltusCodeAIGateway } from "./feltus-code/server/ai-gateway.mjs";
 import { runValidatedAgent } from "./feltus-code/server/agent-workflow.mjs";
 import { assertNoSymlinkTraversal } from "./feltus-code/server/security.mjs";
 import { createAppWizardHandler, isAppShellRoute } from "./lib/feltus-app-wizard.js";
+import { createApplicationStateHandler } from "./lib/feltus-application-state-api.js";
+import { createGithubApiHandler } from "./lib/feltus-github-api.js";
 
 dotenv.config();
 
@@ -1209,7 +1211,8 @@ function documentRetrievalTerms(
 
 async function buildDocumentContext(
   appId,
-  prompt
+  prompt,
+  allowedDocumentIds = null
 ) {
 
   try {
@@ -1275,9 +1278,13 @@ async function buildDocumentContext(
         ? documentResult.data
         : [];
 
+    const permittedDocuments = Array.isArray(allowedDocumentIds)
+      ? documents.filter(document => allowedDocumentIds.includes(document.id))
+      : documents;
+
 
     if (
-      documents.length ===
+      permittedDocuments.length ===
       0
     ) {
 
@@ -1292,7 +1299,7 @@ async function buildDocumentContext(
 
     const documentMap =
       new Map(
-        documents.map(
+        permittedDocuments.map(
           document => [
             document.id,
             document
@@ -2584,6 +2591,20 @@ const handleAppWizardApi = createAppWizardHandler({
   getUser: () => activeSession()?.user || null
 });
 
+const handleApplicationStateApi = createApplicationStateHandler({
+  tableRequest,
+  serviceRequest,
+  readBody,
+  getUser: () => activeSession()?.user || null
+});
+
+const handleGithubApi = createGithubApiHandler({
+  tableRequest,
+  serviceRequest,
+  readBody,
+  getUser: () => activeSession()?.user || null
+});
+
 
 async function projectAIConversation(
   appId,
@@ -3811,10 +3832,12 @@ async function handleHttpRequest(req, res) {
           !["GET", "HEAD", "OPTIONS"].includes(
             String(req.method || "GET").toUpperCase()
           );
+        const requestUrl = new URL(req.url, `http://${HOST}:${PORT}`);
+        const isSignedGithubWebhook = /^\/api\/github\/webhooks\/[0-9a-f-]{36}$/i.test(requestUrl.pathname);
 
         if (
           !trustedOrigin(req, {
-            requireOrigin: IS_PRODUCTION && unsafeMethod
+            requireOrigin: IS_PRODUCTION && unsafeMethod && !isSignedGithubWebhook
           })
         ) {
           return send(
@@ -3827,11 +3850,7 @@ async function handleHttpRequest(req, res) {
           );
         }
 
-        const url =
-          new URL(
-            req.url,
-            `http://${HOST}:${PORT}`
-          );
+        const url = requestUrl;
 
         if (String(req.method || "GET").toUpperCase() === "GET" && url.pathname === "/api/code/ui") {
           res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -4312,6 +4331,10 @@ async function handleHttpRequest(req, res) {
           });
         }
 
+        if (await handleGithubApi.handleWebhook(req, res, url)) {
+          return;
+        }
+
         const session = IS_PRODUCTION
           ? await authenticateOwnerSession(req)
           : devSession;
@@ -4325,6 +4348,14 @@ async function handleHttpRequest(req, res) {
         setActiveSession(session);
 
         if (await handleFeltusCodeRequest(req, res, url)) {
+          return;
+        }
+
+        if (await handleGithubApi.handleAuthenticated(req, res, url)) {
+          return;
+        }
+
+        if (await handleApplicationStateApi(req, res, url)) {
           return;
         }
 
@@ -7198,7 +7229,7 @@ async function handleHttpRequest(req, res) {
                 "GET",
                 {
                   query:
-                    "?select=id,app_name,environment" +
+                    "?select=id,app_name,environment,setup_data" +
                     "&id=eq." +
                     encodeURIComponent(
                       appId
@@ -7239,6 +7270,15 @@ async function handleHttpRequest(req, res) {
             }
 
 
+            const contextPermissions = app.setup_data?.ai?.context_permissions && typeof app.setup_data.ai.context_permissions === "object"
+              ? app.setup_data.ai.context_permissions
+              : {};
+            const selectedModelIds = new Set(Array.isArray(contextPermissions.model_ids)
+              ? contextPermissions.model_ids.filter(value => UUID_PATTERN.test(String(value)))
+              : []);
+            const allowedDocumentIds = Array.isArray(contextPermissions.document_ids)
+              ? [...new Set(contextPermissions.document_ids.filter(value => UUID_PATTERN.test(String(value))))]
+              : [];
             const conversationState = await prepareAIConversation(
               appId,
               typeof body.conversation_id === "string"
@@ -7248,7 +7288,7 @@ async function handleHttpRequest(req, res) {
               {
                 model,
                 capability,
-                historyLimit: policy.sendHistory
+                historyLimit: policy.sendHistory && contextPermissions.conversation_history === true
                   ? policy.maxHistoryMessages
                   : 0
               }
@@ -7282,10 +7322,15 @@ async function handleHttpRequest(req, res) {
               32,
               32768
             ));
+            const savedAiSettings = app.setup_data?.ai && typeof app.setup_data.ai === "object" ? app.setup_data.ai : {};
+            const savedAssistantInstructions = [
+              savedAiSettings.assistant_purpose ? `Assistant purpose: ${savedAiSettings.assistant_purpose}` : "",
+              savedAiSettings.instructions || ""
+            ].filter(Boolean).join("\n\n");
             const systemInstructions = String(
               body.system_prompt ??
               conversationSettings.system_prompt ??
-              "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts."
+              (savedAssistantInstructions || "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.")
             ).trim().slice(0, 12000);
             const contextBudget = Math.round(boundedNumber(
               conversationSettings.context_budget,
@@ -7388,9 +7433,13 @@ async function handleHttpRequest(req, res) {
               );
 
 
+            const allowedModels = dataModels.filter(item => contextPermissions.app_data === true || selectedModelIds.has(item.id));
+            const allowedRelationships = relationships.filter(item =>
+              contextPermissions.app_data === true || (selectedModelIds.has(item.source_model_id) && selectedModelIds.has(item.target_model_id))
+            );
             const relationshipContext =
-              relationships.length
-                ? relationships
+              allowedRelationships.length
+                ? allowedRelationships
                     .map(
                       item => {
                         const sourceName =
@@ -7427,7 +7476,7 @@ async function handleHttpRequest(req, res) {
 
 
             const assetContext =
-              assets.length
+              contextPermissions.app_data === true && assets.length
                 ? assets
                     .map(
                       asset =>
@@ -7444,8 +7493,8 @@ async function handleHttpRequest(req, res) {
 
 
             const modelContext =
-              dataModels.length
-                ? dataModels
+              allowedModels.length
+                ? allowedModels
                     .map(
                       item =>
                         "- " +
@@ -7467,8 +7516,7 @@ async function handleHttpRequest(req, res) {
                   "Environment: " + app.environment,
                   "Project ID: " + app.id,
                   "",
-                  "PROJECT ASSETS",
-                  assetContext,
+                  ...(contextPermissions.app_data === true ? ["PROJECT ASSETS", assetContext, ""] : []),
                   "",
                   "RELATIONAL DATA MODELS",
                   modelContext,
@@ -7477,8 +7525,8 @@ async function handleHttpRequest(req, res) {
                   relationshipContext
                 ].join("\n")
               : "";
-            const retrievedContext = policy.sendProjectContext
-              ? await buildDocumentContext(appId, prompt)
+            const retrievedContext = policy.sendProjectContext && (contextPermissions.documents === true || allowedDocumentIds.length > 0)
+              ? await buildDocumentContext(appId, prompt, contextPermissions.documents === true ? null : allowedDocumentIds)
               : "";
             const groundedPrompt = composeAIPrompt({
               systemInstructions,
@@ -8036,7 +8084,7 @@ res.write(
                 "GET",
                 {
                   query:
-                    "?select=id,app_name,environment" +
+                    "?select=id,app_name,environment,setup_data" +
                     "&id=eq." +
                     encodeURIComponent(
                       appId
@@ -8089,6 +8137,15 @@ res.write(
             }
 
 
+            const contextPermissions = app.setup_data?.ai?.context_permissions && typeof app.setup_data.ai.context_permissions === "object"
+              ? app.setup_data.ai.context_permissions
+              : {};
+            const selectedModelIds = new Set(Array.isArray(contextPermissions.model_ids)
+              ? contextPermissions.model_ids.filter(value => UUID_PATTERN.test(String(value)))
+              : []);
+            const allowedDocumentIds = Array.isArray(contextPermissions.document_ids)
+              ? [...new Set(contextPermissions.document_ids.filter(value => UUID_PATTERN.test(String(value))))]
+              : [];
             const conversationState = await prepareAIConversation(
               appId,
               typeof body.conversation_id === "string"
@@ -8098,7 +8155,7 @@ res.write(
               {
                 model,
                 capability,
-                historyLimit: policy.sendHistory
+                historyLimit: policy.sendHistory && contextPermissions.conversation_history === true
                   ? policy.maxHistoryMessages
                   : 0
               }
@@ -8132,10 +8189,15 @@ res.write(
               32,
               32768
             ));
+            const savedAiSettings = app.setup_data?.ai && typeof app.setup_data.ai === "object" ? app.setup_data.ai : {};
+            const savedAssistantInstructions = [
+              savedAiSettings.assistant_purpose ? `Assistant purpose: ${savedAiSettings.assistant_purpose}` : "",
+              savedAiSettings.instructions || ""
+            ].filter(Boolean).join("\n\n");
             const systemInstructions = String(
               body.system_prompt ??
               conversationSettings.system_prompt ??
-              "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts."
+              (savedAssistantInstructions || "You are the AI assistant inside FELTUS LABS. Respond directly and concisely. Use only authorized project context included in this request for project-specific facts.")
             ).trim().slice(0, 12000);
             const contextBudget = Math.round(boundedNumber(
               conversationSettings.context_budget,
@@ -8238,9 +8300,13 @@ res.write(
               );
 
 
+            const allowedModels = dataModels.filter(item => contextPermissions.app_data === true || selectedModelIds.has(item.id));
+            const allowedRelationships = relationships.filter(item =>
+              contextPermissions.app_data === true || (selectedModelIds.has(item.source_model_id) && selectedModelIds.has(item.target_model_id))
+            );
             const relationshipContext =
-              relationships.length
-                ? relationships
+              allowedRelationships.length
+                ? allowedRelationships
                     .map(
                       item => {
                         const sourceName =
@@ -8277,7 +8343,7 @@ res.write(
 
 
             const assetContext =
-              assets.length
+              contextPermissions.app_data === true && assets.length
                 ? assets
                     .map(
                       asset =>
@@ -8294,8 +8360,8 @@ res.write(
 
 
             const modelContext =
-              dataModels.length
-                ? dataModels
+              allowedModels.length
+                ? allowedModels
                     .map(
                       item =>
                         "- " +
@@ -8317,8 +8383,7 @@ res.write(
                   "Environment: " + app.environment,
                   "Project ID: " + app.id,
                   "",
-                  "PROJECT ASSETS",
-                  assetContext,
+                  ...(contextPermissions.app_data === true ? ["PROJECT ASSETS", assetContext, ""] : []),
                   "",
                   "RELATIONAL DATA MODELS",
                   modelContext,
@@ -8327,8 +8392,8 @@ res.write(
                   relationshipContext
                 ].join("\n")
               : "";
-            const retrievedContext = policy.sendProjectContext
-              ? await buildDocumentContext(appId, prompt)
+            const retrievedContext = policy.sendProjectContext && (contextPermissions.documents === true || allowedDocumentIds.length > 0)
+              ? await buildDocumentContext(appId, prompt, contextPermissions.documents === true ? null : allowedDocumentIds)
               : "";
             const groundedPrompt = composeAIPrompt({
               systemInstructions,

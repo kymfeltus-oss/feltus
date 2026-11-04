@@ -38,13 +38,44 @@ function date(value) {
 }
 
 function title(mode, step, page, appName = "your app") {
-  const names = { data: "Data", relationships: "Relationships", documents: "Documents", ai: "AI", code: "Code", logs: "Logs", infrastructure: "Infrastructure", review: "Review", environment: "Environment" };
+  const names = { data: "Data", relationships: "Relationships", knowledge: "Knowledge", documents: "Knowledge", ai: "AI", code: "Code", logs: "Logs", infrastructure: "Infrastructure", review: "Review", environment: "Environment" };
   const name = names[step || page] || "Workspace";
-  return mode === "setup" ? `<p class="eyebrow">Step ${({ data: 2, relationships: 3, documents: 4, ai: 5, code: 6, environment: 7, review: 8 })[step] || ""} · ${name}</p><h1 class="page-title">${name === "Review" ? "Review your app setup." : `${name} for your app.`}</h1><p class="page-lede">Configure this part of ${escapeCapabilityHtml(appName)} with the FELTUS tools already available.</p>` : `<p class="eyebrow">${({ data: "Build", relationships: "Build", documents: "Build", ai: "Build", code: "Build", logs: "Operate", infrastructure: "Operate" })[page] || "SETUP"} · ${name}</p><h1 class="page-title">${name}</h1>`;
+  if (name === "Data") return `<p class="eyebrow">Step 2 · Information</p><h1 class="page-title">What does your app need to remember?</h1><p class="page-lede">Choose the information your app needs to store. FELTUS handles the secure database structure behind the scenes.</p>`;
+  if (name === "AI") return `<p class="eyebrow">Step 4 · Assistant</p><h1 class="page-title">Your AI Assistant</h1><p class="page-lede">FELTUS prepared an assistant for ${escapeCapabilityHtml(appName)}. Review the defaults, then customize them only if you need to.</p>`;
+  if (name === "Knowledge") return `<p class="eyebrow">Step 3 · Knowledge</p><h1 class="page-title">Give your app useful knowledge.</h1><p class="page-lede">Add files your assistant may use to answer questions. Nothing is shared with AI until you allow it.</p>`;
+  return mode === "setup" ? `<p class="eyebrow">Step ${({ data: 2, knowledge: 3, documents: 3, ai: 4, code: 5, environment: 6, review: 7 })[step] || ""} · ${name}</p><h1 class="page-title">${name === "Review" ? "Review your app setup." : `${name} for your app.`}</h1><p class="page-lede">Configure this part of ${escapeCapabilityHtml(appName)} with the FELTUS tools already available.</p>` : `<p class="eyebrow">${({ data: "Build", relationships: "Build", knowledge: "Build", documents: "Build", ai: "Build", code: "Build", logs: "Operate", infrastructure: "Operate" })[page] || "SETUP"} · ${name}</p><h1 class="page-title">${name}</h1>`;
 }
 
+const FIELD_TYPE_LABELS = { text: "Text", integer: "Number", bigint: "Advanced number", numeric: "Money", boolean: "Yes / No", date: "Date", timestamptz: "Date & Time", uuid: "Unique ID", jsonb: "Advanced" };
+const DATA_CATEGORY_SUGGESTIONS = Object.freeze({
+  customers: { label: "Customers", fields: [["name", "text", false], ["email", "text", true]] },
+  orders: { label: "Orders", fields: [["status", "text", false], ["total", "numeric", true], ["ordered_at", "timestamptz", true]] },
+  products: { label: "Products", fields: [["name", "text", false], ["sku", "text", true], ["price", "numeric", true]] },
+  support_tickets: { label: "Support Requests", fields: [["subject", "text", false], ["status", "text", false], ["description", "text", true]] },
+  rewards: { label: "Rewards", fields: [["name", "text", false], ["points", "integer", false], ["status", "text", true]] },
+  documents: { label: "Support Documents", fields: [["file_name", "text", false], ["category", "text", true], ["description", "text", true]] }
+});
+
+function recommendDataCategories(app, models) {
+  const intent = `${app.description || ""} ${app.setup_data?.intent_details || ""}`.toLowerCase();
+  if (!intent.trim()) return [];
+  const rules = [
+    ["customers", /\b(customer|client|account|member|user)s?\b/],
+    ["orders", /\b(order|purchase|checkout|payment|sale)s?\b/],
+    ["products", /\b(product|inventory|catalog|item)s?\b/],
+    ["support_tickets", /\b(support|ticket|issue|request|case)s?\b/],
+    ["rewards", /\b(reward|loyalty|points|membership)s?\b/],
+    ["documents", /\b(document|file|attachment|upload)s?\b/]
+  ];
+  const existing = new Set(models.map(model => String(model.logical_name || "").toLowerCase().replaceAll(" ", "_")));
+  return rules.filter(([, pattern]) => pattern.test(intent)).map(([key]) => ({ key, ...DATA_CATEGORY_SUGGESTIONS[key] }))
+    .filter(item => !existing.has(item.key));
+}
+
+function friendlyType(type) { return FIELD_TYPE_LABELS[String(type || "text").toLowerCase()] || "Advanced"; }
+
 function fieldTypes(selected = "text") {
-  return ["text", "integer", "bigint", "numeric", "boolean", "date", "timestamptz", "uuid", "jsonb"].map(type => `<option value="${type}" ${selected === type ? "selected" : ""}>${type}</option>`).join("");
+  return ["text", "integer", "numeric", "boolean", "date", "timestamptz", "uuid", "bigint", "jsonb"].map(type => `<option value="${type}" ${selected === type ? "selected" : ""}>${friendlyType(type)}</option>`).join("");
 }
 
 function columnRow(name = "", type = "text", nullable = true) {
@@ -97,15 +128,17 @@ function empty(titleText, bodyText) {
 
 async function dataMarkup(app, mode) {
   const models = await loadModels(app.id);
+  const suggestions = recommendDataCategories(app, models);
   const draft = app.setup_data?.wizard_drafts?.data || {};
   const draftColumns = Array.isArray(draft.columns) && draft.columns.length
     ? draft.columns.map(column => columnRow(column.name, column.type, column.nullable !== false)).join("")
     : `${columnRow("name", "text", false)}${columnRow("description", "text", true)}`;
   const modelCards = models.length ? `<div class="cap-list">${models.map(model => {
     const cols = modelColumns(model);
-    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(modelName(model))}</strong><small>${cols.length} custom field${cols.length === 1 ? "" : "s"} · ${escapeCapabilityHtml(model.physical_table_name || "FELTUS managed table")}</small></div><button class="button button-quiet" type="button" data-rls="${escapeCapabilityHtml(model.id)}" data-enabled="${String(!model.rls_enabled)}">RLS ${model.rls_enabled ? "On" : "Off"} · change</button></div><div class="cap-tags"><span class="cap-tag system">id · uuid · primary key</span><span class="cap-tag system">owner_id · uuid</span><span class="cap-tag system">created_at · timestamptz</span>${cols.map(column => `<span class="cap-tag">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(column.data_type || column.type || "field")}${column.is_nullable === false || column.nullable === false ? " · required" : ""}</span>`).join("")}</div><p class="cap-muted">FELTUS manages the physical schema. This API currently supports creation and RLS changes; schema editing, deletion, duplication, and row preview are not exposed.</p></article>`;
+    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(modelName(model))}</strong><small>${cols.length} field${cols.length === 1 ? "" : "s"}</small></div><span class="cap-status ${model.rls_enabled ? "ready" : "unavailable"}">${model.rls_enabled ? "Privacy protection on" : "Privacy protection off"}</span></div><div class="cap-tags">${cols.map(column => `<span class="cap-tag">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(friendlyType(column.data_type || column.type))}${column.is_nullable === false || column.nullable === false ? " · required" : ""}</span>`).join("")}</div><details class="cap-advanced"><summary>View technical details</summary><p><strong>Table:</strong> ${escapeCapabilityHtml(model.physical_table_name || "FELTUS managed table")} · <strong>RLS:</strong> ${model.rls_enabled ? "enabled" : "disabled"}</p><div class="cap-tags"><span class="cap-tag system">id · uuid · primary key</span><span class="cap-tag system">owner_id · uuid</span><span class="cap-tag system">created_at · timestamptz</span>${cols.map(column => `<span class="cap-tag system">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(column.data_type || column.type || "field")}</span>`).join("")}</div><button class="button button-quiet" type="button" data-rls="${escapeCapabilityHtml(model.id)}" data-enabled="${String(!model.rls_enabled)}">${model.rls_enabled ? "Turn off" : "Turn on"} row-level security</button></details><p class="cap-muted">Saved schema is shown here. Changing or removing existing fields is not available through the current model API.</p></article>`;
   }).join("")}</div>` : empty("No models yet", "Create a model below. FELTUS adds id, owner_id, and created_at to every managed table.");
-  return `${title(mode, "data", "data", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Models in this app</h2><p>${models.length} model${models.length === 1 ? "" : "s"} · Model definitions are stored in the FELTUS schema registry.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${modelCards}</section><section class="cap-section"><div class="cap-section-head"><div><h2>Create a model</h2><p>Names use lowercase letters, numbers, and underscores. Custom fields are added to a new table.</p></div></div><form data-form="model" class="cap-form"><label class="field"><span>Model name</span><input class="input" name="table_name" required maxlength="40" pattern="[a-z][a-z0-9_]{0,39}" placeholder="customer" value="${escapeCapabilityHtml(draft.table_name || "")}"></label><div class="field"><strong>Custom fields</strong><div data-column-list>${draftColumns}</div><button class="button button-quiet" type="button" data-add-column>＋ Add Field</button><p class="field-help">Supported types: text, integer, bigint, numeric, boolean, date, timestamptz, uuid, jsonb. Column names cannot use FELTUS system fields.</p></div><label class="cap-check cap-check-strong"><input name="enable_rls" type="checkbox" ${draft.enable_rls === false ? "" : "checked"}> Enable RLS for this table</label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Create Model</button></form><button class="button button-quiet cap-skip" type="button" data-action="skip">Skip Data and continue to Relationships</button></section><p class="cap-note">Model row data is not available in the existing API. The preview above shows the real registered schema and system columns.</p>`;
+  const suggestionCards = suggestions.length ? `<div class="cap-list">${suggestions.map(item => `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(item.label)}</strong><small>Suggested from your app description · review before adding</small></div><span class="cap-status pending">Suggested</span></div><div class="cap-tags">${item.fields.map(([name, type]) => `<span class="cap-tag">${escapeCapabilityHtml(name)} · ${escapeCapabilityHtml(friendlyType(type))}</span>`).join("")}</div><button class="button button-quiet" type="button" data-suggest-category="${item.key}">Review suggestion</button></article>`).join("")}</div>` : empty("No new categories suggested", app.description || app.setup_data?.intent_details ? "Your description did not match a built-in suggestion. You can add a category manually." : "Add a description in Basics so FELTUS can suggest information categories.");
+  return `${title(mode, "data", "data", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-view-blueprint="data">&lt;/&gt; View Blueprint</button></div><section class="cap-section"><div class="cap-section-head"><div><h2>Suggested information categories</h2><p>These are starting ideas inferred from your description. Review and edit each one before it is saved.</p></div></div>${suggestionCards}</section><section class="cap-section"><div class="cap-section-head"><div><h2>Information categories</h2><p>${models.length} saved categor${models.length === 1 ? "y" : "ies"} · Each category stores information your app needs.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${modelCards}</section><details class="cap-advanced" data-manual-data><summary>Add or edit a category manually</summary><form data-form="model" class="cap-form"><label class="field"><span>Category name</span><input class="input" name="table_name" required maxlength="40" pattern="[a-z][a-z0-9_]{0,39}" placeholder="customers" value="${escapeCapabilityHtml(draft.table_name || "")}"><small class="field-help">Use a simple name such as customers, orders, or products.</small></label><div class="field"><strong>Fields to keep</strong><div data-column-list>${draftColumns}</div><button class="button button-quiet" type="button" data-add-column>＋ Add Field</button></div><details class="cap-advanced"><summary>Advanced privacy setting</summary><label class="cap-check cap-check-strong"><input name="enable_rls" type="checkbox" ${draft.enable_rls === false ? "" : "checked"}> Protect each user’s rows</label></details><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Add Category</button></form></details><p class="cap-note">Privacy labels reflect the saved model settings. Existing fields cannot be changed through the current model API.</p>`;
 }
 
 function relationshipDiagram(models, relationships) {
@@ -137,36 +170,59 @@ async function relationshipsMarkup(app, mode) {
 async function documentsMarkup(app, mode) {
   const documents = rows(await api(`/api/documents?app_id=${encodeURIComponent(app.id)}`), "documents");
   const documentCards = documents.length ? `<div class="cap-list">${documents.map(document => `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(document.original_name)}</strong><small>${escapeCapabilityHtml(document.mime_type || "Document")} · ${moneyBytes(document.size_bytes)} · Added ${date(document.created_at)}</small></div><span class="cap-status ${document.processing_status === "ready" ? "ready" : escapeCapabilityHtml(document.processing_status || "pending")}">${escapeCapabilityHtml(document.processing_status || "pending")}</span></div><div class="cap-item-actions">${document.processing_status === "ready" ? `<span class="cap-muted">AI context ready · ${date(document.processed_at)}</span>` : document.processing_status === "processing" ? `<span class="cap-muted">Processing… refresh for status</span>` : `<button class="button button-primary" type="button" data-process-document="${escapeCapabilityHtml(document.id)}">${document.processing_status === "failed" ? "Retry processing" : "Process document"}</button>`}${document.metadata?.extraction_artifact?.storage_key ? `<a class="button button-quiet" href="/api/documents/extraction?document_id=${encodeURIComponent(document.id)}">Download extraction evidence</a>` : `<span class="cap-muted">Evidence appears after processing</span>`}</div></article>`).join("")}</div>` : empty("No documents attached", "Upload a supported file, then process it so the existing document pipeline can index it.");
-  return `${title(mode, "documents", "documents", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>App documents</h2><p>${documents.length} file${documents.length === 1 ? "" : "s"} · Uploaded files are private to this app and processed by the existing document pipeline.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${documentCards}</section><section class="cap-section"><h2>Upload a document</h2><form data-form="document" class="cap-form"><label class="field"><span>Choose a file</span><input class="input" name="file" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx" required><small class="field-help">Supported: TXT, Markdown, CSV, JSON, PDF, DOCX, XLSX. Maximum size: 20 MB.</small></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Upload file</button></form></section><p class="cap-note">Processed documents are available to FELTUS AI through its existing retrieval pipeline. Source trust rules are enforced by the server and are not editable here.</p>`;
+  return `${title(mode, "knowledge", "knowledge", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Knowledge files</h2><p>${documents.length} file${documents.length === 1 ? "" : "s"} · Uploaded files are private to this app and processed by the existing document pipeline.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${documentCards}</section><section class="cap-section"><h2>Add a knowledge file</h2><form data-form="document" class="cap-form"><label class="field"><span>Choose a file</span><input class="input" name="file" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx" required><small class="field-help">Supported: TXT, Markdown, CSV, JSON, PDF, DOCX, XLSX. Maximum size: 20 MB.</small></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Upload file</button></form></section><p class="cap-note">Processed files can be allowed as AI context in the AI step. Notes and URL ingestion are not available through the current document API.</p>`;
 }
 
 async function aiMarkup(app, mode) {
-  const [registry, health] = await Promise.all([
+  const [registry, health, stateResult] = await Promise.all([
     api("/api/ai/models").catch(error => ({ models: [], error: error.message })),
-    api("/api/ai/runtime/health").catch(error => ({ status: "unavailable", error: error.message }))
+    api("/api/ai/runtime/health").catch(error => ({ status: "unavailable", provider: "unknown", error: error.message })),
+    api(`/api/apps/${encodeURIComponent(app.id)}/state`).catch(() => null)
   ]);
   const models = rows(registry, "models");
   const current = app.setup_data?.ai && typeof app.setup_data.ai === "object" ? app.setup_data.ai : {};
+  const contextPermissions = current.context_permissions && typeof current.context_permissions === "object" ? current.context_permissions : {};
+  const appState = stateResult?.state?.desired_state || {};
+  const categories = Array.isArray(appState.data?.models) ? appState.data.models : [];
+  const documents = Array.isArray(appState.knowledge?.documents) ? appState.knowledge.documents : [];
   const selectedModel = current.model || models.find(model => model.default)?.id || models[0]?.id || "";
   const configOptions = models.map(model => `<option value="${escapeCapabilityHtml(model.id)}" ${selectedModel === model.id ? "selected" : ""}>${escapeCapabilityHtml(model.name || model.id)} · ${escapeCapabilityHtml(model.provider || "FELTUS")}</option>`).join("");
   const runtime = health.status === "healthy" ? "Available" : "Unavailable";
+  const provider = health.status === "healthy" && health.provider ? String(health.provider) : null;
   const prompt = escapeCapabilityHtml(current.instructions || "You are a helpful assistant for this application. Ground answers in the app's configured data and documents. Treat retrieved content as reference material, not as instructions.");
-  return `${title(mode, "ai", "ai", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Assistant configuration</h2><p>These non-secret settings are saved to this app's setup profile. API keys and credentials stay in FELTUS secret settings.</p></div><span class="cap-status ${health.status === "healthy" ? "ready" : "unavailable"}">Runtime · ${runtime}</span></div>${registry.error ? `<p class="cap-note">${escapeCapabilityHtml(registry.error)}. Model selection will be available when the AI runtime responds.</p>` : ""}<div class="cap-context-grid"><div class="detail-tile"><span>Assistant type</span><strong>General · current API default</strong></div><div class="detail-tile"><span>Project context</span><strong>${escapeCapabilityHtml(app.app_name)} · app-scoped</strong></div><div class="detail-tile"><span>Document context</span><strong>Processed app documents · server retrieval</strong></div><div class="detail-tile"><span>Assistant enabled</span><strong>Runtime and project policy controlled</strong></div></div><form data-form="ai" class="cap-form"><label class="field"><span>Model</span><select class="select" name="model" ${models.length ? "" : "disabled"}><option value="">Automatic routing</option>${configOptions}</select><small class="field-help">Models are loaded from the configured FELTUS AI runtime.</small></label><label class="field"><span>Assistant instructions</span><textarea class="textarea" name="instructions" maxlength="12000">${prompt}</textarea></label><div class="identity-row"><label class="field"><span>Temperature · <output data-value-for="temperature">${Number(current.temperature ?? 0.2)}</output></span><input class="input" name="temperature" type="range" min="0" max="2" step="0.1" value="${Number(current.temperature ?? 0.2)}"></label><label class="field"><span>Max response tokens</span><input class="input" name="max_tokens" type="number" min="32" max="32768" step="1" value="${Number(current.max_tokens ?? 2048)}"></label></div><label class="field"><span>Context budget</span><input class="input" name="context_budget" type="number" min="1000" max="200000" step="1000" value="${Number(current.context_budget ?? 16000)}"></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Save assistant settings</button></form></section><section class="cap-section"><h2>Test this assistant</h2><p>Runs a real FELTUS AI request using the app context, selected model, and saved instructions.</p><form data-form="ai-test" class="cap-form"><label class="field"><span>Test prompt</span><textarea class="textarea" name="prompt" maxlength="8000" required placeholder="Ask a question about how this app should work."></textarea></label><div class="field-error" data-form-error role="alert"></div><button class="button" type="submit" ${health.status === "healthy" ? "" : "disabled title=\"AI runtime is currently unavailable\""}>Test Assistant</button><pre class="cap-ai-result" data-ai-result hidden></pre></form></section><div class="cap-trust"><strong>Context trust</strong><p>FELTUS applies its server-side source trust rules to retrieved documents. The current app AI API does not expose assistant enable/disable or trust-policy controls.</p></div>`;
+  const budget = Math.max(1000, Number(current.context_budget || 16000));
+  const categoryChoices = categories.map(category => `<label class="cap-check"><input type="checkbox" data-context-model="${escapeCapabilityHtml(category.id)}" ${Array.isArray(contextPermissions.model_ids) && contextPermissions.model_ids.includes(category.id) ? "checked" : ""}> ${escapeCapabilityHtml(category.name)}</label>`).join("");
+  const documentChoices = documents.map(document => `<label class="cap-check"><input type="checkbox" data-context-document="${escapeCapabilityHtml(document.id)}" ${Array.isArray(contextPermissions.document_ids) && contextPermissions.document_ids.includes(document.id) ? "checked" : ""}> ${escapeCapabilityHtml(document.name)} · ${escapeCapabilityHtml(document.processing_state)}</label>`).join("");
+  const allowedSources = [];
+  if (contextPermissions.app_data) allowedSources.push("All app information categories");
+  else for (const category of categories.filter(item => contextPermissions.model_ids?.includes(item.id))) allowedSources.push(category.name);
+  if (contextPermissions.documents) allowedSources.push("All uploaded knowledge files");
+  else for (const document of documents.filter(item => contextPermissions.document_ids?.includes(item.id))) allowedSources.push(document.name);
+  if (contextPermissions.conversation_history) allowedSources.push("Conversation history");
+  const sourceSummary = allowedSources.length ? allowedSources.join(", ") : "No app data or knowledge files are shared yet.";
+  const purpose = app.description?.trim() ? `Answer questions about ${app.app_name} using the app's approved information.` : "Answer app-related questions and help users find information.";
+  return `${title(mode, "ai", "ai", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-view-blueprint="ai">&lt;/&gt; View Blueprint</button></div><section class="cap-section"><div class="cap-section-head"><div><h2>What it will do</h2><p>${escapeCapabilityHtml(purpose)}</p></div><span class="cap-status ${health.status === "healthy" ? "ready" : "unavailable"}">Runtime · ${runtime}</span></div><div class="cap-context-grid"><div class="detail-tile"><span>What it can use</span><strong>${escapeCapabilityHtml(sourceSummary)}</strong></div><div class="detail-tile"><span>Verified runtime</span><strong>${escapeCapabilityHtml(provider || "Details unavailable")}</strong></div></div><p class="cap-muted">Only the information listed above is added as app context. You can change these permissions in Customize AI.</p></section><details class="cap-advanced cap-customize"><summary>Customize AI</summary><form data-form="ai" class="cap-form"><label class="field"><span>Allowed app information and knowledge</span><div class="cap-permissions"><label class="cap-check"><input type="checkbox" name="allow_all_data" ${contextPermissions.app_data === true ? "checked" : ""}> All app information categories</label>${categoryChoices || `<span class="cap-muted">Add information categories first to grant access.</span>`}<label class="cap-check"><input type="checkbox" name="allow_all_documents" ${contextPermissions.documents === true ? "checked" : ""}> All uploaded knowledge files</label>${documentChoices || `<span class="cap-muted">No uploaded knowledge files are available.</span>`}<label class="cap-check"><input type="checkbox" name="allow_history" ${contextPermissions.conversation_history === true ? "checked" : ""}> Conversation history</label></div><small class="field-help">Permissions are stored with the app and enforced by the server when AI requests are made.</small></label><label class="field"><span>Assistant purpose</span><input class="input" name="assistant_purpose" value="${escapeCapabilityHtml(current.assistant_purpose || purpose)}" maxlength="500"></label><label class="field"><span>Model</span><select class="select" name="model" ${models.length ? "" : "disabled"}><option value="">Automatic routing</option>${configOptions}</select></label><label class="field"><span>Instructions</span><textarea class="textarea" name="instructions" maxlength="12000">${prompt}</textarea></label><div class="identity-row"><label class="field"><span>Temperature · <output data-value-for="temperature">${Number(current.temperature ?? 0.2)}</output></span><input class="input" name="temperature" type="range" min="0" max="2" step="0.1" value="${Number(current.temperature ?? 0.2)}"></label><label class="field"><span>Max response tokens</span><input class="input" name="max_tokens" type="number" min="32" max="32768" step="1" value="${Number(current.max_tokens ?? 2048)}"></label></div><label class="field"><span>Context budget · advanced</span><input class="input" name="context_budget" type="number" min="1000" max="200000" step="1000" value="${budget}"><small class="field-help">Token capacity estimates are approximate and vary by model and request.</small></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Save AI settings</button></form><section class="cap-section"><h2>Test your assistant</h2><p>Ask a real question. FELTUS sends only the context sources enabled above.</p><form data-form="ai-test" class="cap-form"><label class="field"><span>Your question</span><textarea class="textarea" name="prompt" maxlength="8000" required placeholder="Ask a question about how this app should work."></textarea></label><div class="field-error" data-form-error role="alert"></div><button class="button" type="submit" ${health.status === "healthy" ? "" : "disabled title=\"AI runtime is currently unavailable\""}>Test Assistant</button><pre class="cap-ai-result" data-ai-result hidden></pre></form></section></details>`;
 }
 
 function aiConfigForSave(settings, previous = {}, testStatus = null) {
   const next = {
     model: String(settings.model || ""),
+    assistant_purpose: String(settings.assistant_purpose || previous.assistant_purpose || "").trim(),
     instructions: String(settings.instructions ?? settings.system_prompt ?? "").trim(),
     temperature: Number(settings.temperature ?? 0.2),
     max_tokens: Math.round(Number(settings.max_tokens ?? 2048)),
-    context_budget: Math.round(Number(settings.context_budget ?? 16000))
+    context_budget: Math.round(Number(settings.context_budget ?? 16000)),
+    context_permissions: settings.context_permissions || previous.context_permissions || {
+      documents: false, app_data: false, model_ids: [], document_ids: [], conversation_history: false
+    }
   };
   const unchanged = next.model === String(previous.model || "") &&
+    next.assistant_purpose === String(previous.assistant_purpose || "") &&
     next.instructions === String(previous.instructions || "") &&
     next.temperature === Number(previous.temperature ?? 0.2) &&
     next.max_tokens === Number(previous.max_tokens ?? 2048) &&
-    next.context_budget === Number(previous.context_budget ?? 16000);
+    next.context_budget === Number(previous.context_budget ?? 16000) &&
+    JSON.stringify(next.context_permissions) === JSON.stringify(previous.context_permissions || {});
   next.test_status = testStatus || (unchanged ? previous.test_status : "not_run") || "not_run";
   next.tested_at = testStatus ? new Date().toISOString() : unchanged ? (previous.tested_at || null) : null;
   return next;
@@ -181,29 +237,43 @@ async function saveAITestState(app, settings, testStatus) {
   app.setup_data = { ...(app.setup_data || {}), ai };
 }
 
+function readAISettings(form) {
+  return {
+    model: form.elements.model?.value || "",
+    assistant_purpose: form.elements.assistant_purpose?.value.trim() || "",
+    instructions: form.elements.instructions?.value.trim() || "",
+    temperature: Number(form.elements.temperature?.value ?? 0.2),
+    max_tokens: Math.round(Number(form.elements.max_tokens?.value ?? 2048)),
+    context_budget: Math.round(Number(form.elements.context_budget?.value ?? 16000)),
+    context_permissions: {
+      documents: form.elements.allow_all_documents?.checked === true,
+      app_data: form.elements.allow_all_data?.checked === true,
+      model_ids: $$('[data-context-model]:checked', form).map(input => input.dataset.contextModel),
+      document_ids: $$('[data-context-document]:checked', form).map(input => input.dataset.contextDocument),
+      conversation_history: form.elements.allow_history?.checked === true
+    }
+  };
+}
+
 async function testAI(app, form, resultNode) {
   const settingsForm = $("[data-form='ai']");
   const prompt = form.elements.prompt.value.trim();
   if (!prompt) throw new Error("Enter a test prompt.");
-  const settings = {
-    model: settingsForm.elements.model.value,
-    system_prompt: settingsForm.elements.instructions.value,
-    temperature: Number(settingsForm.elements.temperature.value),
-    max_tokens: Number(settingsForm.elements.max_tokens.value),
-    context_budget: Number(settingsForm.elements.context_budget.value)
-  };
+  const settings = readAISettings(settingsForm);
+  const requestSettings = { ...settings, system_prompt: settings.instructions };
   resultNode.hidden = false;
   resultNode.textContent = "Connecting to the FELTUS AI runtime…";
   let conversationId = null;
   try {
-    const session = await api("/api/ai/conversations", { method: "POST", body: JSON.stringify({ app_id: app.id, title: "Create App assistant test", ...settings }) });
+    await saveAITestState(app, settings, null);
+    const session = await api("/api/ai/conversations", { method: "POST", body: JSON.stringify({ app_id: app.id, title: "Create App assistant test", ...requestSettings }) });
     conversationId = session.conversation?.id || null;
     if (!conversationId) throw new Error("FELTUS could not create an AI test conversation.");
     const response = await fetch("/api/ai/chat/stream", {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", Accept: "application/x-ndjson" },
-      body: JSON.stringify({ app_id: app.id, conversation_id: conversationId, prompt, capability: "general", ...settings })
+      body: JSON.stringify({ app_id: app.id, conversation_id: conversationId, prompt, capability: "general", ...requestSettings })
     });
     if (!response.ok || !response.body) {
       const message = await response.text().catch(() => "");
@@ -260,59 +330,195 @@ async function infrastructureMarkup(app, mode) {
   const services = health.services || {};
   const assetRows = rows(assets, "assets");
   const serviceCards = [["FELTUS runtime", services.runtime?.status], ["Database", services.database?.status], ["AI runtime", services.ai?.status]].map(([name, status]) => `<div class="detail-tile"><span>${name}</span><strong><i class="status-dot ${status === "online" || status === "healthy" ? "online" : status === "offline" || status === "unavailable" ? "offline" : ""}"></i> ${escapeCapabilityHtml(status || "Unknown")}</strong></div>`).join("");
-  return `${title(mode, "infrastructure", "infrastructure", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Platform health</h2><p>Live service health from the existing FELTUS system-health endpoint. This does not indicate that app infrastructure has been provisioned.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div><div class="detail-grid">${serviceCards}</div>${health.error ? `<p class="cap-note">Health check unavailable: ${escapeCapabilityHtml(health.error)}</p>` : ""}</section><section class="cap-section"><h2>App resource records</h2><p>Read-only assets currently attached to this app.</p>${assets.error ? `<p class="cap-note">${escapeCapabilityHtml(assets.error)}</p>` : assetRows.length ? `<div class="cap-list">${assetRows.map(asset => `<article class="cap-item"><strong>${escapeCapabilityHtml(asset.asset_name || asset.name || "Resource")}</strong><small>${escapeCapabilityHtml(asset.asset_type || "FELTUS asset")} · ${date(asset.created_at)}</small></article>`).join("")}</div>` : empty("No resource records", "No app-scoped assets are attached yet.")}</section><div class="cap-note"><strong>Provisioning and deployment are not available here.</strong> This screen reports existing platform health and app resource records. Infrastructure creation, deployment, build history, promotion, and rollback require the later provisioning phase.</div>`;
+  return `${title(mode, "infrastructure", "infrastructure", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Platform health</h2><p>Live service health from the FELTUS system-health endpoint. This does not indicate that this app has been deployed.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div><div class="detail-grid">${serviceCards}</div>${health.error ? `<p class="cap-note">Health check unavailable: ${escapeCapabilityHtml(health.error)}</p>` : ""}</section><section class="cap-section"><h2>App resource records</h2><p>Read-only assets currently attached to this app.</p>${assets.error ? `<p class="cap-note">${escapeCapabilityHtml(assets.error)}</p>` : assetRows.length ? `<div class="cap-list">${assetRows.map(asset => `<article class="cap-item"><strong>${escapeCapabilityHtml(asset.asset_name || asset.name || "Resource")}</strong><small>${escapeCapabilityHtml(asset.asset_type || "FELTUS asset")} · ${date(asset.created_at)}</small></article>`).join("")}</div>` : empty("No resource records", "No app-scoped assets are attached yet.")}</section><div class="cap-note">Builds, environments, deployments, promotion, and rollback are managed in their own app workspace pages. Each control remains disabled until its required runner or provider is configured.</div>`;
 }
 
 async function reviewMarkup(app, mode) {
-  const [modelsResult, relationshipsResult, documentsResult, health, code] = await Promise.all([
+  const [modelsResult, documentsResult, health, code, state, environmentPayload] = await Promise.all([
     loadModels(app.id).catch(() => []),
-    api(`/api/relationships?app_id=${encodeURIComponent(app.id)}`).then(data => rows(data, "relationships")).catch(() => []),
     api(`/api/documents?app_id=${encodeURIComponent(app.id)}`).then(data => rows(data, "documents")).catch(() => []),
     api("/api/ai/runtime/health").catch(() => ({ status: "unavailable" })),
-    api(`/api/code/workspace?app_id=${encodeURIComponent(app.id)}`).catch(() => ({ initialized: false }))
+    api(`/api/code/workspace?app_id=${encodeURIComponent(app.id)}`).catch(() => ({ initialized: false })),
+    api(`/api/apps/${encodeURIComponent(app.id)}/state`).catch(() => null),
+    api(`/api/apps/${encodeURIComponent(app.id)}/environments`).catch(() => null)
   ]);
   const models = modelsResult;
-  const relationships = relationshipsResult;
   const docs = documentsResult;
   const ai = app.setup_data?.ai;
-  const modelNames = new Map(models.map(model => [model.id, modelName(model)]));
-  const modelSummary = models.length
-    ? models.map(model => {
-      const count = modelColumns(model).length;
-      return `${modelName(model)} · ${count} field${count === 1 ? "" : "s"} · RLS ${model.rls_enabled ? "on" : "off"}`;
-    }).join("; ")
-    : "No data models";
-  const relationshipSummary = relationships.length
-    ? relationships.map(item => `${modelNames.get(item.source_model_id) || item.source_model_id}.${item.source_column} → ${modelNames.get(item.target_model_id) || item.target_model_id}.${item.target_column} · ON DELETE ${item.on_delete_action || item.on_delete || "RESTRICT"}`).join("; ")
-    : "No relationships";
+  const modelSummary = models.length ? models.map(model => modelName(model)).join(", ") : "No information categories added";
   const documentSummary = docs.length
     ? docs.map(doc => `${doc.original_name} · ${doc.processing_status || "pending"}${doc.processing_status === "ready" ? " · AI context ready" : ""}`).join("; ")
-    : "No documents uploaded";
+    : "No knowledge files uploaded";
   const aiTestStatus = ai?.test_status === "passed" ? "passed" : ai?.test_status === "failed" ? "failed" : "not run";
+  const environment = rows(environmentPayload, "environments").find(item => item.kind === (app.environment || "development"));
+  const environmentSummary = environment
+    ? `${ENVIRONMENT_LABELS[environment.kind] || environment.kind} · ${statusLabel(environment.deployment?.status || environment.status || "not_configured")}${environment.health && environment.health !== "unknown" ? ` · ${statusLabel(environment.health)}` : ""}`
+    : "Not configured";
+  const assistantSummary = ai?.model || ai?.instructions || ai?.assistant_purpose
+    ? `Customized · ${ai.model || "automatic model"} · test ${aiTestStatus}`
+    : `Prepared · ${health.status === "healthy" ? "runtime available" : "runtime unavailable"}`;
   const checks = [
-    ["App details", `${app.app_name} · ${String(app.app_type || "application").replaceAll("_", " ")} · ${app.description || "No description"}`, `/apps/${encodeURIComponent(app.id)}/setup/basics`, "Edit"],
-    ["Data models", modelSummary, `/apps/${encodeURIComponent(app.id)}/setup/data`, "Edit"],
-    ["Relationships", relationshipSummary, `/apps/${encodeURIComponent(app.id)}/setup/relationships`, "Edit"],
-    ["Documents", documentSummary, `/apps/${encodeURIComponent(app.id)}/setup/documents`, "Edit"],
-    ["AI assistant", `${ai?.model ? `Configured · ${ai.model}` : ai?.instructions ? "Settings saved · automatic model" : "Not configured"} · runtime ${health.status || "unknown"} · test ${aiTestStatus}${ai?.tested_at ? ` · ${date(ai.tested_at)}` : ""}`, `/apps/${encodeURIComponent(app.id)}/setup/ai`, "Edit"],
-    ["CODE workspace", code.initialized ? "Private workspace initialized" : "Available · not initialized", `/apps/${encodeURIComponent(app.id)}/setup/code`, "Open"],
-    ["Environment", `${String(app.environment || "development").replaceAll("_", " ")} · stored on app`, `/apps/${encodeURIComponent(app.id)}/setup/environment`, "Review"]
+    ["App Basics", `${app.app_name} · ${String(app.app_type || "application").replaceAll("_", " ")} · ${app.description || "Add a description any time"}`, `/apps/${encodeURIComponent(app.id)}/setup/basics`, "Edit"],
+    ["Information Categories", modelSummary, `/apps/${encodeURIComponent(app.id)}/setup/data`, "Edit"],
+    ["Knowledge", documentSummary, `/apps/${encodeURIComponent(app.id)}/setup/knowledge`, "Edit"],
+    ["AI Assistant", assistantSummary, `/apps/${encodeURIComponent(app.id)}/setup/ai`, "Edit"],
+    ["Code", code.initialized ? "Workspace ready" : "Available · not initialized", `/apps/${encodeURIComponent(app.id)}/setup/code`, "Open"],
+    ["Environment", environmentSummary, `/apps/${encodeURIComponent(app.id)}/setup/environment`, "Review"]
   ];
   const items = checks.map(([label, value, href, action]) => `<div class="cap-review-row"><div><strong>${escapeCapabilityHtml(label)}</strong><span>${escapeCapabilityHtml(value)}</span></div><a class="button button-quiet" href="${href}" data-nav>${action}</a></div>`).join("");
-  const readyCode = code.initialized;
-  return `${title(mode, "review", "review", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Current setup</h2><p>Live counts and saved settings from the app workspace APIs.</p></div><button type="button" class="button button-quiet" data-refresh>Refresh review</button></div><div class="cap-review-list">${items}</div></section><section class="cap-section"><h2>Readiness</h2><div class="cap-readiness"><span class="cap-readiness-mark ${readyCode ? "ready" : "pending"}">${readyCode ? "✓" : "·"}</span><div><strong>${readyCode ? "Workspace available for configuration" : "App configuration is in progress"}</strong><p>FELTUS has not built or deployed this app. Build, deployment, promotion, and rollback are not part of this phase.</p></div></div><div class="cap-readiness"><span class="cap-readiness-mark pending">·</span><div><strong>Runtime environment: ${escapeCapabilityHtml(String(app.environment || "development").replaceAll("_", " "))}</strong><p>This is the saved app environment label. Environment provisioning and secret wiring are not performed by the wizard yet.</p></div></div></section><div class="cap-note">Continuing opens the finished app workspace with the capabilities configured so far. You can return to this review from the workspace sidebar.</div>`;
+  const blueprint = state?.latest_blueprint;
+  const blueprintCurrent = Boolean(blueprint && state?.state_hash === blueprint.state_hash);
+  return `${title(mode, "review", "review", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-view-blueprint="full">&lt;/&gt; View Blueprint</button>${blueprintCurrent ? `<span class="cap-status ready">Blueprint v${blueprint.version} · current</span>` : `<span class="cap-status pending">Blueprint needs saving</span>`}</div><section class="cap-section"><div class="cap-section-head"><div><h2>Review your app</h2><p>Check the details and change anything before creating your app.</p></div><button type="button" class="button button-quiet" data-refresh>Refresh review</button></div><div class="cap-review-list">${items}</div></section><section class="cap-section"><h2>Technical details</h2><p>FELTUS records the canonical app configuration as a versioned Blueprint. Build and deployment services are shown only when configured.</p>${blueprintCurrent ? `<p class="cap-muted">Current state digest: ${escapeCapabilityHtml(blueprint.state_hash)}</p>` : `<button class="button button-quiet" type="button" data-save-blueprint-inline>${blueprint ? "Update Blueprint" : "Save Blueprint"}</button>`}</section>`;
+}
+
+const ENVIRONMENT_LABELS = { development: "Development", preview: "Preview", staging: "Staging", production: "Production" };
+function statusClass(status) {
+  const value = String(status || "unknown").toLowerCase();
+  return ["healthy", "succeeded", "ready", "active", "passed"].includes(value) ? "ready" : ["failed", "unhealthy", "revoked", "error"].includes(value) ? "unavailable" : "pending";
+}
+
+function statusLabel(status) {
+  const value = String(status || "unknown").toLowerCase().replaceAll("_", " ");
+  return ({ not_configured: "Not Configured", active: "Ready", queued: "Configuring", running: "Deploying", healthy: "Healthy", succeeded: "Complete", failed: "Failed", unhealthy: "Unhealthy", unknown: "Unknown" })[value.replaceAll(" ", "_")] || value.replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+async function environmentsMarkup(app, mode) {
+  const payload = await api(`/api/apps/${encodeURIComponent(app.id)}/environments`);
+  const environments = rows(payload, "environments");
+  const cards = environments.map(environment => {
+    const label = ENVIRONMENT_LABELS[environment.kind] || environment.kind;
+    const status = environment.deployment?.status || environment.status;
+    const artifact = environment.available_artifact;
+    const targetForm = environment.can_configure_target ? `<form data-form="environment-target" class="cap-target-form" data-environment="${escapeCapabilityHtml(environment.kind)}"><label class="field"><span>Coolify resource reference</span><input class="input" name="resource_reference" required maxlength="80" pattern="[A-Za-z0-9-]{3,80}" placeholder="Resource ID"></label><div class="field-error" data-form-error role="alert"></div><button class="button button-quiet" type="submit">Save target</button></form>` : `<p class="cap-muted">Target setup is disabled because the deployment provider or this environment is not configured.</p>`;
+    const targetReady = environment.provider === "coolify" && Boolean(environment.resource_reference);
+    const deployReady = environment.can_deploy && targetReady && artifact;
+    const deployReason = !artifact ? "A verified artifact is required" : !targetReady ? "Configure this environment target first" : "The deployment provider is not enabled for this environment";
+    const deploy = deployReady ? `<button class="button button-primary" type="button" data-deploy-artifact="${escapeCapabilityHtml(artifact.id)}" data-environment="${escapeCapabilityHtml(environment.kind)}">Deploy to ${label}</button>` : `<button class="button button-primary" type="button" disabled title="${escapeCapabilityHtml(deployReason)}">Deploy unavailable</button>`;
+    return `<article class="cap-item env-card"><div class="cap-item-head"><div><strong>${label}</strong><small>${({ development: "Your workspace for building.", preview: "A temporary version for review.", staging: "A stable environment for testing.", production: "Your customer-facing application." })[environment.kind]}</small></div><span class="cap-status ${statusClass(environment.health === "unknown" ? status : environment.health)}">${escapeCapabilityHtml(environment.health === "unknown" ? statusLabel(status) : statusLabel(environment.health))}</span></div><div class="detail-grid env-detail-grid"><div class="detail-tile"><span>Current version</span><strong>${environment.current_blueprint ? `Blueprint v${environment.current_blueprint}` : "None"}</strong></div><div class="detail-tile"><span>Health</span><strong>${escapeCapabilityHtml(statusLabel(environment.health || "Unknown"))}</strong></div><div class="detail-tile"><span>Deployment</span><strong>${escapeCapabilityHtml(environment.deployment ? statusLabel(environment.deployment.status) : "None")}</strong></div><div class="detail-tile"><span>Artifact</span><strong>${artifact ? escapeCapabilityHtml(artifact.digest.slice(0, 19) + "…") : "None verified"}</strong></div></div><details class="cap-advanced"><summary>${environment.status === "active" ? "Configure environment" : "Environment details"}</summary><p class="cap-muted">Provider: ${escapeCapabilityHtml(environment.provider || "Not configured")} · Resource: ${escapeCapabilityHtml(environment.resource_reference || "Not configured")} · No secret values are shown.</p>${targetForm}</details><div class="cap-item-actions">${deploy}<button class="button button-quiet" type="button" data-view-blueprint="full">View Blueprint</button></div></article>`;
+  }).join("");
+  return `${title(mode, "environment", "environment", app.app_name)}<p class="page-lede">FELTUS uses separate environments so you can build, test, and launch safely.</p><div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh environments</button></div><section class="cap-section"><div class="cap-environment-grid">${cards || empty("No environments configured", "Environment records will appear after the application state migration is applied.")}</div></section>`;
+}
+
+async function buildsMarkup(app, mode) {
+  const payload = await api(`/api/apps/${encodeURIComponent(app.id)}/builds`);
+  const builds = rows(payload, "builds");
+  const state = await api(`/api/apps/${encodeURIComponent(app.id)}/state`).catch(() => null);
+  const codeState = state?.state?.desired_state?.code || {};
+  const repositoryId = codeState.repository_id || "";
+  const enabled = state?.features?.build_runner === true && Boolean(repositoryId);
+  const items = builds.length ? `<div class="cap-list">${builds.map((build, index) => `<article class="cap-item"><div class="cap-item-head"><div><strong>Build #${builds.length - index}</strong><small>${escapeCapabilityHtml(build.source_branch)} · ${escapeCapabilityHtml(build.commit_sha)} · ${date(build.created_at)}</small></div><span class="cap-status ${statusClass(build.status)}">${escapeCapabilityHtml(build.status)}</span></div><details class="cap-advanced"><summary>Build details</summary><p>Blueprint: ${escapeCapabilityHtml(build.blueprint_id || "Not recorded")}<br>Started: ${date(build.started_at)}<br>Completed: ${date(build.completed_at)}<br>Failure: ${escapeCapabilityHtml(build.failure_code || "None")}</p>${["queued", "claimed", "running", "building", "verifying"].includes(build.status) ? `<button class="button button-danger" type="button" data-cancel-build="${escapeCapabilityHtml(build.id)}">Cancel Build</button>` : ""}<p class="cap-muted">Detailed build steps and logs will appear when the runner is configured.</p></details></article>`).join("")}</div>` : empty("No builds yet", "Your first build will appear after a verified source and isolated runner are configured.");
+  const buildReason = state?.features?.build_runner !== true
+    ? "Builds are unavailable until an isolated build worker is online and the immutable artifact registry is configured."
+    : "Connect a source repository in the Repository workspace before requesting builds.";
+  return `${title(mode, "builds", "builds", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh builds</button></div><section class="cap-section"><div class="cap-section-head"><div><h2>Build history</h2><p>Each build records its source commit and immutable Blueprint reference.</p></div></div>${items}</section>${enabled ? `<section class="cap-section"><h2>Start a build</h2><p>Choose a branch and full commit SHA for ${escapeCapabilityHtml(codeState.repository || "the connected repository")}.</p><form data-form="build" class="cap-form"><input type="hidden" name="repository_id" value="${escapeCapabilityHtml(repositoryId)}"><label class="field"><span>Branch</span><input class="input" name="branch" required value="${escapeCapabilityHtml(codeState.branch || "main")}"></label><label class="field"><span>Commit SHA</span><input class="input" name="commit_sha" required minlength="40" maxlength="64" pattern="[A-Fa-f0-9]{40,64}"></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Queue Build</button></form></section>` : `<p class="cap-note">${escapeCapabilityHtml(buildReason)}</p>`}`;
+}
+
+async function deploymentsMarkup(app, mode) {
+  const [payload, environmentPayload] = await Promise.all([
+    api(`/api/apps/${encodeURIComponent(app.id)}/deployments`),
+    api(`/api/apps/${encodeURIComponent(app.id)}/environments`).catch(() => ({ environments: [] }))
+  ]);
+  const deployments = rows(payload, "deployments");
+  const environments = rows(environmentPayload, "environments");
+  const production = environments.find(item => item.kind === "production");
+  const latestByEnvironment = new Map();
+  for (const deployment of deployments) {
+    if (!latestByEnvironment.has(deployment.environment)) latestByEnvironment.set(deployment.environment, deployment);
+  }
+  const canPromote = Boolean(production?.can_deploy && production.provider === "coolify" && production.resource_reference);
+  const items = deployments.length ? `<div class="cap-list">${deployments.map((deployment, index) => {
+    const latest = latestByEnvironment.get(deployment.environment)?.id === deployment.id;
+    const previousHealthy = latest ? deployments.find(candidate => candidate.environment === deployment.environment && candidate.id !== deployment.id && String(candidate.status).toUpperCase() === "HEALTHY") : null;
+    const stagingHealthy = deployment.environment === "staging" && String(deployment.status).toUpperCase() === "HEALTHY";
+    const promotionAction = stagingHealthy && canPromote
+      ? `<button class="button button-primary" type="button" data-promote-deployment="${escapeCapabilityHtml(deployment.id)}">Promote same artifact to Production</button>`
+      : stagingHealthy && !canPromote
+        ? `<span class="cap-muted">Production promotion is unavailable until its provider and target are configured.</span>`
+        : "";
+    const environment = environments.find(item => item.kind === deployment.environment);
+    const rollbackReady = Boolean(environment?.can_deploy && environment.provider === "coolify" && environment.resource_reference);
+    const rollbackAction = latest && previousHealthy && rollbackReady
+      ? `<button class="button button-quiet" type="button" data-rollback-current="${escapeCapabilityHtml(deployment.id)}" data-rollback-target="${escapeCapabilityHtml(previousHealthy.id)}">Roll back to prior healthy version</button>`
+      : latest && previousHealthy ? `<span class="cap-muted">${deployment.environment === "production" ? "Production rollback is disabled until its provider and target are enabled." : "Rollback is unavailable until this environment’s provider and target are enabled."}</span>` : "";
+    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(ENVIRONMENT_LABELS[deployment.environment] || deployment.environment)} · Deployment ${deployments.length - index}${latest ? " · Latest" : ""}</strong><small>${escapeCapabilityHtml(deployment.commit_sha || "No source SHA")} · ${date(deployment.created_at)}</small></div><span class="cap-status ${statusClass(deployment.status)}">${escapeCapabilityHtml(String(deployment.status).replaceAll("_", " "))}</span></div><div class="cap-item-actions">${promotionAction}${rollbackAction}</div><details class="cap-advanced"><summary>Deployment details</summary><p>Blueprint: ${escapeCapabilityHtml(deployment.blueprint_id || "Not recorded")}<br>Artifact digest: ${escapeCapabilityHtml(deployment.artifact_digest || "Not recorded")}<br>Provider: ${escapeCapabilityHtml(deployment.provider || "Unknown")}<br>Provider deployment: ${escapeCapabilityHtml(deployment.provider_reference || "Not assigned")}<br>Rollback reason: ${escapeCapabilityHtml(deployment.rollback_reason || "None")}</p></details></article>`;
+  }).join("")}</div>` : empty("No deployments yet", "Deploy a verified artifact when a target environment is configured.");
+  return `${title(mode, "deployments", "deployments", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh deployments</button></div><section class="cap-section"><h2>Deployment history</h2><p>Every deployment keeps its Blueprint, commit, and immutable artifact reference. Production promotion reuses the verified Staging artifact.</p>${items}</section>`;
+}
+
+async function githubMarkup(app) {
+  const status = await api("/api/apps/" + encodeURIComponent(app.id) + "/github")
+    .catch(error => ({ configured: false, configuration_reason: error.message, repositories: [] }));
+  const githubResult = new URLSearchParams(globalThis.location?.search || "").get("github");
+  const callbackNotice = githubResult === "connection_failed"
+    ? '<p class="error-banner" role="alert">GitHub could not finish connecting. Try again; your app changes were saved.</p>'
+    : githubResult === "authorization_failed"
+      ? '<p class="error-banner" role="alert">GitHub authorization could not be verified. Start a new connection from this page.</p>'
+      : '';
+  const repository = status.repositories?.[0] || null;
+  const defaultBranch = repository?.branches?.find(branch => branch.branch_name === repository.default_branch) ||
+    repository?.branches?.find(branch => branch.is_default) || null;
+  let sourceCard;
+  if (repository) {
+    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>Repository connected</strong><p>' +
+      escapeCapabilityHtml(repository.name) + ' · ' + escapeCapabilityHtml(repository.default_branch || "Default branch unavailable") +
+      '</p></div></div><div class="detail-grid"><div class="detail-tile"><span>Latest branch commit</span><strong>' +
+      escapeCapabilityHtml(defaultBranch?.latest_commit_sha || "Not received") +
+      '</strong></div><div class="detail-tile"><span>Webhook</span><strong>' +
+      (repository.webhook_status === "active" ? "Connected" : "Not configured") +
+      '</strong></div></div><div class="cap-item-actions"><button class="button button-quiet" type="button" data-github-load-repositories>Change Repository</button>' +
+      (repository.webhook_status !== "active" && status.webhook_setup_available
+        ? '<button class="button button-quiet" type="button" data-github-setup-webhook>Set Up Webhook</button>'
+        : '') +
+      '</div>' +
+      (repository.webhook_status !== "active" && !status.webhook_setup_available
+        ? '<p class="cap-note">Commit updates need a public HTTPS FELTUS URL. Manual repository actions remain available.</p>'
+        : '');
+  } else if (!status.configured) {
+    sourceCard = '<p class="cap-note">' + escapeCapabilityHtml(status.configuration_reason || "GitHub connection is not configured for this workspace.") +
+      '</p><button class="button button-primary" type="button" disabled title="' +
+      escapeCapabilityHtml(status.configuration_reason || "GitHub connection is not configured.") + '">Connect GitHub</button>';
+  } else if (!status.connected) {
+    sourceCard = '<p>Connect a GitHub account to choose a repository for this app. FELTUS keeps the access credential on the server.</p><a class="button button-primary" href="/api/apps/' +
+      encodeURIComponent(app.id) + '/github/connect">Connect GitHub</a>';
+  } else {
+    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>GitHub connected</strong><p>Choose the repository that contains this app.</p></div></div><button class="button button-primary" type="button" data-github-load-repositories>Choose a Repository</button>';
+  }
+  return '<p class="eyebrow">Build · Repository</p><h1 class="page-title">Connect your app source</h1><p class="page-lede">Choose the code FELTUS should build. Commit updates are recorded for this app; they do not trigger deployment automatically.</p>' +
+    callbackNotice + '<section class="cap-section"><h2>App source</h2>' + sourceCard + '<div class="cap-list" data-github-repository-list hidden></div></section>';
+}
+
+async function eventsMarkup(app, mode) {
+  const payload = await api(`/api/apps/${encodeURIComponent(app.id)}/events`);
+  const events = rows(payload, "events");
+  const items = events.length ? `<div class="activity-list">${events.map(event => `<details class="activity-item cap-event"><summary><strong>${escapeCapabilityHtml(event.summary)}</strong><small>${escapeCapabilityHtml(event.category)} · ${date(event.created_at)}</small></summary><div class="cap-event-detail"><p>${escapeCapabilityHtml(event.actor_kind)} · ${escapeCapabilityHtml(event.severity)}</p><p>${escapeCapabilityHtml(event.event_key)}</p><details class="cap-advanced"><summary>Technical trace</summary><p>Event ${escapeCapabilityHtml(event.id)}<br>Request ${escapeCapabilityHtml(event.request_id || "Not recorded")}<br>Blueprint ${escapeCapabilityHtml(event.blueprint_id || "Not recorded")}<br>Commit ${escapeCapabilityHtml(event.commit_sha || "Not recorded")}<br>Build ${escapeCapabilityHtml(event.build_id || "Not recorded")}<br>Artifact ${escapeCapabilityHtml(event.artifact_id || "Not recorded")}<br>Deployment ${escapeCapabilityHtml(event.deployment_id || "Not recorded")}</p><pre>${escapeCapabilityHtml(JSON.stringify(event.metadata || {}, null, 2))}</pre></details></div></details>`).join("")}</div>` : empty("No structured activity yet", "Blueprint, build, and deployment events will be recorded here as those actions occur.");
+  return `${title(mode, "activity", "activity", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh activity</button></div><section class="cap-section"><h2>Application activity</h2><p>Open an event to see what happened. Technical lineage is available on demand.</p>${items}</section>`;
 }
 
 async function capabilityMarkup(app, page, mode) {
   if (page === "data") return dataMarkup(app, mode);
   if (page === "relationships") return relationshipsMarkup(app, mode);
-  if (page === "documents") return documentsMarkup(app, mode);
+  if (page === "knowledge" || page === "documents") return documentsMarkup(app, mode);
   if (page === "ai") return aiMarkup(app, mode);
   if (page === "logs") return logsMarkup(app, mode);
   if (page === "infrastructure") return infrastructureMarkup(app, mode);
+  if (page === "builds") return buildsMarkup(app, mode);
+  if (page === "deployments") return deploymentsMarkup(app, mode);
+  if (page === "environments" || page === "environment") return environmentsMarkup(app, mode);
+  if (page === "activity") return eventsMarkup(app, mode);
+  if (page === "source") return githubMarkup(app, mode);
   if (page === "review") return reviewMarkup(app, mode);
-  if (page === "environment") return `${title(mode, "environment", "environment", app.app_name)}<section class="cap-section"><h2>Current environment</h2><p>This app is currently labeled <strong>${escapeCapabilityHtml(String(app.environment || "development").replaceAll("_", " "))}</strong>. That value comes from the saved application record.</p><div class="cap-note">Environment-specific secrets, databases, runtime provisioning, and deployment targets are not configurable from the current API.</div></section>`;
-  if (page === "code") return `${title(mode, "code", "code", app.app_name)}<p class="page-lede">Open the existing private FELTUS CODE workspace for this app.</p><div class="cap-code-frame"><iframe title="FELTUS CODE project workspace" src="/api/code/ui?app_id=${encodeURIComponent(app.id)}" loading="lazy" referrerpolicy="no-referrer"></iframe></div><p class="cap-note">CODE provides the current project files and allowlisted assistant tools. GitHub connection, remote push, build, and deployment remain unavailable in this phase.</p>`;
+  if (page === "code") {
+    if (mode === "setup") {
+      const [workspace, state] = await Promise.all([
+        api(`/api/code/workspace?app_id=${encodeURIComponent(app.id)}`).catch(error => ({ initialized: false, error: error.message })),
+        api(`/api/apps/${encodeURIComponent(app.id)}/state`).catch(() => null)
+      ]);
+      const initialized = workspace.initialized === true;
+      const sourceConnected = state?.state?.desired_state?.code?.status === "connected";
+      return `${title(mode, "code", "code", app.app_name)}<section class="cap-section"><div class="cap-readiness"><span class="cap-readiness-mark ${initialized ? "ready" : "pending"}">${initialized ? "✓" : "·"}</span><div><strong>${initialized ? "Your app workspace is ready" : "Your workspace is available"}</strong><p>${initialized ? "FELTUS CODE is ready for you to open and work in." : "The code workspace has not been initialized for this app yet."}</p></div></div>${workspace.error ? `<p class="cap-note">Workspace status could not be checked: ${escapeCapabilityHtml(workspace.error)}</p>` : ""}<div class="cap-item-actions"><a class="button button-primary" href="/apps/${encodeURIComponent(app.id)}/code" data-nav>Open Code Workspace</a><a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/source" data-nav>${sourceConnected ? "Manage Repository" : "Connect Repository"}</a></div></section><details class="cap-advanced"><summary>Technical details</summary><p>Workspace: ${initialized ? "initialized" : "not initialized"}<br>Remote repository: ${sourceConnected ? "connected" : "not connected"}<br>Build runner: ${state?.features?.build_runner ? "available" : "not configured"}</p></details>`;
+    }
+    return `${title(mode, "code", "code", app.app_name)}<p class="page-lede">Open the current FELTUS CODE workspace for this app.</p><div class="cap-code-frame"><iframe title="FELTUS CODE project workspace" src="/api/code/ui?app_id=${encodeURIComponent(app.id)}" loading="lazy" referrerpolicy="no-referrer"></iframe></div><p class="cap-note">This workspace uses the existing FELTUS CODE tools. Repository connection, builds, and deployment status are available from their own workspace pages.</p>`;
+  }
   return `${title(mode, page, page, app.app_name)}${empty("This capability is not connected", "No action is available on this screen yet.")}`;
 }
 
@@ -360,13 +566,7 @@ export function collectCapabilityDraft(root, app, step) {
     const form = $('[data-form="ai"]', root);
     if (!form) return null;
     return {
-      ai: aiConfigForSave({
-        model: form.elements.model.value,
-        instructions: form.elements.instructions.value.trim(),
-        temperature: Number(form.elements.temperature.value),
-        max_tokens: Math.round(Number(form.elements.max_tokens.value)),
-        context_budget: Math.round(Number(form.elements.context_budget.value))
-      }, app.setup_data?.ai)
+      ai: aiConfigForSave(readAISettings(form), app.setup_data?.ai)
     };
   }
   return null;
@@ -375,6 +575,100 @@ export function collectCapabilityDraft(root, app, step) {
 function setFormError(form, message) {
   const node = $(`[data-form-error]`, form);
   if (node) node.textContent = message || "";
+}
+
+async function openBlueprintDrawer(root, app, section = "full") {
+  root.querySelector("[data-blueprint-drawer]")?.remove();
+  const drawer = document.createElement("div");
+  drawer.className = "feltus-drawer-backdrop";
+  drawer.dataset.blueprintDrawer = "true";
+  drawer.innerHTML = `<aside class="feltus-drawer" role="dialog" aria-modal="true" aria-label="Application Blueprint"><div class="drawer-head"><div><p class="eyebrow">Technical details</p><h2>Application Blueprint</h2></div><button class="button icon-button" type="button" data-close-drawer aria-label="Close Blueprint">×</button></div><div class="drawer-body"><p class="cap-muted" data-blueprint-state>Loading the saved application state…</p><div class="cap-toolbar"><button class="button button-quiet ${section === "data" ? "active" : ""}" type="button" data-blueprint-view="data">Data</button><button class="button button-quiet ${section === "full" ? "active" : ""}" type="button" data-blueprint-view="full">Full Blueprint</button><button class="button button-quiet" type="button" data-copy-blueprint disabled>Copy</button><a class="button button-quiet" data-export-blueprint hidden>Export YAML</a></div><pre class="cap-blueprint-code" data-blueprint-code></pre><button class="button button-primary" type="button" data-save-blueprint hidden>Save Blueprint</button></div></aside>`;
+  root.append(drawer);
+  let stateResult;
+  let blueprints = [];
+  let activeBlueprint = null;
+  let yaml = "";
+  let view = section === "data" ? "data" : "full";
+  const status = $('[data-blueprint-state]', drawer);
+  const code = $('[data-blueprint-code]', drawer);
+  const copyButton = $('[data-copy-blueprint]', drawer);
+  const saveButton = $('[data-save-blueprint]', drawer);
+  const exportLink = $('[data-export-blueprint]', drawer);
+  const refreshBlueprint = async () => {
+    status.textContent = "Loading the saved application state…";
+    stateResult = await api(`/api/apps/${encodeURIComponent(app.id)}/state`);
+    const history = await api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`);
+    blueprints = rows(history, "blueprints");
+    activeBlueprint = blueprints[0] || null;
+    const currentMatches = Boolean(activeBlueprint && activeBlueprint.state_hash === stateResult.state_hash);
+    if (currentMatches) {
+      const response = await fetch(`/api/apps/${encodeURIComponent(app.id)}/blueprints/${encodeURIComponent(activeBlueprint.id)}/export`, { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error("The saved Blueprint could not be exported.");
+      yaml = await response.text();
+      status.textContent = `Version ${activeBlueprint.version} · SHA-256 ${activeBlueprint.state_hash}`;
+      exportLink.href = `/api/apps/${encodeURIComponent(app.id)}/blueprints/${encodeURIComponent(activeBlueprint.id)}/export`;
+      exportLink.hidden = false;
+      saveButton.hidden = true;
+    } else {
+      yaml = stateResult.yaml_preview || "The current Blueprint YAML is unavailable.";
+      status.textContent = activeBlueprint
+        ? `Current configuration differs from saved Blueprint v${activeBlueprint.version}.`
+        : "This configuration is not saved as a Blueprint yet.";
+      saveButton.hidden = false;
+      exportLink.hidden = true;
+    }
+    code.textContent = view === "data"
+      ? JSON.stringify(stateResult.state?.desired_state?.data || {}, null, 2)
+      : yaml;
+    copyButton.disabled = false;
+  };
+  try {
+    await refreshBlueprint();
+  } catch (error) {
+    status.textContent = error.message;
+    code.textContent = "";
+  }
+  saveButton.addEventListener("click", async () => {
+    saveButton.disabled = true;
+    saveButton.textContent = "Saving…";
+    try {
+      await api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+      await refreshBlueprint();
+      showLocalNotice(root, "Blueprint saved.");
+    } catch (error) {
+      status.textContent = error.message;
+      saveButton.disabled = false;
+      saveButton.textContent = "Save Blueprint";
+    }
+  });
+  copyButton.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(code.textContent);
+      copyButton.textContent = "Copied";
+      setTimeout(() => { if (copyButton.isConnected) copyButton.textContent = "Copy"; }, 1800);
+    } catch {
+      status.textContent = "Clipboard access is unavailable in this browser.";
+    }
+  });
+  $$('[data-blueprint-view]', drawer).forEach(button => button.addEventListener("click", () => {
+    view = button.dataset.blueprintView;
+    $$('[data-blueprint-view]', drawer).forEach(item => item.classList.toggle("active", item === button));
+    code.textContent = view === "data" ? JSON.stringify(stateResult?.state?.desired_state?.data || {}, null, 2) : yaml;
+  }));
+  drawer.addEventListener("click", event => {
+    if (event.target === drawer || event.target.closest("[data-close-drawer]")) drawer.remove();
+  });
+  drawer.querySelector("[data-close-drawer]")?.focus();
+}
+
+function showLocalNotice(root, message) {
+  const notice = document.createElement("p");
+  notice.className = "cap-note";
+  notice.setAttribute("role", "status");
+  notice.textContent = message;
+  const drawer = root.querySelector("[data-blueprint-drawer] .drawer-body");
+  drawer?.prepend(notice);
+  setTimeout(() => notice.remove(), 3000);
 }
 
 async function clearWizardDraft(app, key) {
@@ -410,10 +704,181 @@ async function bindCapabilityActions(root, app, mode, onRefresh) {
       }
       delete root.dataset.capabilityDirty;
     }
+    const loadGithubRepositories = event.target.closest("[data-github-load-repositories]");
+    if (loadGithubRepositories) {
+      const list = $('[data-github-repository-list]', root);
+      if (!list) return;
+      loadGithubRepositories.disabled = true;
+      loadGithubRepositories.textContent = "Loading repositories…";
+      try {
+        const payload = await api("/api/apps/" + encodeURIComponent(app.id) + "/github/repositories");
+        const repositories = rows(payload, "repositories");
+        list.hidden = false;
+        list.innerHTML = repositories.length
+          ? repositories.map(repository => '<article class="cap-item"><div class="cap-item-head"><div><strong>' +
+              escapeCapabilityHtml(repository.name) + '</strong><small>' +
+              (repository.private ? "Private repository" : "Public repository") + ' · Default branch ' +
+              escapeCapabilityHtml(repository.default_branch || "unknown") +
+              '</small></div><button class="button button-primary" type="button" data-github-select="' +
+              escapeCapabilityHtml(repository.provider_repository_id) + '">Use this repository</button></div></article>').join("")
+          : '<div class="empty-state"><strong>No available repositories</strong>The connected GitHub account has no repositories FELTUS can use.</div>';
+      } catch (error) {
+        list.hidden = false;
+        list.innerHTML = '<p class="error-banner" role="alert">' + escapeCapabilityHtml(error.message) + '</p>';
+      } finally {
+        if (loadGithubRepositories.isConnected) {
+          loadGithubRepositories.disabled = false;
+          loadGithubRepositories.textContent = "Change Repository";
+        }
+      }
+      return;
+    }
+    const selectGithubRepository = event.target.closest("[data-github-select]");
+    if (selectGithubRepository) {
+      selectGithubRepository.disabled = true;
+      selectGithubRepository.textContent = "Connecting…";
+      try {
+        const result = await api("/api/apps/" + encodeURIComponent(app.id) + "/github/repository", {
+          method: "POST",
+          body: JSON.stringify({ provider_repository_id: selectGithubRepository.dataset.githubSelect })
+        });
+        await onRefresh();
+        if (result.webhook?.message) alert(result.webhook.message);
+      } catch (error) {
+        selectGithubRepository.disabled = false;
+        selectGithubRepository.textContent = "Use this repository";
+        alert(error.message);
+      }
+      return;
+    }
+    const setupGithubWebhook = event.target.closest("[data-github-setup-webhook]");
+    if (setupGithubWebhook) {
+      setupGithubWebhook.disabled = true;
+      setupGithubWebhook.textContent = "Setting up…";
+      try {
+        const result = await api("/api/apps/" + encodeURIComponent(app.id) + "/github/webhook", {
+          method: "POST",
+          body: JSON.stringify({})
+        });
+        await onRefresh();
+        if (result.webhook?.message) alert(result.webhook.message);
+      } catch (error) {
+        setupGithubWebhook.disabled = false;
+        setupGithubWebhook.textContent = "Set Up Webhook";
+        alert(error.message);
+      }
+      return;
+    }
     const addColumn = event.target.closest("[data-add-column]");
     if (addColumn) {
       $('[data-column-list]', root).insertAdjacentHTML("beforeend", columnRow());
       root.dataset.capabilityDirty = "true";
+      return;
+    }
+    const suggestionButton = event.target.closest("[data-suggest-category]");
+    if (suggestionButton) {
+      const suggestion = DATA_CATEGORY_SUGGESTIONS[suggestionButton.dataset.suggestCategory];
+      const form = $('[data-form="model"]', root);
+      const disclosure = $("[data-manual-data]", root);
+      if (!suggestion || !form || !disclosure) return;
+      disclosure.open = true;
+      form.elements.table_name.value = suggestionButton.dataset.suggestCategory;
+      $("[data-column-list]", form).innerHTML = suggestion.fields
+        .map(([name, type, required]) => columnRow(name, type, !required)).join("");
+      form.elements.enable_rls.checked = true;
+      root.dataset.capabilityDirty = "true";
+      form.elements.table_name.focus({ preventScroll: true });
+      form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    const blueprintButton = event.target.closest("[data-view-blueprint]");
+    if (blueprintButton) {
+      blueprintButton.disabled = true;
+      try { await openBlueprintDrawer(root, app, blueprintButton.dataset.viewBlueprint || "full"); }
+      finally { if (blueprintButton.isConnected) blueprintButton.disabled = false; }
+      return;
+    }
+    const saveBlueprint = event.target.closest("[data-save-blueprint-inline]");
+    if (saveBlueprint) {
+      saveBlueprint.disabled = true;
+      saveBlueprint.textContent = "Saving…";
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`, { method: "POST", body: JSON.stringify({ confirm: true }) });
+        await onRefresh();
+      } catch (error) {
+        saveBlueprint.disabled = false;
+        saveBlueprint.textContent = "Save Blueprint";
+        alert(error.message);
+      }
+      return;
+    }
+    const deployArtifact = event.target.closest("[data-deploy-artifact]");
+    if (deployArtifact) {
+      const environment = deployArtifact.dataset.environment;
+      if (!window.confirm(`Queue deployment to ${ENVIRONMENT_LABELS[environment] || environment}? This will use the same verified artifact and record its outcome.`)) return;
+      deployArtifact.disabled = true;
+      deployArtifact.textContent = "Queueing…";
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/deployments`, {
+          method: "POST",
+          body: JSON.stringify({ environment, artifact_id: deployArtifact.dataset.deployArtifact })
+        });
+        await onRefresh();
+      } catch (error) { deployArtifact.disabled = false; deployArtifact.textContent = `Deploy to ${ENVIRONMENT_LABELS[environment] || environment}`; alert(error.message); }
+      return;
+    }
+    const promoteDeployment = event.target.closest("[data-promote-deployment]");
+    if (promoteDeployment) {
+      const deploymentId = promoteDeployment.dataset.promoteDeployment;
+      if (!window.confirm("Promote this verified Staging deployment to Production using the same immutable artifact? No new build will be created.")) return;
+      promoteDeployment.disabled = true;
+      promoteDeployment.textContent = "Queueing promotion…";
+      promoteDeployment.dataset.idempotencyKey ||= crypto.randomUUID();
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/deployments/promote`, {
+          method: "POST",
+          body: JSON.stringify({ staging_deployment_id: deploymentId, idempotency_key: promoteDeployment.dataset.idempotencyKey })
+        });
+        await onRefresh();
+      } catch (error) {
+        promoteDeployment.disabled = false;
+        promoteDeployment.textContent = "Promote same artifact to Production";
+        alert(error.message);
+      }
+      return;
+    }
+    const rollbackDeployment = event.target.closest("[data-rollback-current]");
+    if (rollbackDeployment) {
+      const reason = window.prompt("Why are you rolling back to the prior healthy deployment?");
+      if (!reason?.trim()) return;
+      if (!window.confirm("Queue a rollback using the previously verified artifact? The current deployment history will be preserved.")) return;
+      rollbackDeployment.disabled = true;
+      rollbackDeployment.textContent = "Queueing rollback…";
+      rollbackDeployment.dataset.idempotencyKey ||= crypto.randomUUID();
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/deployments/${encodeURIComponent(rollbackDeployment.dataset.rollbackCurrent)}/rollback`, {
+          method: "POST",
+          body: JSON.stringify({
+            known_good_deployment_id: rollbackDeployment.dataset.rollbackTarget,
+            reason: reason.trim(),
+            idempotency_key: rollbackDeployment.dataset.idempotencyKey
+          })
+        });
+        await onRefresh();
+      } catch (error) {
+        rollbackDeployment.disabled = false;
+        rollbackDeployment.textContent = "Roll back to prior healthy version";
+        alert(error.message);
+      }
+      return;
+    }
+    const cancelBuild = event.target.closest("[data-cancel-build]");
+    if (cancelBuild) {
+      cancelBuild.disabled = true;
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/builds/${encodeURIComponent(cancelBuild.dataset.cancelBuild)}/cancel`, { method: "POST", body: JSON.stringify({}) });
+        await onRefresh();
+      } catch (error) { cancelBuild.disabled = false; alert(error.message); }
       return;
     }
     const removeColumn = event.target.closest("[data-remove-column]");
@@ -499,16 +964,28 @@ async function bindCapabilityActions(root, app, mode, onRefresh) {
         await onRefresh();
       }
       if (kind === "ai") {
-        const settings = {
-          model: form.elements.model.value,
-          instructions: form.elements.instructions.value.trim(),
-          temperature: Number(form.elements.temperature.value),
-          max_tokens: Math.round(Number(form.elements.max_tokens.value)),
-          context_budget: Math.round(Number(form.elements.context_budget.value))
-        };
+        const settings = readAISettings(form);
         const ai = aiConfigForSave(settings, app.setup_data?.ai);
         await api(`/api/apps/${encodeURIComponent(app.id)}/setup`, { method: "PATCH", body: JSON.stringify({ setup_data: { ai } }) });
         app.setup_data = { ...(app.setup_data || {}), ai };
+        await onRefresh();
+      }
+      if (kind === "environment-target") {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/environments/target`, {
+          method: "POST",
+          body: JSON.stringify({ environment: form.dataset.environment, resource_reference: form.elements.resource_reference.value.trim() })
+        });
+        await onRefresh();
+      }
+      if (kind === "build") {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/builds`, {
+          method: "POST",
+          body: JSON.stringify({
+            repository_id: form.elements.repository_id.value.trim(),
+            branch: form.elements.branch.value.trim(),
+            commit_sha: form.elements.commit_sha.value.trim()
+          })
+        });
         await onRefresh();
       }
       if (kind === "ai-test") {

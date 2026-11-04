@@ -592,7 +592,9 @@ check("project-scoped AI conversation storage and authorization", () => {
   assert.match(html, /"\/api\/ai\/messages\?app_id="/);
   assert.match(html, /conversation_id:\s*activeAIConversationId/);
   assert.match(server, /loadAuthorizedAIHistory\(/);
-  assert.match(server, /historyLimit:\s*policy\.sendHistory\s*\?/);
+  assert.match(server, /historyLimit:\s*policy\.sendHistory\s*&&\s*contextPermissions\.conversation_history === true\s*\?/);
+  assert.match(server, /contextPermissions\.documents === true \|\| allowedDocumentIds\.length > 0/);
+  assert.match(server, /contextPermissions\.app_data === true \|\| selectedModelIds\.has\(item\.id\)/);
   assert.doesNotMatch(server, /body\.history/);
   assert.match(server, /&app_id=eq\." \+ encodeURIComponent\(appId\)/);
   assert.match(server, /&owner_id=eq\." \+ encodeURIComponent\(ownerId/);
