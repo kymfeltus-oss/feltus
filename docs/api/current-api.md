@@ -23,6 +23,9 @@ Requests with an unapproved `Origin` are rejected. Mutating operations use JSON 
 | `GET` | `/auth/v1/verify` | Public | Verify Auth email-action links. Recovery redirects are forwarded only when their destination origin is configured in the allowed-origin list. |
 | `PUT` | `/auth/v1/user` | Recovery access token | Set the new password from a recovery flow. The application reads the access token from the URL fragment, removes the fragment from browser history, and keeps the token in memory while the password is changed. |
 | `GET`, `POST` | `/api/apps` | Owner | List owned applications or create an application. |
+| `GET` | `/api/apps/:id` | Owner | Read one owned application and its persisted setup state. |
+| `PATCH` | `/api/apps/:id/setup` | Owner | Save app basics, setup choices, completed steps, and the resume step. Secret-like setup keys are rejected. |
+| `POST` | `/api/apps/:id/archive` | Owner | Archive an owned app without deleting its data. |
 | `GET` | `/api/documents` | Owner | List authorized project documents and processing metadata. |
 | `GET` | `/api/document-chunks` | Owner | Read authorized extracted document chunks. |
 | `GET` | `/api/documents/extraction` | Owner | Read extraction status/evidence metadata. |

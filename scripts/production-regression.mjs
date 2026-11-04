@@ -39,7 +39,10 @@ async function liveCheck(name, fn) {
   }
 }
 
-const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const html = [
+  fs.readFileSync(path.join(root, "index.html"), "utf8"),
+  fs.readFileSync(path.join(root, "legacy-console.html"), "utf8")
+].join("\n");
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const compose = fs.readFileSync(path.join(root, "compose.production.yaml"), "utf8");

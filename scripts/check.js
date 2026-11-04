@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = [
   "src/server.js",
+  "src/lib/feltus-app-wizard.js",
+  "src/app-wizard/app.js",
+  "scripts/app-wizard-tests.mjs",
   "src/index.js",
   "src/ai-ingest.js",
   "src/lib/feltus-ai.js",
@@ -83,11 +86,12 @@ try {
     cursor = closeStart + "</script>".length;
   }
 
-  if (inlineScriptCount === 0) {
-    throw new Error("No inline application scripts were found");
+  const externalWizardShell = /<script\b[^>]*\bsrc=["']\/app-wizard\.js["'][^>]*\btype=["']module["']/i.test(html) || /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']\/app-wizard\.js["']/i.test(html);
+  if (inlineScriptCount === 0 && !externalWizardShell) {
+    throw new Error("No recognized application script was found");
   }
 
-  process.stdout.write(`PASS syntax index.html (${inlineScriptCount} inline scripts)\n`);
+  process.stdout.write(`PASS syntax index.html (${externalWizardShell ? "external wizard module" : `${inlineScriptCount} inline scripts`})\n`);
 } catch (error) {
   failed = true;
   process.stdout.write("FAIL syntax index.html inline scripts\n");

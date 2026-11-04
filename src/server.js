@@ -15,6 +15,7 @@ import { createFeltusCodeHandlers } from "./feltus-code/server/routes.mjs";
 import { createFeltusCodeAIGateway } from "./feltus-code/server/ai-gateway.mjs";
 import { runValidatedAgent } from "./feltus-code/server/agent-workflow.mjs";
 import { assertNoSymlinkTraversal } from "./feltus-code/server/security.mjs";
+import { createAppWizardHandler, isAppShellRoute } from "./lib/feltus-app-wizard.js";
 
 dotenv.config();
 
@@ -2577,23 +2578,11 @@ function boundedNumber(value, fallback, minimum, maximum) {
     : fallback;
 }
 
-async function appRequest(
-  method,
-  body = null
-) {
-  return tableRequest(
-    "feltus_applications",
-    method,
-    {
-      body,
-
-      query:
-        method === "GET"
-          ? "?select=*&order=created_at.desc"
-          : ""
-    }
-  );
-}
+const handleAppWizardApi = createAppWizardHandler({
+  tableRequest,
+  readBody,
+  getUser: () => activeSession()?.user || null
+});
 
 
 async function projectAIConversation(
@@ -4060,14 +4049,35 @@ async function handleHttpRequest(req, res) {
           return res.end(responseBody);
         }
 
-        if (
-          (
-            url.pathname === "/" ||
-            url.pathname ===
-              "/index.html"
-          ) &&
-          req.method === "GET"
-        ) {
+        if (req.method === "GET" && ["/app-wizard.js", "/app-wizard.css", "/app-wizard-lib.js"].includes(url.pathname)) {
+          const assetName = url.pathname === "/app-wizard.js" ? "app.js" : url.pathname === "/app-wizard.css" ? "app.css" : "feltus-app-wizard.js";
+          const assetDirectory = assetName === "feltus-app-wizard.js" ? "lib" : "app-wizard";
+          const assetPath = path.join(projectRoot, "src", assetDirectory, assetName);
+          return fs.readFile(assetPath, (error, content) => {
+            if (error) return send(res, 404, { error: "App workspace asset not found." });
+            res.writeHead(200, {
+              "Content-Type": assetName.endsWith(".js") ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8",
+              "Cache-Control": "no-cache",
+              "X-Content-Type-Options": "nosniff"
+            });
+            res.end(content);
+          });
+        }
+
+        if (req.method === "GET" && url.pathname === "/platform") {
+          const legacyPath = path.join(projectRoot, "legacy-console.html");
+          return fs.readFile(legacyPath, (error, content) => {
+            if (error) return send(res, 404, { error: "Platform console not found." });
+            res.writeHead(200, {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff"
+            });
+            res.end(content);
+          });
+        }
+
+        if (isAppShellRoute(url.pathname) && req.method === "GET") {
           const file =
             path.join(
               projectRoot,
@@ -4318,110 +4328,8 @@ async function handleHttpRequest(req, res) {
           return;
         }
 
-        if (
-          url.pathname ===
-          "/api/apps"
-        ) {
-          if (
-            req.method === "GET"
-          ) {
-            const result =
-              await appRequest(
-                "GET"
-              );
-
-            return send(
-              res,
-              result.status,
-              result.data
-            );
-          }
-
-          if (
-            req.method === "POST"
-          ) {
-            const body =
-              await readBody(req);
-
-            const name =
-              body.app_name;
-
-            const environment =
-              typeof body.environment ===
-                "string" &&
-              body.environment.trim()
-                ? body.environment.trim()
-                : "development";
-
-            if (
-              typeof name !==
-                "string" ||
-              !name.trim() ||
-              name.length > 200
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Invalid application name."
-                }
-              );
-            }
-
-            const allowed =
-              [
-                "development",
-                "staging",
-                "production"
-              ];
-
-            if (
-              !allowed.includes(
-                environment
-              )
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Invalid environment."
-                }
-              );
-            }
-
-            const record = {
-              owner_id:
-                activeSession().user.id,
-
-              app_name:
-                name.trim(),
-
-              environment
-            };
-
-            const result =
-              await appRequest(
-                "POST",
-                record
-              );
-
-            return send(
-              res,
-              result.status,
-              result.data
-            );
-          }
-
-          return send(
-            res,
-            405,
-            {
-              error:
-                "Method not allowed."
-            }
-          );
+        if (await handleAppWizardApi(req, res, url)) {
+          return;
         }
 
 
