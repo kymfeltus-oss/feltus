@@ -46,6 +46,7 @@ const html = [
 const server = fs.readFileSync(path.join(root, "src/server.js"), "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const compose = fs.readFileSync(path.join(root, "compose.production.yaml"), "utf8");
+const stagingCompose = fs.readFileSync(path.join(root, "compose.staging.yaml"), "utf8");
 const productionWorkflow = fs.readFileSync(
   path.join(root, ".github/workflows/production-regression.yml"),
   "utf8"
@@ -292,6 +293,30 @@ check("application builds use a separate mTLS BuildKit worker and immutable veri
   assert.doesNotMatch(buildWorker, /docker\.sock/);
 });
 
+check("Staging mounts BuildKit mTLS credentials as files without changing Production Compose", () => {
+  const productionServices = [...compose.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)];
+  const stagingServices = [...stagingCompose.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)];
+  assert.deepEqual(stagingServices.map(match => match[1]), productionServices.map(match => match[1]));
+  for (let index = 0; index < productionServices.length; index += 1) {
+    const name = productionServices[index][1];
+    if (name === "build-worker") continue;
+    const end = productionServices[index + 1]?.index ?? compose.indexOf("\nvolumes:");
+    const stagingEnd = stagingServices[index + 1]?.index ?? stagingCompose.indexOf("\nvolumes:");
+    assert.equal(stagingCompose.slice(stagingServices[index].index, stagingEnd), compose.slice(productionServices[index].index, end), `${name} remains unchanged in Staging`);
+  }
+  const productionWorker = compose.split(/^  build-worker:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] || "";
+  const stagingWorker = stagingCompose.split(/^  build-worker:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] || "";
+  assert.match(productionWorker, /FELTUS_BUILDKIT_CLIENT_KEY_PEM/);
+  assert.doesNotMatch(stagingWorker, /FELTUS_BUILDKIT_(?:CA|CLIENT_CERT|CLIENT_KEY)_PEM/);
+  assert.match(stagingWorker, /FELTUS_BUILDKIT_CA_FILE: \/run\/secrets\/feltus_buildkit_ca/);
+  assert.match(stagingWorker, /FELTUS_BUILDKIT_CLIENT_CERT_FILE: \/run\/secrets\/feltus_buildkit_client_cert/);
+  assert.match(stagingWorker, /FELTUS_BUILDKIT_CLIENT_KEY_FILE: \/run\/secrets\/feltus_buildkit_client_key/);
+  assert.match(stagingWorker, /secrets:\s*\r?\n\s+- feltus_buildkit_ca/);
+  assert.match(stagingCompose, /file: \/etc\/feltus\/staging\/buildkit\/current\/ca\.pem/);
+  assert.match(stagingCompose, /file: \/etc\/feltus\/staging\/buildkit\/current\/client-cert\.pem/);
+  assert.match(stagingCompose, /file: \/etc\/feltus\/staging\/buildkit\/current\/client-key\.pem/);
+});
+
 check("first-class chat controls remain project-scoped", () => {
   for (const id of [
     "newAIConversationButton", "archiveAIConversationButton", "exportAIConversationButton",
@@ -318,6 +343,7 @@ check("CI runs production checks on every branch update", () => {
   assert.match(productionWorkflow, /npm run test:infrastructure-worker/);
   assert.match(productionWorkflow, /python -m unittest discover/);
   assert.match(productionWorkflow, /docker compose .* build app evidence-extractor/);
+  assert.match(productionWorkflow, /compose\.staging\.yaml config --quiet/);
 });
 
 check("AI capability and model routing", () => {

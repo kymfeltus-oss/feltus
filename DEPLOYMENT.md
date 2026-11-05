@@ -6,6 +6,8 @@ For the code-level architecture and route inventory, see [current state](docs/ar
 
 ## Coolify resource
 
+This runbook targets Production and uses `compose.production.yaml`. The Staging deployment must use `compose.staging.yaml`; its BuildKit credential file mounts and migration procedure are documented in [the isolated build worker guide](docs/build-worker.md#staging-credential-rotation). Do not switch the Production resource to the Staging Compose file.
+
 1. Push the reviewed `main` branch to `https://github.com/kymfeltus-oss/feltus`.
 2. In Coolify, create an application from that Git repository and select the [Docker Compose build pack](https://coolify.io/docs/applications/builds/docker-compose).
 3. Set the Compose file path to `compose.production.yaml` and the app service domain to `https://feltuslabs.com,https://www.feltuslabs.com`, targeting the app service's internal port `8080`. Do not publish ports for the other services.

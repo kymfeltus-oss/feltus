@@ -9,6 +9,11 @@ const MAX_LOG_CHARS = 50_000;
 const COMMIT_SHA = /^[0-9a-f]{40,64}$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENCRYPTION_KEY_VERSION = "aes-256-gcm-hkdf-v1";
+const BUILDKIT_CREDENTIALS = [
+  { file: "FELTUS_BUILDKIT_CA_FILE", pem: "FELTUS_BUILDKIT_CA_PEM", label: "certificate" },
+  { file: "FELTUS_BUILDKIT_CLIENT_CERT_FILE", pem: "FELTUS_BUILDKIT_CLIENT_CERT_PEM", label: "certificate" },
+  { file: "FELTUS_BUILDKIT_CLIENT_KEY_FILE", pem: "FELTUS_BUILDKIT_CLIENT_KEY_PEM", label: "private-key" }
+];
 
 export class BuildWorkerError extends Error {
   constructor(code, message = code, exitCode = null) {
@@ -88,8 +93,7 @@ export function artifactImageReference(registry, appId, buildId) {
 
 const CONFIG_NAMES = [
   "FELTUS_BUILD_WORKER_ENABLED", "FELTUS_GATEWAY_URL", "FELTUS_SERVICE_ROLE_KEY",
-  "FELTUS_SECRET_ENCRYPTION_KEY", "FELTUS_BUILDKIT_ADDR", "FELTUS_BUILDKIT_CA_PEM",
-  "FELTUS_BUILDKIT_CLIENT_CERT_PEM", "FELTUS_BUILDKIT_CLIENT_KEY_PEM",
+  "FELTUS_SECRET_ENCRYPTION_KEY", "FELTUS_BUILDKIT_ADDR",
   "FELTUS_ARTIFACT_REGISTRY", "FELTUS_ARTIFACT_REGISTRY_USERNAME", "FELTUS_ARTIFACT_REGISTRY_PASSWORD"
 ];
 
@@ -99,6 +103,12 @@ export function missingBuildWorkerConfiguration(env = process.env) {
   for (const key of CONFIG_NAMES.slice(1)) if (!String(env[key] || "").trim()) missing.push(key);
   if (String(env.FELTUS_SECRET_ENCRYPTION_KEY || "").length < 32 && !missing.includes("FELTUS_SECRET_ENCRYPTION_KEY")) {
     missing.push("FELTUS_SECRET_ENCRYPTION_KEY");
+  }
+  for (const credential of BUILDKIT_CREDENTIALS) {
+    const file = String(env[credential.file] || "").trim();
+    const pem = String(env[credential.pem] || "").trim();
+    if (file && !path.isAbsolute(file)) missing.push(credential.file);
+    else if (!file && !pem) missing.push(credential.pem);
   }
   if (env.FELTUS_GATEWAY_URL && !/^https?:\/\//i.test(env.FELTUS_GATEWAY_URL)) missing.push("FELTUS_GATEWAY_URL");
   if (env.FELTUS_BUILDKIT_ADDR && !/^tcp:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})$/.test(env.FELTUS_BUILDKIT_ADDR)) missing.push("FELTUS_BUILDKIT_ADDR");
@@ -139,6 +149,16 @@ export function createBuildWorker({
   let runtimeDir = null;
   let runtimeFiles = null;
   const secrets = [env.FELTUS_ARTIFACT_REGISTRY_PASSWORD, env.FELTUS_SECRET_ENCRYPTION_KEY].filter(Boolean);
+  function rememberSecret(value) {
+    const text = String(value || "");
+    if (text.length >= 4 && !secrets.includes(text)) secrets.push(text);
+    const body = text.replace(/-----BEGIN [^-]+-----|-----END [^-]+-----/g, "").replace(/\s+/g, "");
+    if (body.length >= 16 && !secrets.includes(body)) secrets.push(body);
+    for (let offset = 0; offset < body.length; offset += 64) {
+      const line = body.slice(offset, offset + 64);
+      if (line.length >= 16 && !secrets.includes(line)) secrets.push(line);
+    }
+  }
   const missing = missingBuildWorkerConfiguration(env);
   if (!/^[A-Za-z0-9._:-]{1,120}$/.test(workerId)) throw new TypeError("Build worker ID is invalid.");
 
@@ -187,18 +207,52 @@ export function createBuildWorker({
     const dockerConfigDir = path.join(directory, "docker");
     try {
       await mkdir(dockerConfigDir, { mode: 0o700 });
-      const normalizePem = (value, label) => {
-        const body = String(value || "")
-          .replace(/-----BEGIN [^-]+-----/g, "")
-          .replace(/-----END [^-]+-----/g, "")
-          .replace(/\s+/g, "");
-        const lines = body.match(/.{1,64}/g) || [];
-        return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+      const normalizePem = (value, kind) => {
+        const text = String(value || "").replace(/\\r?\\n/g, "\n").replace(/\r\n?/g, "\n").trim();
+        const allowedLabels = kind === "private-key"
+          ? new Set(["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "DSA PRIVATE KEY"])
+          : new Set(["CERTIFICATE"]);
+        const blockPattern = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/g;
+        const blocks = [...text.matchAll(blockPattern)].map(match => ({ label: match[1], body: match[2] }));
+        const unframed = text.replace(blockPattern, "").replace(/\s+/g, "");
+        if (unframed || (blocks.length && blocks.some(block => !allowedLabels.has(block.label)))) {
+          throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+        }
+        if (!blocks.length) {
+          if (text.includes("-----")) throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+          blocks.push({ label: kind === "private-key" ? "PRIVATE KEY" : "CERTIFICATE", body: text });
+        }
+        if (kind === "private-key" && blocks.length !== 1) throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+        return blocks.map(({ label, body }) => {
+          const compact = body.replace(/\s+/g, "");
+          if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
+            throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+          }
+          const decoded = Buffer.from(compact, "base64");
+          if (decoded.length < 32 || decoded.toString("base64").replace(/=+$/, "") !== compact.replace(/=+$/, "")) {
+            throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+          }
+          const lines = compact.match(/.{1,64}/g) || [];
+          return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+        }).join("");
+      };
+      const readCredential = async ({ file, pem, label }) => {
+        try {
+          const filePath = String(env[file] || "").trim();
+          const value = filePath ? await readFile(filePath, "utf8") : env[pem];
+          const normalized = normalizePem(value, label);
+          rememberSecret(value);
+          rememberSecret(normalized);
+          return normalized;
+        } catch {
+          throw new BuildWorkerError("BUILDKIT_CREDENTIALS_INVALID");
+        }
       };
 
-      await writeFile(ca, normalizePem(env.FELTUS_BUILDKIT_CA_PEM, "CERTIFICATE"), { mode: 0o600 });
-      await writeFile(cert, normalizePem(env.FELTUS_BUILDKIT_CLIENT_CERT_PEM, "CERTIFICATE"), { mode: 0o600 });
-      await writeFile(key, normalizePem(env.FELTUS_BUILDKIT_CLIENT_KEY_PEM, "PRIVATE KEY"), { mode: 0o600 });
+      const [caPem, certPem, keyPem] = await Promise.all(BUILDKIT_CREDENTIALS.map(readCredential));
+      await writeFile(ca, caPem, { mode: 0o600 });
+      await writeFile(cert, certPem, { mode: 0o600 });
+      await writeFile(key, keyPem, { mode: 0o600 });
       const registry = parseArtifactRegistry(env.FELTUS_ARTIFACT_REGISTRY);
       const auth = Buffer.from(`${env.FELTUS_ARTIFACT_REGISTRY_USERNAME}:${env.FELTUS_ARTIFACT_REGISTRY_PASSWORD}`).toString("base64");
       await writeFile(path.join(dockerConfigDir, "config.json"), JSON.stringify({
@@ -654,7 +708,14 @@ export function createBuildWorker({
       lastErrorCode = "BUILD_WORKER_CONFIGURATION_MISSING";
       return false;
     }
-    await prepareRuntime();
+    try {
+      await prepareRuntime();
+    } catch (error) {
+      ready = false;
+      lastErrorCode = safeFailureCode(error.code, "BUILDKIT_CREDENTIALS_INVALID");
+      lastProbeAt = now();
+      return false;
+    }
     try {
       ready = await probeBuildKit();
       lastErrorCode = ready ? null : "BUILDKIT_UNAVAILABLE";

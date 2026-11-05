@@ -55,5 +55,8 @@ jobs:
       - name: Validate production Compose configuration
         run: docker compose --env-file .env.example --file compose.production.yaml config --quiet
 
+      - name: Validate Staging Compose configuration
+        run: docker compose --env-file .env.example --file compose.staging.yaml config --quiet
+
       - name: Build production app, worker, and extractor images
         run: docker compose --env-file .env.example --file compose.production.yaml build app evidence-extractor worker

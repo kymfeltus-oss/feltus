@@ -1,0 +1,513 @@
+﻿name: feltus
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    environment:
+      NODE_ENV: production
+      FELTUS_ENV: production
+      FELTUS_TRUST_PROXY: "1"
+      FELTUS_HOST: 0.0.0.0
+      FELTUS_PORT: 8080
+      FELTUS_PUBLIC_URL: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_PUBLISHABLE_KEY: ${ANON_KEY:?set ANON_KEY}
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_SECRET_ENCRYPTION_KEY: ${FELTUS_SECRET_ENCRYPTION_KEY:?set FELTUS_SECRET_ENCRYPTION_KEY}
+      FELTUS_GITHUB_CLIENT_ID: ${FELTUS_GITHUB_CLIENT_ID:-}
+      FELTUS_GITHUB_CLIENT_SECRET: ${FELTUS_GITHUB_CLIENT_SECRET:-}
+      FELTUS_BUILD_RUNNER_ENABLED: ${FELTUS_BUILD_RUNNER_ENABLED:-false}
+      FELTUS_OWNER_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
+      FELTUS_ALLOWED_ORIGINS: ${FELTUS_ALLOWED_ORIGINS:-https://feltuslabs.com,https://www.feltuslabs.com}
+      FELTUS_AI_ENDPOINT: ${FELTUS_AI_ENDPOINT:-}
+      FELTUS_AI_BASE_URL: ${FELTUS_AI_BASE_URL:-}
+      FELTUS_AI_ENDPOINT_TRUST: ${FELTUS_AI_ENDPOINT_TRUST:-external_unverified}
+      FELTUS_AI_PROVIDER: ${FELTUS_AI_PROVIDER:-ollama}
+      FELTUS_AI_RUNTIME_KEY: ${FELTUS_AI_RUNTIME_KEY:-}
+      FELTUS_AI_TIMEOUT_MS: ${FELTUS_AI_TIMEOUT_MS:-600000}
+      FELTUS_AI_SEND_HISTORY: ${FELTUS_AI_SEND_HISTORY:-false}
+      FELTUS_AI_SEND_PROJECT_CONTEXT: ${FELTUS_AI_SEND_PROJECT_CONTEXT:-false}
+      FELTUS_AI_MAX_HISTORY_MESSAGES: ${FELTUS_AI_MAX_HISTORY_MESSAGES:-20}
+      FELTUS_AI_ALLOWED_PRIVATE_HOSTS: ${FELTUS_AI_ALLOWED_PRIVATE_HOSTS:-}
+      FELTUS_AI_TRUSTED_HOSTS: ${FELTUS_AI_TRUSTED_HOSTS:-}
+      FELTUS_AI_MODEL: ${FELTUS_AI_MODEL:-llama3:8b}
+      FELTUS_STORAGE_ROOT: /data/feltus-storage
+      FELTUS_CODE_WORKSPACE_ROOT: /data/feltus-code
+      FELTUS_EVIDENCE_EXTRACTION_URL: http://evidence-extractor:8090
+      FELTUS_EVIDENCE_EXTRACTION_TOKEN: ${FELTUS_EVIDENCE_EXTRACTION_TOKEN:?Set FELTUS_EVIDENCE_EXTRACTION_TOKEN in Coolify}
+      FELTUS_EVIDENCE_EXTRACTION_TIMEOUT_MS: 180000
+    volumes:
+      - feltus_documents:/data/feltus-storage
+      - feltus_code_workspaces:/data/feltus-code
+    expose:
+      - "8080"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      evidence-extractor:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "src/worker.js"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    environment:
+      NODE_ENV: production
+      FELTUS_ENV: production
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_AI_ENDPOINT: ${FELTUS_AI_ENDPOINT:-}
+      FELTUS_AI_BASE_URL: ${FELTUS_AI_BASE_URL:-}
+      FELTUS_AI_PROVIDER: ${FELTUS_AI_PROVIDER:-ollama}
+      FELTUS_AI_RUNTIME_KEY: ${FELTUS_AI_RUNTIME_KEY:-}
+      FELTUS_AI_TIMEOUT_MS: ${FELTUS_AI_TIMEOUT_MS:-600000}
+      FELTUS_AI_ENDPOINT_TRUST: ${FELTUS_AI_ENDPOINT_TRUST:-external_unverified}
+      FELTUS_AI_ALLOWED_PRIVATE_HOSTS: ${FELTUS_AI_ALLOWED_PRIVATE_HOSTS:-}
+      FELTUS_AI_TRUSTED_HOSTS: ${FELTUS_AI_TRUSTED_HOSTS:-}
+      FELTUS_AI_MODEL: ${FELTUS_AI_MODEL:-llama3:8b}
+      FELTUS_AI_SEND_HISTORY: "false"
+      FELTUS_AI_SEND_PROJECT_CONTEXT: "false"
+      FELTUS_AI_MAX_HISTORY_MESSAGES: 20
+      FELTUS_WORKER_PORT: 8081
+      FELTUS_WORKER_POLL_MS: ${FELTUS_WORKER_POLL_MS:-1000}
+      FELTUS_JOB_LEASE_SECONDS: ${FELTUS_JOB_LEASE_SECONDS:-180}
+      FELTUS_INFRASTRUCTURE_LEASE_SECONDS: ${FELTUS_INFRASTRUCTURE_LEASE_SECONDS:-180}
+      FELTUS_DEPLOYMENT_HEALTH_GRACE_MS: ${FELTUS_DEPLOYMENT_HEALTH_GRACE_MS:-180000}
+      FELTUS_COOLIFY_URL: ${FELTUS_COOLIFY_URL:-}
+      FELTUS_COOLIFY_API_TOKEN: ${FELTUS_COOLIFY_API_TOKEN:-}
+      FELTUS_COOLIFY_ALLOW_HTTP: ${FELTUS_COOLIFY_ALLOW_HTTP:-false}
+      FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS: ${FELTUS_COOLIFY_ALLOWED_ENVIRONMENTS:-}
+      FELTUS_COOLIFY_RESOURCE_MAP: ${FELTUS_COOLIFY_RESOURCE_MAP:-}
+      FELTUS_COOLIFY_PRODUCTION_ENABLED: ${FELTUS_COOLIFY_PRODUCTION_ENABLED:-false}
+    expose:
+      - "8081"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  build-worker:
+    profiles: ["build"]
+    build:
+      context: .
+      dockerfile: services/build-worker/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,noexec,nosuid,nodev
+    environment:
+      NODE_ENV: production
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_BUILD_WORKER_ENABLED: ${FELTUS_BUILD_WORKER_ENABLED:-false}
+      FELTUS_BUILD_WORKER_PORT: 8082
+      FELTUS_BUILD_WORKER_POLL_MS: ${FELTUS_BUILD_WORKER_POLL_MS:-2500}
+      FELTUS_BUILD_WORKER_HEARTBEAT_MS: ${FELTUS_BUILD_WORKER_HEARTBEAT_MS:-30000}
+      FELTUS_BUILD_LEASE_SECONDS: ${FELTUS_BUILD_LEASE_SECONDS:-600}
+      FELTUS_BUILD_TIMEOUT_SECONDS: ${FELTUS_BUILD_TIMEOUT_SECONDS:-1800}
+      FELTUS_SECRET_ENCRYPTION_KEY: ${FELTUS_SECRET_ENCRYPTION_KEY:-}
+      FELTUS_BUILDKIT_ADDR: ${FELTUS_BUILDKIT_ADDR:-}
+      FELTUS_BUILDKIT_CA_FILE: /run/secrets/feltus_buildkit_ca
+      FELTUS_BUILDKIT_CLIENT_CERT_FILE: /run/secrets/feltus_buildkit_client_cert
+      FELTUS_BUILDKIT_CLIENT_KEY_FILE: /run/secrets/feltus_buildkit_client_key
+      FELTUS_ARTIFACT_REGISTRY: ${FELTUS_ARTIFACT_REGISTRY:-}
+      FELTUS_ARTIFACT_REGISTRY_USERNAME: ${FELTUS_ARTIFACT_REGISTRY_USERNAME:-}
+      FELTUS_ARTIFACT_REGISTRY_PASSWORD: ${FELTUS_ARTIFACT_REGISTRY_PASSWORD:-}
+    secrets:
+      - feltus_buildkit_ca
+      - feltus_buildkit_client_cert
+      - feltus_buildkit_client_key
+    expose:
+      - "8082"
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8082/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  evidence-extractor:
+    build:
+      context: ./services/evidence-extractor
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+    environment:
+      FELTUS_DOCUMENT_ROOT: /data/feltus-storage/documents
+      FELTUS_EXTRACTION_MAX_DOCUMENT_BYTES: 20971520
+      FELTUS_EXTRACTION_OCR_DPI: 200
+      FELTUS_EXTRACTION_OCR_LANGUAGE: eng
+      FELTUS_EVIDENCE_EXTRACTION_TOKEN: ${FELTUS_EVIDENCE_EXTRACTION_TOKEN:?Set FELTUS_EVIDENCE_EXTRACTION_TOKEN in Coolify}
+    volumes:
+      - feltus_documents:/data/feltus-storage:ro
+    expose:
+      - "8090"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  db:
+    image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: postgres
+      POSTGRES_DB: postgres
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      JWT_EXP: 3600
+    volumes:
+      - feltus_postgres:/var/lib/postgresql/data
+      - ./supabase/production/webhooks.sql:/docker-entrypoint-initdb.d/init-scripts/98-webhooks.sql:ro
+      - ./supabase/production/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./supabase/production/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:ro
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  auth:
+    image: supabase/gotrue:v2.197.0
+    restart: unless-stopped
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/postgres
+      GOTRUE_SITE_URL: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
+      GOTRUE_URI_ALLOW_LIST: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL},https://www.feltuslabs.com
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      GOTRUE_JWT_ISSUER: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_DISABLE_SIGNUP: "true"
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_SMTP_ADMIN_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASSWORD:-}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-FELTUS}
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "9999"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9999/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  rest:
+    image: postgrest/postgrest:v14.18
+    restart: unless-stopped
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/postgres
+      PGRST_DB_SCHEMAS: public,storage,graphql_public
+      PGRST_DB_MAX_ROWS: 1000
+      PGRST_DB_EXTRA_SEARCH_PATH: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_SERVER_HOST: 0.0.0.0
+      PGRST_SERVER_PORT: 3000
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_APP_SETTINGS_JWT_EXP: 3600
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  realtime:
+    image: supabase/realtime:v2.143.3
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DB_NAME: postgres
+      DB_AFTER_CONNECT_QUERY: SET search_path TO _realtime
+      DB_ENC_KEY: ${REALTIME_DB_ENC_KEY:?set REALTIME_DB_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      METRICS_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: 10000
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+      DISABLE_HEALTHCHECK_LOGS: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "4000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSfL --head -o /dev/null -H 'Authorization: Bearer ${ANON_KEY:?set ANON_KEY}' http://127.0.0.1:4000/api/tenants/realtime-dev/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  storage:
+    image: supabase/storage-api:v1.81.0
+    restart: unless-stopped
+    environment:
+      ANON_KEY: ${ANON_KEY:?set ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      POSTGREST_URL: http://rest:3000
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/postgres
+      STORAGE_PUBLIC_URL: ${FELTUS_PUBLIC_URL:?set FELTUS_PUBLIC_URL}
+      REQUEST_ALLOW_X_FORWARDED_PATH: "true"
+      FILE_SIZE_LIMIT: 52428800
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      TENANT_ID: ${STORAGE_TENANT_ID:-feltus}
+      REGION: local
+      GLOBAL_S3_BUCKET: feltus
+      ENABLE_IMAGE_TRANSFORMATION: "true"
+      IMGPROXY_URL: http://imgproxy:5001
+      ENABLE_CORS: "true"
+    volumes:
+      - feltus_object_storage:/var/lib/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      imgproxy:
+        condition: service_started
+    expose:
+      - "5000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:5000/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  imgproxy:
+    image: darthsim/imgproxy:v3.31.4
+    restart: unless-stopped
+    environment:
+      IMGPROXY_BIND: 0.0.0.0:5001
+      IMGPROXY_LOCAL_FILESYSTEM_ROOT: /var/lib/storage
+      IMGPROXY_USE_ETAG: "true"
+      IMGPROXY_ENABLE_WEBP_DETECTION: "true"
+    volumes:
+      - feltus_object_storage:/var/lib/storage:ro
+    expose:
+      - "5001"
+    healthcheck:
+      test: ["CMD", "imgproxy", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  gateway:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      auth:
+        condition: service_healthy
+      rest:
+        condition: service_started
+      storage:
+        condition: service_started
+      realtime:
+        condition: service_started
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    image: postgres:17-alpine
+    restart: "no"
+    entrypoint: ["/bin/sh", "/scripts/migrate.sh"]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - ./scripts/migrate.sh:/scripts/migrate.sh:ro
+      - ./supabase/migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  owner-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["bootstrap"]
+    entrypoint: ["node", "scripts/bootstrap-owner.mjs"]
+    restart: "no"
+    environment:
+      FELTUS_GATEWAY_URL: http://gateway:8000
+      FELTUS_ADMIN_API_KEY: ${SERVICE_ROLE_KEY:?set SERVICE_ROLE_KEY}
+      FELTUS_OWNER_EMAIL: ${FELTUS_OWNER_EMAIL:?set FELTUS_OWNER_EMAIL}
+    depends_on:
+      gateway:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  backup-storage:
+    image: postgres:17-alpine
+    profiles: ["maintenance"]
+    entrypoint: ["/bin/sh", "/scripts/backup-storage.sh"]
+    restart: "no"
+    environment:
+      FELTUS_BACKUP_TIMESTAMP: ${FELTUS_BACKUP_TIMESTAMP:-manual}
+    volumes:
+      - feltus_documents:/data/documents:ro
+      - feltus_object_storage:/data/object-storage:ro
+      - feltus_code_workspaces:/data/code-workspaces:ro
+      - type: bind
+        source: ${FELTUS_BACKUP_DIR}
+        target: /backups
+        bind:
+          create_host_path: false
+      - ./scripts/backup-storage.sh:/scripts/backup-storage.sh:ro
+    security_opt:
+      - no-new-privileges:true
+
+  restore-storage:
+    image: postgres:17-alpine
+    profiles: ["maintenance"]
+    entrypoint: ["/bin/sh", "/scripts/restore-storage.sh"]
+    restart: "no"
+    environment:
+      FELTUS_BACKUP_TIMESTAMP: ${FELTUS_BACKUP_TIMESTAMP:-}
+    volumes:
+      - feltus_documents:/data/documents
+      - feltus_object_storage:/data/object-storage
+      - feltus_code_workspaces:/data/code-workspaces
+      - type: bind
+        source: ${FELTUS_BACKUP_DIR}
+        target: /backups
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./scripts/restore-storage.sh:/scripts/restore-storage.sh:ro
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  feltus_postgres:
+  feltus_documents:
+  feltus_object_storage:
+  feltus_code_workspaces:
+
+secrets:
+  feltus_buildkit_ca:
+    file: /etc/feltus/staging/buildkit/current/ca.pem
+  feltus_buildkit_client_cert:
+    file: /etc/feltus/staging/buildkit/current/client-cert.pem
+  feltus_buildkit_client_key:
+    file: /etc/feltus/staging/buildkit/current/client-key.pem

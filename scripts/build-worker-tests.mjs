@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { encryptGithubSecret } from "../src/lib/feltus-github.js";
 import {
@@ -16,6 +17,22 @@ import {
 const digest = `sha256:${"a".repeat(64)}`;
 const appId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const buildId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const caFixtureBody = Buffer.from("test-only CA fixture; not a real certificate or credential").toString("base64");
+const certFixtureBody = Buffer.from("test-only client certificate fixture; not a real certificate").toString("base64");
+const keyFixtureBody = Buffer.from("test-only private key fixture; not a real private key").toString("base64");
+const wrapPem = (label, body) => `-----${"BEGIN"} ${label}-----\n${body}\n-----${"END"} ${label}-----\n`;
+const caFixturePem = wrapPem("CERTIFICATE", caFixtureBody);
+const certFixturePem = wrapPem("CERTIFICATE", certFixtureBody);
+const keyFixturePem = wrapPem("PRIVATE KEY", keyFixtureBody);
+const credentialFixtureDirectory = await mkdtemp(path.join(os.tmpdir(), "feltus-buildkit-credentials-test-"));
+const credentialFixturePaths = {
+  FELTUS_BUILDKIT_CA_FILE: path.join(credentialFixtureDirectory, "ca.pem"),
+  FELTUS_BUILDKIT_CLIENT_CERT_FILE: path.join(credentialFixtureDirectory, "client-cert.pem"),
+  FELTUS_BUILDKIT_CLIENT_KEY_FILE: path.join(credentialFixtureDirectory, "client-key.pem")
+};
+await writeFile(credentialFixturePaths.FELTUS_BUILDKIT_CA_FILE, caFixturePem, { mode: 0o600 });
+await writeFile(credentialFixturePaths.FELTUS_BUILDKIT_CLIENT_CERT_FILE, certFixturePem, { mode: 0o600 });
+await writeFile(credentialFixturePaths.FELTUS_BUILDKIT_CLIENT_KEY_FILE, keyFixturePem, { mode: 0o600 });
 assert.equal(parseBuildKitDigest({ "containerimage.digest": digest }), digest);
 assert.throws(() => parseBuildKitDigest({ "containerimage.digest": "sha256:bad" }), /BUILD_DIGEST_MISSING/);
 console.log("PASS artifact digest is accepted only in canonical sha256 form");
@@ -49,6 +66,9 @@ const noConfig = missingBuildWorkerConfiguration({});
 assert.ok(noConfig.includes("FELTUS_BUILDKIT_ADDR"));
 assert.ok(noConfig.includes("FELTUS_ARTIFACT_REGISTRY_PASSWORD"));
 assert.equal(noConfig.includes("do-not-print-this"), false);
+assert.ok(missingBuildWorkerConfiguration({ FELTUS_BUILDKIT_ADDR: "https://builder.internal:1234" }).includes("FELTUS_BUILDKIT_ADDR"));
+assert.ok(missingBuildWorkerConfiguration({ FELTUS_BUILDKIT_CA_FILE: "relative/ca.pem" }).includes("FELTUS_BUILDKIT_CA_FILE"));
+console.log("PASS BuildKit address and absolute credential-file path validation remain enforced");
 
 const heartbeats = [];
 const missingEnv = { FELTUS_ARTIFACT_REGISTRY_PASSWORD: "do-not-print-this" };
@@ -73,9 +93,9 @@ const readyEnv = {
   FELTUS_SERVICE_ROLE_KEY: "service-role-placeholder",
   FELTUS_SECRET_ENCRYPTION_KEY: "x".repeat(32),
   FELTUS_BUILDKIT_ADDR: "tcp://builder.internal:1234",
-  FELTUS_BUILDKIT_CA_PEM: "test-ca-certificate-placeholder",
-  FELTUS_BUILDKIT_CLIENT_CERT_PEM: "test-client-certificate-placeholder",
-  FELTUS_BUILDKIT_CLIENT_KEY_PEM: "test-client-key-placeholder",
+  FELTUS_BUILDKIT_CA_PEM: caFixturePem,
+  FELTUS_BUILDKIT_CLIENT_CERT_PEM: certFixturePem,
+  FELTUS_BUILDKIT_CLIENT_KEY_PEM: keyFixturePem,
   FELTUS_ARTIFACT_REGISTRY: "ghcr.io/feltus-apps",
   FELTUS_ARTIFACT_REGISTRY_USERNAME: "feltus-ci",
   FELTUS_ARTIFACT_REGISTRY_PASSWORD: "registry-secret-value"
@@ -104,7 +124,58 @@ assert.equal(probeCertificatePaths.length, 2);
 assert.equal(probeCertificatePaths[0], probeCertificatePaths[1], "re-probing BuildKit reuses one private runtime directory");
 assert.equal(readyWorker.health().ready, true);
 await readyWorker.stop();
-console.log("PASS configured worker verifies its BuildKit endpoint before reporting ready");
+console.log("PASS legacy environment PEM credentials remain supported and probe BuildKit before reporting ready");
+
+const fileCredentialEnv = { ...readyEnv, ...credentialFixturePaths };
+delete fileCredentialEnv.FELTUS_BUILDKIT_CA_PEM;
+delete fileCredentialEnv.FELTUS_BUILDKIT_CLIENT_CERT_PEM;
+delete fileCredentialEnv.FELTUS_BUILDKIT_CLIENT_KEY_PEM;
+const fileCredentialProbeArgs = [];
+const fileCredentialWorker = createBuildWorker({
+  env: fileCredentialEnv,
+  spawnImpl: (_command, args) => {
+    fileCredentialProbeArgs.push(args);
+    return fakeSpawn(_command, args);
+  },
+  fetchImpl: async () => new Response(null, { status: 204 }),
+  workerId: "build-worker-file-credentials-test"
+});
+assert.deepEqual(fileCredentialWorker.missingConfiguration, []);
+assert.equal(await fileCredentialWorker.initialize(), true);
+assert.equal(fileCredentialWorker.health().ready, true);
+assert.equal(fileCredentialProbeArgs[0][0], "--addr");
+assert.equal(fileCredentialProbeArgs[0][1], readyEnv.FELTUS_BUILDKIT_ADDR);
+assert.equal(fileCredentialProbeArgs[0][2], "--tlscacert");
+assert.equal(fileCredentialProbeArgs[0][4], "--tlscert");
+assert.equal(fileCredentialProbeArgs[0][6], "--tlskey");
+assert.notEqual(fileCredentialProbeArgs[0][3], credentialFixturePaths.FELTUS_BUILDKIT_CA_FILE, "file credentials are copied into a private worker runtime directory");
+await fileCredentialWorker.stop();
+console.log("PASS mounted BuildKit credential files are loaded into the private runtime directory and used for mTLS");
+
+const missingCredentialWorker = createBuildWorker({
+  env: { ...fileCredentialEnv, FELTUS_BUILDKIT_CLIENT_KEY_FILE: path.join(credentialFixtureDirectory, "missing-key.pem") },
+  spawnImpl: fakeSpawn,
+  fetchImpl: async () => new Response(null, { status: 204 }),
+  workerId: "build-worker-missing-file-test"
+});
+assert.equal(await missingCredentialWorker.initialize(), false);
+assert.equal(missingCredentialWorker.health().last_error_code, "BUILDKIT_CREDENTIALS_INVALID");
+assert.equal(JSON.stringify(missingCredentialWorker.health()).includes("test-only private key fixture"), false);
+await missingCredentialWorker.stop();
+
+const malformedCredentialPath = path.join(credentialFixtureDirectory, "malformed-cert.pem");
+await writeFile(malformedCredentialPath, wrapPem("CERTIFICATE", "not-base64!"));
+const malformedCredentialWorker = createBuildWorker({
+  env: { ...fileCredentialEnv, FELTUS_BUILDKIT_CLIENT_CERT_FILE: malformedCredentialPath },
+  spawnImpl: fakeSpawn,
+  fetchImpl: async () => new Response(null, { status: 204 }),
+  workerId: "build-worker-malformed-file-test"
+});
+assert.equal(await malformedCredentialWorker.initialize(), false);
+assert.equal(malformedCredentialWorker.health().last_error_code, "BUILDKIT_CREDENTIALS_INVALID");
+assert.equal(JSON.stringify(malformedCredentialWorker.health()).includes("not-base64"), false);
+await malformedCredentialWorker.stop();
+console.log("PASS missing and malformed credential files fail closed with generic, non-secret health errors");
 
 const sourceBuildId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const sourceAppId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -130,7 +201,7 @@ const gitConnection = {
   encryption_key_version: "aes-256-gcm-hkdf-v1"
 };
 const sourceEnv = {
-  ...readyEnv,
+  ...fileCredentialEnv,
   FELTUS_SECRET_ENCRYPTION_KEY: masterKey
 };
 const sourceWorker = createBuildWorker({
@@ -178,6 +249,7 @@ function asyncSpawn(command, args, options) {
       }
       if (command === "git" && args[0] === "rev-parse") child.stdout.emit("data", `${commitSha}\n`);
       if (command === "buildctl" && args.includes("build")) {
+        child.stdout.emit("data", `${keyFixtureBody}\n`);
         const index = args.indexOf("--metadata-file");
         await writeFile(args[index + 1], JSON.stringify({ "containerimage.digest": digest }));
       }
@@ -204,6 +276,7 @@ assert.equal(finishCall.body.p_provenance.blueprint_id, sourceBlueprintId);
 assert.equal(persistedSteps.length, 3);
 assert.ok(persistedSteps.every(step => step.status === "succeeded"));
 assert.equal(persistedSteps.some(step => String(step.log_text).includes(githubToken)), false);
+assert.equal(persistedSteps.some(step => String(step.log_text).includes(keyFixtureBody)), false, "BuildKit private-key material is redacted from persisted build logs");
 assert.ok(restCalls.some(call => call.url.includes("feltus_start_application_build")));
 assert.ok(restCalls.some(call => call.url.includes("feltus_update_build_status") && call.body.p_status === "building"));
 assert.ok(restCalls.some(call => call.url.includes("feltus_update_build_status") && call.body.p_status === "verifying"));
@@ -319,3 +392,4 @@ assert.ok(timeoutCalls.some(call => call.url.includes("feltus_fail_application_b
 assert.ok(timeoutCalls.some(call => call.method === "PATCH" && call.url.includes("feltus_build_steps") && call.body.status === "failed" && call.body.exit_code === 124));
 await timeoutWorker.stop();
 console.log("PASS build timeout terminates the active client and persists the timeout exit code");
+await rm(credentialFixtureDirectory, { recursive: true, force: true });
