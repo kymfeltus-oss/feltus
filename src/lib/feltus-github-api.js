@@ -506,6 +506,7 @@ export function createGithubApiHandler({
       if (action === "repository" && method === "POST") {
         const body = await readBody(req, 4096);
         const providerRepositoryId = String(body.provider_repository_id || "");
+        const requestedBranch = String(body.branch_name || "").trim();
         if (!/^\d{1,30}$/.test(providerRepositoryId)) {
           send(res, 400, { error: "Choose a valid GitHub repository." });
           return true;
@@ -523,7 +524,7 @@ export function createGithubApiHandler({
           return true;
         }
         const remote = await githubRequest("/repositories/" + encodeURIComponent(providerRepositoryId), token);
-        const branch = selected.default_branch;
+        const branch = requestedBranch || selected.default_branch;
         if (!remote || typeof remote.owner?.login !== "string" || typeof remote.name !== "string" ||
             normalizeGithubBranch(branch) !== branch || !remote.clone_url?.startsWith("https://github.com/")) {
           send(res, 502, { error: "GitHub returned incomplete repository details." });
@@ -548,6 +549,13 @@ export function createGithubApiHandler({
               default_branch: branch
             }
           }), "GitHub repository");
+        } else if (repository.default_branch !== branch) {
+          repository = firstRow(await serviceRequest("/rest/v1/feltus_repositories?id=eq." + encodeURIComponent(repository.id) +
+            "&select=id,organization_id,git_connection_id,provider_repository_id,repository_name,default_branch,webhook_id,webhook_secret_ciphertext,webhook_secret_key_version", {
+            method: "PATCH",
+            prefer: "return=representation",
+            body: { default_branch: branch }
+          }), "GitHub repository");
         }
         if (!repository?.id || repository.organization_id !== app.organization_id) throw new Error("Repository could not be securely linked.");
         const attached = await serviceRequest("/rest/v1/feltus_project_repositories?on_conflict=app_id,repository_id", {
@@ -562,12 +570,11 @@ export function createGithubApiHandler({
         });
         if (attached.status < 200 || attached.status >= 300) throw new Error("Repository could not be attached to this application.");
 
-        let latestCommit = null;
-        try {
-          const branchResult = await githubRequest("/repos/" + encodeURIComponent(remote.owner.login) + "/" +
-            encodeURIComponent(remote.name) + "/branches/" + encodeURIComponent(branch), token);
-          latestCommit = /^[0-9a-f]{40,64}$/i.test(String(branchResult?.commit?.sha || "")) ? branchResult.commit.sha.toLowerCase() : null;
-        } catch {}
+        const branchResult = await githubRequest("/repos/" + encodeURIComponent(remote.owner.login) + "/" +
+          encodeURIComponent(remote.name) + "/branches/" + encodeURIComponent(branch), token);
+        const latestCommit = /^[0-9a-f]{40,64}$/i.test(String(branchResult?.commit?.sha || ""))
+          ? branchResult.commit.sha.toLowerCase()
+          : null;
         const development = firstRow(await serviceRequest("/rest/v1/feltus_environments?" + new URLSearchParams({
           select: "id",
           app_id: "eq." + app.id,
