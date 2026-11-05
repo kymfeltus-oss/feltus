@@ -719,14 +719,15 @@ async function bindCapabilityActions(root, app, mode, onRefresh) {
         const repositories = rows(payload, "repositories");
         list.hidden = false;
         list.innerHTML = repositories.length
-          ? repositories.map(repository => '<article class="cap-item"><div class="cap-item-head"><div><strong>' +
-              escapeCapabilityHtml(repository.name) + '</strong><small>' +
-              (repository.private ? "Private repository" : "Public repository") + ' · Default branch ' +
-              escapeCapabilityHtml(repository.default_branch || "unknown") +
-              '</small><input type="text" data-github-branch value="' +
-              escapeCapabilityHtml(repository.default_branch || "") +
-              '" aria-label="Git branch"></div><button class="button button-primary" type="button" data-github-select="' +
-              escapeCapabilityHtml(repository.provider_repository_id) + '">Use this repository</button></div></article>').join("")
+  ? repositories.map(repository => '<article class="cap-item"><div class="cap-item-head"><div><strong>' +
+      escapeCapabilityHtml(repository.name) + '</strong><small>' +
+      (repository.private ? "Private repository" : "Public repository") + ' · Default branch ' +
+      escapeCapabilityHtml(repository.default_branch || "unknown") +
+      '</small><label>Git branch<input type="text" data-github-branch value="' +
+      escapeCapabilityHtml(repository.default_branch || "") +
+      '"></label></div><button class="button button-primary" type="button" data-github-select="' +
+      escapeCapabilityHtml(repository.provider_repository_id) +
+      '">Use this repository</button></div></article>').join("")
           : '<div class="empty-state"><strong>No available repositories</strong>The connected GitHub account has no repositories FELTUS can use.</div>';
       } catch (error) {
         list.hidden = false;
@@ -740,19 +741,19 @@ async function bindCapabilityActions(root, app, mode, onRefresh) {
       return;
     }
     const selectGithubRepository = event.target.closest("[data-github-select]");
-    if (selectGithubRepository) {
-      const repositoryCard = selectGithubRepository.closest(".cap-item");
-      const branchInput = repositoryCard?.querySelector("[data-github-branch]");
-      const branchName = String(branchInput?.value || "").trim();
-      selectGithubRepository.disabled = true;
+if (selectGithubRepository) {
+  const repositoryCard = selectGithubRepository.closest(".cap-item");
+  const branchInput = repositoryCard?.querySelector("[data-github-branch]");
+  const branchName = String(branchInput?.value || "").trim();
+  selectGithubRepository.disabled = true;
       selectGithubRepository.textContent = "Connecting…";
       try {
         const result = await api("/api/apps/" + encodeURIComponent(app.id) + "/github/repository", {
           method: "POST",
           body: JSON.stringify({
-            provider_repository_id: selectGithubRepository.dataset.githubSelect,
-            branch_name: branchName
-          })
+  provider_repository_id: selectGithubRepository.dataset.githubSelect,
+  branch_name: branchName
+})
         });
         await onRefresh();
         if (result.webhook?.message) alert(result.webhook.message);
