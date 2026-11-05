@@ -79,7 +79,8 @@ export function verifyGithubOAuthState(state, cookieNonce, { masterKey, userId, 
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new TypeError("GitHub authorization state is invalid or expired.");
   let claims;
   try { claims = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8")); } catch { throw new TypeError("GitHub authorization state is invalid or expired."); }
-  if (!UUID.test(String(claims?.app_id || "")) || claims.user_id !== userId ||
+  if (!UUID.test(String(claims?.app_id || "")) || !UUID.test(String(claims?.user_id || "")) ||
+      (userId && claims.user_id !== userId) ||
       typeof claims.nonce !== "string" || claims.nonce.length < 32 || claims.nonce !== cookieNonce ||
       !Number.isFinite(claims.issued_at) || !Number.isFinite(claims.expires_at) ||
       claims.issued_at > now + 60_000 || claims.expires_at <= now || claims.expires_at - claims.issued_at > 10 * 60_000) {

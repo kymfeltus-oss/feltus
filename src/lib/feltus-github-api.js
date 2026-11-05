@@ -371,11 +371,7 @@ export function createGithubApiHandler({
     const appMatch = /^\/api\/apps\/([0-9a-f-]{36})\/github(?:\/(connect|repositories|repository|webhook))?$/i.exec(url.pathname);
     let callbackAppId = null;
     if (!callback && !appMatch) return false;
-    const user = getUser();
-    if (!user?.id) {
-      send(res, 401, { error: "Authentication required." });
-      return true;
-    }
+    let user = getUser();
     try {
       if (callback && String(req.method || "").toUpperCase() === "GET") {
         const { available, publicUrl } = githubConfiguration(env);
@@ -383,9 +379,9 @@ export function createGithubApiHandler({
         let claim;
         try {
           claim = verifyGithubOAuthState(url.searchParams.get("state"), cookie, {
-            masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY,
-            userId: user.id
+            masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY
           });
+          user = { id: claim.user_id };
         } catch {
           res.writeHead(302, {
             Location: "/apps?github=authorization_failed",
@@ -444,6 +440,11 @@ export function createGithubApiHandler({
           "Set-Cookie": cookieHeader("", { secure: String(env.FELTUS_ENV).toLowerCase() === "production", maxAge: 0 })
         });
         res.end();
+        return true;
+      }
+
+      if (!user?.id) {
+        send(res, 401, { error: "Authentication required." });
         return true;
       }
 
