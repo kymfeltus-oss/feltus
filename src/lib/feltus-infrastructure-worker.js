@@ -237,7 +237,7 @@ export function createInfrastructureWorker({
 
   async function deploymentOperation(command, context, signal) {
     const { target, artifact } = context;
-    const imageName = `${registryRepositoryWithoutTag(artifact.registry_image)}@sha256`;
+    const imageName = registryRepositoryWithoutTag(artifact.registry_image);
     const imageTag = coolifyDigestTag(artifact.artifact_digest);
     const application = await coolify.getApplication(target.provider_resource_reference, { signal });
     if (!application || !["dockerimage", "docker_image", "docker-image"].includes(String(application.build_pack || "").toLowerCase())) {

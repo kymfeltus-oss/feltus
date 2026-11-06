@@ -230,7 +230,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   const deployIndex = calls.findIndex(call => call.coolify_deploy);
   assert.ok(updateIndex >= 0 && deployIndex > updateIndex, "the immutable image digest is configured before deploy");
   assert.deepEqual(calls[updateIndex].coolify_update, {
-    docker_registry_image_name: `${verifiedRepository}@sha256`,
+    docker_registry_image_name: verifiedRepository,
     docker_registry_image_tag: verifiedCoolifyDigest
   });
   assert.equal(artifact.registry_image, verifiedRegistryImage, "the canonical FELTUS registry image remains unchanged");
@@ -259,7 +259,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   });
   assert.equal(await worker.processOne(outboxCommand), false);
   assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
-    docker_registry_image_name: `${image}@sha256`,
+    docker_registry_image_name: image,
     docker_registry_image_tag: coolifyDigest
   });
   const retry = calls.find(call => call.path?.includes("feltus_retry_infrastructure_outbox"));
@@ -279,7 +279,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   });
   assert.equal(await worker.processOne(outboxCommand), true);
   assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
-    docker_registry_image_name: `ghcr.io/feltus/${appId}@sha256`,
+    docker_registry_image_name: `ghcr.io/feltus/${appId}`,
     docker_registry_image_tag: coolifyDigest
   });
   assert.ok(calls.some(call => call.coolify_deploy));
