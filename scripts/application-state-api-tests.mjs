@@ -275,3 +275,152 @@ assert.equal(eventsResult.body.events[0].event_key, "application.draft.saved");
 assert.equal(eventsResult.body.events[0].category, "application");
 assert.deepEqual(eventsResult.body.events[0].metadata, { step: "basics" });
 console.log("PASS app activity reuses the immutable audit stream and returns friendly structured event fields");
+
+const branchAppId = "abababab-abab-4bab-8bab-abababababab";
+const branchRepoId = "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd";
+const branch = "codex/feltus-phase3-state-delivery-engine";
+const commitA = "a".repeat(40);
+const commitB = "b".repeat(40);
+const developmentEnvironmentId = "00000000-0000-4000-8000-000000000000";
+const stagingEnvironmentId = "00000002-0000-4000-8000-000000000000";
+const blueprintAId = "11111111-1111-4111-8111-111111111111";
+const blueprintBId = "22222222-2222-4222-8222-222222222222";
+const branchFixtures = {
+  feltus_applications: [{
+    id: branchAppId, owner_id: USER_ID, app_name: "Branch lineage", app_type: "custom",
+    setup_status: "configuring", setup_current_step: "code", setup_completed_steps: ["basics"],
+    setup_data: { code: { repository_id: branchRepoId, branch, commit_sha: null }, ai: {} }
+  }],
+  feltus_models: [], feltus_model_relationships: [], feltus_model_columns: [], feltus_documents: [],
+  feltus_environments: [
+    { id: developmentEnvironmentId, kind: "development", name: "Development", status: "active" },
+    { id: stagingEnvironmentId, kind: "staging", name: "Staging", status: "active" }
+  ],
+  feltus_deployment_targets: [],
+  feltus_project_repositories: [{ app_id: branchAppId, repository_id: branchRepoId }],
+  feltus_repositories: [{ id: branchRepoId, repository_name: "feltus", default_branch: branch, archived_at: null }],
+  feltus_repository_branches: [
+    { app_id: branchAppId, repository_id: branchRepoId, environment_id: developmentEnvironmentId, branch_name: branch, is_default: true, latest_commit_sha: commitA, updated_at: "2026-11-05T10:00:00.000Z" },
+    { app_id: branchAppId, repository_id: branchRepoId, environment_id: stagingEnvironmentId, branch_name: branch, is_default: true, latest_commit_sha: commitA, updated_at: "2026-11-05T10:01:00.000Z" }
+  ],
+  feltus_application_blueprints: [], feltus_builds: [], feltus_build_steps: [], feltus_artifacts: [],
+  feltus_deployments: [], feltus_observed_application_states: [], feltus_application_state_deltas: [],
+  feltus_worker_heartbeats: [{ worker_id: "build-worker-lineage-test", worker_type: "build", status: "online", last_seen_at: new Date().toISOString() }]
+};
+let blueprintRevision = 0;
+let queuedBuild = null;
+const branchTableRequest = async (table, method, options = {}) => {
+  if (table === "rpc/feltus_create_application_blueprint") {
+    const parent = [...branchFixtures.feltus_application_blueprints].sort((a, b) => b.version - a.version)[0] || null;
+    const payload = options.body;
+    if (parent?.state_hash === payload.p_state_hash) return { status: 200, data: parent };
+    if (parent?.status === "ready") parent.status = "superseded";
+    const id = [blueprintAId, blueprintBId][blueprintRevision++];
+    const version = Number(parent?.version || 0) + 1;
+    const createdAt = new Date(Date.now() + blueprintRevision).toISOString();
+    const state = {
+      ...payload.p_state,
+      blueprint: {
+        ...payload.p_state.blueprint, id, version,
+        parent_id: parent?.id || null, parent_version: parent?.version || null,
+        status: "ready", created_by: USER_ID, created_at: createdAt, state_hash: payload.p_state_hash
+      }
+    };
+    const row = {
+      id, app_id: branchAppId, version, parent_blueprint_id: parent?.id || null,
+      parent_version: parent?.version || null, state_hash: payload.p_state_hash,
+      state, status: "ready", created_by: USER_ID, created_at: createdAt
+    };
+    branchFixtures.feltus_application_blueprints.push(row);
+    return { status: 200, data: row };
+  }
+  if (table === "feltus_applications") return { status: 200, data: branchFixtures.feltus_applications };
+  const rows = branchFixtures[table] || [];
+  if (table === "feltus_repository_branches") {
+    return { status: 200, data: [...rows].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)) };
+  }
+  if (table === "feltus_application_blueprints") {
+    return { status: 200, data: [...rows].sort((a, b) => b.version - a.version) };
+  }
+  return { status: 200, data: rows };
+};
+const branchServiceRequest = async (path, options = {}) => {
+  if (path === "/rest/v1/rpc/feltus_queue_application_build") {
+    queuedBuild = {
+      id: "33333333-3333-4333-8333-333333333333", app_id: branchAppId,
+      repository_id: options.body.p_repository_id, blueprint_id: options.body.p_blueprint_id,
+      source_branch: options.body.p_source_branch, commit_sha: options.body.p_commit_sha, status: "queued"
+    };
+    branchFixtures.feltus_builds.push(queuedBuild);
+    return { status: 200, data: queuedBuild };
+  }
+  return { status: 200, data: [] };
+};
+const branchHandler = createApplicationStateHandler({
+  tableRequest: branchTableRequest,
+  serviceRequest: branchServiceRequest,
+  readBody: async request => request.body || {},
+  getUser: () => ({ id: USER_ID })
+});
+const invokeBranch = async (pathname, method = "GET", body = {}) => {
+  const result = { status: null, headers: {}, text: "" };
+  const res = {
+    writeHead(status, headers) { result.status = status; result.headers = headers; },
+    end(text) { result.text = String(text || ""); }
+  };
+  await branchHandler({ method, headers: {}, body }, res, new URL(`http://feltus.test${pathname}`));
+  return { ...result, body: JSON.parse(result.text) };
+};
+const branchEnvBefore = process.env.FELTUS_BUILD_RUNNER_ENABLED;
+process.env.FELTUS_BUILD_RUNNER_ENABLED = "true";
+try {
+  const initial = await invokeBranch(`/api/apps/${branchAppId}/state`);
+  assert.equal(initial.body.state.desired_state.code.commit, commitA);
+  assert.equal(initial.body.persisted, false);
+  const savedA = await invokeBranch(`/api/apps/${branchAppId}/blueprints`, "POST", { confirm: true });
+  assert.equal(savedA.status, 201);
+  assert.equal(savedA.body.blueprint.version, 1);
+  assert.equal(savedA.body.blueprint.state.desired_state.code.commit, commitA);
+
+  // Simulate the verified push webhook updating Development while a later-written
+  // Staging row for the same branch still contains the previous source SHA.
+  branchFixtures.feltus_repository_branches.find(row => row.environment_id === developmentEnvironmentId).latest_commit_sha = commitB;
+  branchFixtures.feltus_repository_branches.find(row => row.environment_id === developmentEnvironmentId).updated_at = "2026-11-05T10:30:00.000Z";
+  branchFixtures.feltus_repository_branches.find(row => row.environment_id === stagingEnvironmentId).updated_at = "2026-11-05T10:31:00.000Z";
+  const stale = await invokeBranch(`/api/apps/${branchAppId}/state`);
+  assert.equal(stale.body.state.desired_state.code.commit, commitB, "state must take the webhook-updated Development branch SHA");
+  assert.equal(stale.body.persisted, false, "Blueprint A must become stale when the tracked source commit changes");
+  assert.equal(stale.body.latest_blueprint.id, blueprintAId);
+
+  const savedB = await invokeBranch(`/api/apps/${branchAppId}/blueprints`, "POST", { confirm: true });
+  assert.equal(savedB.status, 201);
+  assert.equal(savedB.body.blueprint.version, 2);
+  assert.equal(savedB.body.blueprint.parent_blueprint_id, blueprintAId);
+  assert.equal(savedB.body.blueprint.state.desired_state.code.commit, commitB);
+  assert.equal(branchFixtures.feltus_application_blueprints.find(row => row.id === blueprintAId).status, "superseded");
+  assert.equal(branchFixtures.feltus_application_blueprints.find(row => row.id === blueprintAId).state.desired_state.code.commit, commitA);
+
+  const current = await invokeBranch(`/api/apps/${branchAppId}/state`);
+  assert.equal(current.body.persisted, true);
+  assert.equal(current.body.state.desired_state.code.commit, commitB);
+  assert.equal(current.body.state_hash, savedB.body.blueprint.state_hash);
+
+  const mismatchedBuild = await invokeBranch(`/api/apps/${branchAppId}/builds`, "POST", {
+    repository_id: branchRepoId, branch, commit_sha: commitA, idempotency_key: "branch-lineage-mismatch"
+  });
+  assert.equal(mismatchedBuild.status, 409, "a build cannot pair Blueprint B with commit A");
+  const build = await invokeBranch(`/api/apps/${branchAppId}/builds`, "POST", {
+    repository_id: branchRepoId, branch, commit_sha: commitB, idempotency_key: "branch-lineage-commit-b"
+  });
+  assert.equal(build.status, 202);
+  assert.equal(queuedBuild.blueprint_id, savedB.body.blueprint.id);
+  assert.equal(queuedBuild.commit_sha, commitB);
+  assert.equal(queuedBuild.source_branch, branch);
+  const buildHistoryResult = await invokeBranch(`/api/apps/${branchAppId}/builds`);
+  assert.equal(buildHistoryResult.body.builds[0].blueprint_id, savedB.body.blueprint.id);
+  assert.equal(buildHistoryResult.body.builds[0].commit_sha, commitB);
+  console.log("PASS branch A→B advances desired state, stales and supersedes Blueprints, saves the new revision, and queues exact Blueprint/commit lineage");
+} finally {
+  if (branchEnvBefore === undefined) delete process.env.FELTUS_BUILD_RUNNER_ENABLED;
+  else process.env.FELTUS_BUILD_RUNNER_ENABLED = branchEnvBefore;
+}

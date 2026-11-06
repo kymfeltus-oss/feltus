@@ -134,9 +134,12 @@ function mapDesiredState({ app, models, columns, relationships, documents, aiSet
   const linkedRepo = repoLinks.map(link => repoById.get(link.repository_id)).find(Boolean) || null;
   const code = app.setup_data?.code && typeof app.setup_data.code === "object" ? app.setup_data.code : {};
   const branchName = code.branch || linkedRepo?.default_branch || null;
-  const linkedBranch = linkedRepo && repoBranches.find(branch =>
+  const developmentEnvironment = environments.find(environment => environment.kind === "development");
+  const matchingBranches = linkedRepo ? repoBranches.filter(branch =>
     branch.repository_id === linkedRepo.id && branch.branch_name === branchName
-  );
+  ).sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0)) : [];
+  const linkedBranch = matchingBranches.find(branch => branch.environment_id === developmentEnvironment?.id) ||
+    matchingBranches[0] || null;
   const targetByEnvironment = new Map(targets.map(target => [target.environment_id, target]));
   const envByKind = new Map(environments.map(environment => [environment.kind, environment]));
   const instructionText = aiSettings.instructions || aiSettings.system_prompt || "";
@@ -239,7 +242,7 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
       query("feltus_environments", tableRequest, { select: "id,name,kind,status,created_at", app_id: common, order: "created_at.asc", limit: "20" }),
       query("feltus_deployment_targets", tableRequest, { select: "id,environment_id,provider_key,provider_resource_reference,active", app_id: common, active: "eq.true", limit: "20" }),
       query("feltus_project_repositories", tableRequest, { select: "repository_id,created_at", app_id: common, order: "created_at.desc", limit: "20" }),
-      query("feltus_repository_branches", tableRequest, { select: "repository_id,branch_name,is_default,latest_commit_sha,updated_at", app_id: common, order: "updated_at.desc", limit: "100" }),
+      query("feltus_repository_branches", tableRequest, { select: "repository_id,environment_id,branch_name,is_default,latest_commit_sha,updated_at", app_id: common, order: "updated_at.desc", limit: "100" }),
       query("feltus_application_blueprints", tableRequest, { select: "id,app_id,version,parent_blueprint_id,parent_version,state_hash,state,status,created_by,created_at,source_commit", app_id: common, order: "version.desc", limit: "100" }),
       query("feltus_builds", tableRequest, { select: "id,repository_id,blueprint_id,source_branch,commit_sha,status,created_at,completed_at", app_id: common, order: "created_at.desc", limit: "100" }),
       query("feltus_artifacts", tableRequest, { select: "id,build_id,blueprint_id,registry_image,artifact_digest,verification_status,environment_eligibility,created_at,verified_at", app_id: common, order: "created_at.desc", limit: "100" }),
@@ -588,6 +591,11 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
         }
         if (!inputs.repoLinks.some(link => link.repository_id === repositoryId)) {
           throw fail(400, "That repository is not connected to this application.");
+        }
+        const blueprintCode = currentState.state.desired_state.code;
+        if ((blueprintCode.branch && sourceBranch !== blueprintCode.branch) ||
+            (blueprintCode.commit && commitSha.toLowerCase() !== String(blueprintCode.commit).toLowerCase())) {
+          throw fail(409, "Choose the branch and commit recorded in the current application blueprint.");
         }
         const result = await serviceRequest("/rest/v1/rpc/feltus_queue_application_build", {
           method: "POST",
