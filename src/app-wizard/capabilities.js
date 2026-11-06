@@ -485,7 +485,23 @@ async function githubMarkup(app) {
     sourceCard = '<p>Connect a GitHub account to choose a repository for this app. FELTUS keeps the access credential on the server.</p><a class="button button-primary" href="/api/apps/' +
       encodeURIComponent(app.id) + '/github/connect">Connect GitHub</a>';
   } else {
-    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>GitHub connected</strong><p>Choose the repository that contains this app.</p></div></div><button class="button button-primary" type="button" data-github-load-repositories>Choose a Repository</button>';
+    const reconnectConnections = new Map();
+    for (const repository of status.repositories || []) {
+      const connectionId = String(repository.git_connection_id || "");
+      if (!/^[0-9a-f-]{36}$/i.test(connectionId)) continue;
+      if (!reconnectConnections.has(connectionId)) reconnectConnections.set(connectionId, []);
+      reconnectConnections.get(connectionId).push(repository.name || "attached repository");
+    }
+    const reconnectActions = reconnectConnections.size
+      ? [...reconnectConnections.entries()].map(([connectionId, names]) => {
+        const label = reconnectConnections.size === 1
+          ? "Reconnect GitHub"
+          : "Reconnect GitHub for " + names[0];
+        return '<a class="button" href="/api/apps/' + encodeURIComponent(app.id) + '/github/connect?connection_id=' +
+          encodeURIComponent(connectionId) + '">' + escapeCapabilityHtml(label) + '</a>';
+      }).join("")
+      : '<a class="button" href="/api/apps/' + encodeURIComponent(app.id) + '/github/connect">Reconnect GitHub</a>';
+    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>GitHub connected</strong><p>Choose the repository that contains this app.</p></div></div><button class="button button-primary" type="button" data-github-load-repositories>Choose a Repository</button>' + reconnectActions;
   }
   return '<p class="eyebrow">Build · Repository</p><h1 class="page-title">Connect your app source</h1><p class="page-lede">Choose the code FELTUS should build. Commit updates are recorded for this app; they do not trigger deployment automatically.</p>' +
     callbackNotice + '<section class="cap-section"><h2>App source</h2>' + sourceCard + '<div class="cap-list" data-github-repository-list hidden></div></section>';

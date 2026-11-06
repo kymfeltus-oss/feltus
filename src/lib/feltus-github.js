@@ -300,11 +300,12 @@ export async function resolveGithubOAuthAccessToken({
   return { access_token: replacement.access_token, credential_ciphertext: replacementCiphertext };
 }
 
-export function createGithubOAuthState({ appId, userId, masterKey, now = Date.now(), ttlMs = 10 * 60_000 } = {}) {
+export function createGithubOAuthState({ appId, userId, connectionId = null, masterKey, now = Date.now(), ttlMs = 10 * 60_000 } = {}) {
   if (!UUID.test(String(appId || "")) || !UUID.test(String(userId || ""))) throw new TypeError("GitHub authorization requires a valid app and user.");
+  if (connectionId !== null && !UUID.test(String(connectionId))) throw new TypeError("GitHub authorization connection reference is invalid.");
   if (!Number.isInteger(ttlMs) || ttlMs < 30_000 || ttlMs > 10 * 60_000) throw new TypeError("GitHub authorization lifetime is invalid.");
   const nonce = randomBytes(32).toString("base64url");
-  const claims = { app_id: appId, user_id: userId, nonce, issued_at: now, expires_at: now + ttlMs };
+  const claims = { app_id: appId, user_id: userId, ...(connectionId ? { connection_id: connectionId } : {}), nonce, issued_at: now, expires_at: now + ttlMs };
   const payload = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
   const signature = createHmac("sha256", deriveKey(masterKey, "github-oauth-state:v1")).update(payload).digest("base64url");
   return { state: `${payload}.${signature}`, nonce };
@@ -327,7 +328,8 @@ export function verifyGithubOAuthState(state, cookieNonce, { masterKey, userId, 
       claims.issued_at > now + 60_000 || claims.expires_at <= now || claims.expires_at - claims.issued_at > 10 * 60_000) {
     throw new TypeError("GitHub authorization state is invalid or expired.");
   }
-  return { app_id: claims.app_id, user_id: claims.user_id };
+  if (claims.connection_id !== undefined && !UUID.test(String(claims.connection_id))) throw new TypeError("GitHub authorization state is invalid or expired.");
+  return { app_id: claims.app_id, user_id: claims.user_id, connection_id: claims.connection_id || null };
 }
 
 export function verifyGithubWebhookSignature(rawBody, signatureHeader, secret) {

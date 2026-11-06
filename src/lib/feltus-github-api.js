@@ -179,6 +179,56 @@ export function createGithubApiHandler({
     })), "GitHub connection");
   }
 
+  async function oauthReconnectTargetConnectionId(app, requestedConnectionId = null) {
+    if (!app?.organization_id) return null;
+    if (requestedConnectionId !== null && !UUID.test(String(requestedConnectionId))) {
+      const error = new Error("Choose a valid GitHub connection to reconnect.");
+      error.status = 400;
+      throw error;
+    }
+    const links = rows(await serviceRequest("/rest/v1/feltus_project_repositories?" + new URLSearchParams({
+      select: "repository_id",
+      organization_id: "eq." + app.organization_id,
+      app_id: "eq." + app.id,
+      limit: "10"
+    })), "Application repositories");
+    const repositoryIds = [...new Set(links.map(link => String(link.repository_id || "")).filter(id => UUID.test(id)))];
+    if (repositoryIds.length) {
+      const repositories = rows(await serviceRequest("/rest/v1/feltus_repositories?" + new URLSearchParams({
+        select: "id,git_connection_id",
+        organization_id: "eq." + app.organization_id,
+        id: "in.(" + repositoryIds.join(",") + ")"
+      })), "Application repositories");
+      const connectionIds = [...new Set(repositories.map(repository => String(repository.git_connection_id || "")).filter(id => UUID.test(id)))];
+      if (requestedConnectionId) {
+        if (!connectionIds.includes(requestedConnectionId)) {
+          const error = new Error("That GitHub connection is not attached to this app.");
+          error.status = 404;
+          throw error;
+        }
+        return requestedConnectionId;
+      }
+      if (connectionIds.length === 1) return connectionIds[0];
+      if (connectionIds.length > 1) return null;
+    } else if (requestedConnectionId) {
+      const error = new Error("That GitHub connection is not attached to this app.");
+      error.status = 404;
+      throw error;
+    }
+
+    const activeConnections = rows(await serviceRequest("/rest/v1/feltus_git_connections?" + new URLSearchParams({
+      select: "id",
+      organization_id: "eq." + app.organization_id,
+      provider: "eq.github",
+      disabled_at: "is.null",
+      order: "created_at.desc",
+      limit: "2"
+    })), "GitHub connections");
+    return activeConnections.length === 1 && UUID.test(String(activeConnections[0].id || ""))
+      ? activeConnections[0].id
+      : null;
+  }
+
   async function reloadConnectionCredential(connection) {
     if (!connection?.id) return null;
     return firstRow(await serviceRequest("/rest/v1/feltus_git_connections?" + new URLSearchParams({
@@ -257,6 +307,7 @@ export function createGithubApiHandler({
     })), "Repository branches");
     return repositories.map(repository => ({
       id: repository.id,
+      git_connection_id: repository.git_connection_id,
       provider_repository_id: repository.provider_repository_id,
       name: repository.repository_name,
       default_branch: repository.default_branch,
@@ -464,40 +515,24 @@ export function createGithubApiHandler({
           throw new Error("GitHub authorization did not return an access token.");
         }
         const profile = await githubRequest("/user", tokenResult.access_token);
-        if (!profile || !/^[A-Za-z0-9-]{1,39}$/.test(String(profile.login || "")) || !app.organization_id) {
+        if (!profile || !/^[A-Za-z0-9-]{1,39}$/.test(String(profile.login || "")) ||
+            !/^[0-9]{1,30}$/.test(String(profile.id || "")) || !app.organization_id) {
           throw new Error("GitHub account details could not be verified.");
         }
         const credentialCiphertext = encryptGithubOAuthCredentialBundle(tokenResult, env.FELTUS_SECRET_ENCRYPTION_KEY);
-        const existingConnectionFilter = new URLSearchParams({
-          select: "id,account_label,created_at",
-          organization_id: "eq." + app.organization_id,
-          provider: "eq.github",
-          account_label: "ilike." + String(profile.login),
-          disabled_at: "is.null"
-        });
-        const updatedConnections = rows(await serviceRequest(
-          "/rest/v1/feltus_git_connections?" + existingConnectionFilter.toString(),
-          {
-            method: "PATCH",
-            prefer: "return=representation",
-            body: { credential_ciphertext: credentialCiphertext }
+        const connection = firstRow(await serviceRequest("/rest/v1/rpc/feltus_save_github_oauth_connection", {
+          method: "POST",
+          prefer: "return=representation",
+          body: {
+            p_organization_id: app.organization_id,
+            p_provider_account_id: String(profile.id),
+            p_account_label: String(profile.login).slice(0, 120),
+            p_credential_ciphertext: credentialCiphertext,
+            p_encryption_key_version: ENCRYPTION_KEY_VERSION,
+            p_created_by: user.id,
+            p_target_connection_id: claim.connection_id
           }
-        ), "GitHub connection");
-        const connection = updatedConnections[0] || firstRow(await serviceRequest(
-          "/rest/v1/feltus_git_connections?select=id,account_label,created_at",
-          {
-            method: "POST",
-            prefer: "return=representation",
-            body: {
-              organization_id: app.organization_id,
-              provider: "github",
-              account_label: String(profile.login).slice(0, 120),
-              credential_ciphertext: credentialCiphertext,
-              encryption_key_version: ENCRYPTION_KEY_VERSION,
-              created_by: user.id
-            }
-          }
-        ), "GitHub connection");
+        }), "GitHub connection");
         if (!connection?.id) throw new Error("GitHub connection could not be saved.");
         res.writeHead(302, {
           Location: "/apps/" + encodeURIComponent(app.id) + "/source?github=connected",
@@ -530,7 +565,8 @@ export function createGithubApiHandler({
           send(res, 503, { error: config.reason });
           return true;
         }
-        const { state, nonce } = createGithubOAuthState({ appId, userId: user.id, masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY });
+        const connectionId = await oauthReconnectTargetConnectionId(app, url.searchParams.get("connection_id"));
+        const { state, nonce } = createGithubOAuthState({ appId, userId: user.id, connectionId, masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY });
         const callbackUrl = new URL("/api/github/callback", config.publicUrl).toString();
         const authorize = new URL("https://github.com/login/oauth/authorize");
         authorize.searchParams.set("client_id", env.FELTUS_GITHUB_CLIENT_ID);

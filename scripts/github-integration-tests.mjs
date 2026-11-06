@@ -139,7 +139,15 @@ console.log("PASS legacy v1 credentials remain usable until invalidated and fail
 const oauth = createGithubOAuthState({ appId: APP_ID, userId: USER_ID, masterKey: KEY, now: 100_000 });
 assert.deepEqual(verifyGithubOAuthState(oauth.state, oauth.nonce, { masterKey: KEY, userId: USER_ID, now: 101_000 }), {
   app_id: APP_ID,
-  user_id: USER_ID
+  user_id: USER_ID,
+  connection_id: null
+});
+const targetConnectionId = "6f6f6f6f-6666-4666-8666-666666666666";
+const targetedOAuth = createGithubOAuthState({ appId: APP_ID, userId: USER_ID, connectionId: targetConnectionId, masterKey: KEY, now: 100_000 });
+assert.deepEqual(verifyGithubOAuthState(targetedOAuth.state, targetedOAuth.nonce, { masterKey: KEY, userId: USER_ID, now: 101_000 }), {
+  app_id: APP_ID,
+  user_id: USER_ID,
+  connection_id: targetConnectionId
 });
 assert.throws(() => verifyGithubOAuthState(oauth.state, "different-browser-nonce", { masterKey: KEY, userId: USER_ID, now: 101_000 }));
 assert.throws(() => verifyGithubOAuthState(oauth.state, oauth.nonce, { masterKey: KEY, userId: APP_ID, now: 101_000 }));
@@ -198,9 +206,9 @@ const oauthHandler = createGithubApiHandler({
     return { status: 200, data: [{ id: APP_ID, owner_id: USER_ID, organization_id: "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4", app_name: "Northwind", setup_status: "configuring" }] };
   },
   serviceRequest: async (path, options = {}) => {
-    if (options.method === "POST") {
+    if (path.includes("/rpc/feltus_save_github_oauth_connection")) {
       savedConnection = options.body;
-      return { status: 201, data: [{ id: "e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5", account_label: "feltus-owner" }] };
+      return { status: 200, data: [{ id: "e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5", account_label: options.body.p_account_label }] };
     }
     return { status: 200, data: [] };
   },
@@ -214,7 +222,7 @@ const oauthHandler = createGithubApiHandler({
       refresh_token: OAUTH_REFRESH_TOKEN, refresh_token_expires_in: 15897600,
       token_type: "bearer", scope: "repo,admin:repo_hook,read:user"
     });
-    if (String(url) === "https://api.github.com/user") return Response.json({ login: "feltus-owner" });
+    if (String(url) === "https://api.github.com/user") return Response.json({ id: 123456789, login: "feltus-owner" });
     throw new Error("Unexpected GitHub request.");
   }
 });
@@ -233,10 +241,11 @@ const callback = await makeRequest(oauthHandler, oauthHandler.handleAuthenticate
   });
 assert.equal(callback.status, 302);
 assert.equal(callback.headers.Location, "/apps/" + APP_ID + "/source?github=connected");
-assert.equal(savedConnection.provider, "github");
-assert.equal(savedConnection.credential_ciphertext.includes(OAUTH_TOKEN), false);
-assert.equal(savedConnection.credential_ciphertext.includes(OAUTH_REFRESH_TOKEN), false);
-const callbackBundle = decryptGithubOAuthCredentialBundle(savedConnection.credential_ciphertext, KEY);
+assert.equal(savedConnection.p_provider_account_id, "123456789");
+assert.equal(savedConnection.p_target_connection_id, null);
+assert.equal(savedConnection.p_credential_ciphertext.includes(OAUTH_TOKEN), false);
+assert.equal(savedConnection.p_credential_ciphertext.includes(OAUTH_REFRESH_TOKEN), false);
+const callbackBundle = decryptGithubOAuthCredentialBundle(savedConnection.p_credential_ciphertext, KEY);
 assert.equal(callbackBundle.access_token, OAUTH_TOKEN);
 assert.equal(callbackBundle.refresh_token, OAUTH_REFRESH_TOKEN);
 assert.ok(Date.parse(callbackBundle.access_token_expires_at) > Date.now());
@@ -513,30 +522,28 @@ const reconnectRepositorySnapshot = structuredClone(reconnectRepository);
 const reconnectProjectLinkSnapshot = structuredClone(reconnectProjectLink);
 const reconnectBranchSnapshot = structuredClone(reconnectBranch);
 const reconnectWrites = [];
-let reconnectInsertCount = 0;
+let reconnectSaveCount = 0;
 const reconnectHandler = createGithubApiHandler({
   tableRequest: async () => ({ status: 200, data: [{
     id: APP_ID, owner_id: USER_ID, organization_id: organizationId, app_name: "Northwind"
   }] }),
   serviceRequest: async (path, options = {}) => {
-    if (path.includes("feltus_git_connections?") && options.method === "PATCH") {
+    if (path.includes("feltus_project_repositories?")) return { status: 200, data: [reconnectProjectLink] };
+    if (path.includes("feltus_repositories?")) return { status: 200, data: [reconnectRepository] };
+    if (path.includes("feltus_git_connections?")) return { status: 200, data: [reconnectConnection] };
+    if (path.includes("/rpc/feltus_save_github_oauth_connection")) {
       reconnectWrites.push({ path, options });
-      assert.match(path, /organization_id=eq\./);
-      assert.match(path, /provider=eq\.github/);
-      assert.match(path, /account_label=ilike\.feltus-owner/i);
-      assert.match(path, /disabled_at=is\.null/);
-      const changedFields = Object.keys(options.body);
-      assert.deepEqual(changedFields, ["credential_ciphertext"]);
-      reconnectConnection.credential_ciphertext = options.body.credential_ciphertext;
+      reconnectSaveCount += 1;
+      assert.equal(options.body.p_target_connection_id, reconnectConnection.id);
+      assert.equal(options.body.p_provider_account_id, "1234567890");
+      reconnectConnection.credential_ciphertext = options.body.p_credential_ciphertext;
+      reconnectConnection.provider_account_id = options.body.p_provider_account_id;
+      reconnectConnection.account_label = options.body.p_account_label;
       return { status: 200, data: [{
         id: reconnectConnection.id,
         account_label: reconnectConnection.account_label,
         created_at: reconnectConnection.created_at
       }] };
-    }
-    if (path.includes("feltus_git_connections?") && options.method === "POST") {
-      reconnectInsertCount += 1;
-      return { status: 201, data: [{ id: "new-connection-must-not-exist", account_label: "feltus-owner" }] };
     }
     throw new Error("OAuth reconnect must not modify repository linkage records.");
   },
@@ -552,7 +559,7 @@ const reconnectHandler = createGithubApiHandler({
         refresh_token_expires_in: 15897600
       });
     }
-    if (String(url) === "https://api.github.com/user") return Response.json({ login: "feltus-owner" });
+    if (String(url) === "https://api.github.com/user") return Response.json({ id: 1234567890, login: "feltus-owner-renamed" });
     throw new Error("Unexpected reconnect OAuth request.");
   }
 });
@@ -567,8 +574,10 @@ const reconnectCallback = await makeRequest(reconnectHandler, reconnectHandler.h
 assert.equal(reconnectCallback.status, 302);
 assert.equal(reconnectCallback.headers.Location, "/apps/" + APP_ID + "/source?github=connected");
 assert.equal(reconnectWrites.length, 1);
-assert.equal(reconnectInsertCount, 0);
+assert.equal(reconnectSaveCount, 1);
 assert.equal(reconnectConnection.id, "6f6f6f6f-6666-4666-8666-666666666666");
+assert.equal(reconnectConnection.provider_account_id, "1234567890");
+assert.equal(reconnectConnection.account_label, "feltus-owner-renamed");
 assert.notEqual(reconnectConnection.credential_ciphertext.includes(reconnectLegacyToken), true);
 assert.equal(reconnectConnection.credential_ciphertext.includes(reconnectAccessToken), false);
 assert.equal(reconnectConnection.credential_ciphertext.includes(reconnectRefreshToken), false);
