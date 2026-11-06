@@ -38,6 +38,13 @@ function safeImageName(value) {
     /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$/.test(value);
 }
 
+export function registryRepositoryWithoutTag(registryImage) {
+  if (!safeImageName(registryImage)) throw failure("ARTIFACT_REFERENCE_INVALID");
+  const finalPathComponent = registryImage.lastIndexOf("/") + 1;
+  const tagSeparator = registryImage.indexOf(":", finalPathComponent);
+  return tagSeparator === -1 ? registryImage : registryImage.slice(0, tagSeparator);
+}
+
 function coolifyDigestTag(artifactDigest) {
   const match = /^sha256:([0-9a-f]{64})$/.exec(artifactDigest || "");
   if (!match) throw failure("ARTIFACT_REFERENCE_INVALID");
@@ -216,9 +223,10 @@ export function createInfrastructureWorker({
     }
     if (command.command_type === "deploy_artifact") {
       if (artifact.verification_status !== "passed") throw failure("ARTIFACT_NOT_VERIFIED");
-      if (!safeImageName(artifact.registry_image) || !/^sha256:[0-9a-f]{64}$/.test(artifact.artifact_digest || "")) {
+      if (!/^sha256:[0-9a-f]{64}$/.test(artifact.artifact_digest || "")) {
         throw failure("ARTIFACT_REFERENCE_INVALID");
       }
+      registryRepositoryWithoutTag(artifact.registry_image);
     }
     return { deployment, target, environment, artifact };
   }
@@ -229,7 +237,7 @@ export function createInfrastructureWorker({
 
   async function deploymentOperation(command, context, signal) {
     const { target, artifact } = context;
-    const imageName = `${artifact.registry_image}@sha256`;
+    const imageName = `${registryRepositoryWithoutTag(artifact.registry_image)}@sha256`;
     const imageTag = coolifyDigestTag(artifact.artifact_digest);
     const application = await coolify.getApplication(target.provider_resource_reference, { signal });
     if (!application || !["dockerimage", "docker_image", "docker-image"].includes(String(application.build_pack || "").toLowerCase())) {

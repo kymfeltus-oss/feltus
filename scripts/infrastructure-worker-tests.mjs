@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createCoolifyClient } from "../src/lib/feltus-coolify.js";
-import { createInfrastructureWorker } from "../src/lib/feltus-infrastructure-worker.js";
+import {
+  createInfrastructureWorker,
+  registryRepositoryWithoutTag
+} from "../src/lib/feltus-infrastructure-worker.js";
 
 const outboxId = "71000000-0000-4000-8000-000000000001";
 const deploymentId = "72000000-0000-4000-8000-000000000001";
@@ -16,6 +19,10 @@ const resourceReference = "coolify-app-123";
 const image = "ghcr.io/feltus/app";
 const digest = `sha256:${"a".repeat(64)}`;
 const coolifyDigest = `sha256-${"a".repeat(64)}`;
+const verifiedRegistryImage = "ghcr.io/kymfeltus-oss/feltus-apps/1cbbf36c-b3b5-43d5-a43e-9d5b6089c194:build-4db1469d-c16b-4630-a1ec-06c4ff9ad770";
+const verifiedRepository = "ghcr.io/kymfeltus-oss/feltus-apps/1cbbf36c-b3b5-43d5-a43e-9d5b6089c194";
+const verifiedDigest = "sha256:d5f6ae5619392ac92c904db7cd8b9066b7a6600aca9018973a6797fde3ea635b";
+const verifiedCoolifyDigest = "sha256-d5f6ae5619392ac92c904db7cd8b9066b7a6600aca9018973a6797fde3ea635b";
 
 const outboxCommand = {
   id: outboxId,
@@ -127,6 +134,23 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
 }
 
 {
+  assert.equal(registryRepositoryWithoutTag("ghcr.io/org/app:build-123"), "ghcr.io/org/app");
+  assert.equal(
+    registryRepositoryWithoutTag("registry.example.com:5000/org/app:build-123"),
+    "registry.example.com:5000/org/app"
+  );
+  assert.equal(
+    registryRepositoryWithoutTag("registry.example.com:5000/org/app"),
+    "registry.example.com:5000/org/app"
+  );
+  assert.throws(
+    () => registryRepositoryWithoutTag("ghcr.io/org/app:bad tag"),
+    error => error.code === "ARTIFACT_REFERENCE_INVALID"
+  );
+  console.log("PASS repository derivation strips only a final image tag and preserves registry ports");
+}
+
+{
   const { rest, coolify, calls } = fixtures("staging", true, "revoked", "active", "HEALTHY");
   const worker = createInfrastructureWorker({ rest, coolify, workerId: "worker-test", allowedEnvironments: ["staging"], resourceMap: { staging: [resourceReference] } });
   const command = { ...outboxCommand, command_type: "configure_domain_tls", command_payload: { domain_id: domainId } };
@@ -191,7 +215,9 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
 }
 
 {
-  const { rest, coolify, calls, artifact } = fixtures();
+  const { rest, coolify, calls, artifact } = fixtures(
+    "staging", true, "passed", "active", "QUEUED", [], verifiedRegistryImage, null, verifiedDigest
+  );
   const worker = createInfrastructureWorker({
     rest,
     coolify,
@@ -204,10 +230,11 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   const deployIndex = calls.findIndex(call => call.coolify_deploy);
   assert.ok(updateIndex >= 0 && deployIndex > updateIndex, "the immutable image digest is configured before deploy");
   assert.deepEqual(calls[updateIndex].coolify_update, {
-    docker_registry_image_name: `${image}@sha256`,
-    docker_registry_image_tag: coolifyDigest
+    docker_registry_image_name: `${verifiedRepository}@sha256`,
+    docker_registry_image_tag: verifiedCoolifyDigest
   });
-  assert.equal(artifact.artifact_digest, digest, "the canonical FELTUS digest remains unchanged");
+  assert.equal(artifact.registry_image, verifiedRegistryImage, "the canonical FELTUS registry image remains unchanged");
+  assert.equal(artifact.artifact_digest, verifiedDigest, "the canonical FELTUS digest remains unchanged");
   assert.ok(calls.some(call => call.path?.includes("feltus_complete_infrastructure_outbox")));
   console.log("PASS canonical SHA-256 digest is encoded for Coolify and refreshed application state is verified");
 }
@@ -252,7 +279,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   });
   assert.equal(await worker.processOne(outboxCommand), true);
   assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
-    docker_registry_image_name: `${generatedImage}@sha256`,
+    docker_registry_image_name: `ghcr.io/feltus/${appId}@sha256`,
     docker_registry_image_tag: coolifyDigest
   });
   assert.ok(calls.some(call => call.coolify_deploy));
@@ -298,6 +325,25 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   const completed = calls.find(call => call.path?.includes("feltus_complete_infrastructure_outbox"));
   assert.equal(completed?.body?.p_provider_operation_id, "coolify-deploy-accepted-after-config");
   console.log("PASS accepted-during-configuration history matches the Coolify-encoded digest");
+}
+
+{
+  const { rest, coolify, calls } = fixtures(
+    "staging", true, "passed", "active", "QUEUED", [], "ghcr.io/feltus/app:bad tag"
+  );
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] }
+  });
+  assert.equal(await worker.processOne(outboxCommand), false);
+  assert.equal(calls.some(call => call.coolify_update || call.coolify_deploy), false);
+  const retry = calls.find(call => call.path?.includes("feltus_retry_infrastructure_outbox"));
+  assert.equal(retry?.body?.p_error_code, "ARTIFACT_REFERENCE_INVALID");
+  assert.equal(retry?.body?.p_retryable, false);
+  console.log("PASS invalid registry image references fail closed before any Coolify request");
 }
 
 {
