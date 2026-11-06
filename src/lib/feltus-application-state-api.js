@@ -91,10 +91,7 @@ async function deploymentWorkerAvailability(tableRequest) {
 }
 
 function lifecycleStatus(app) {
-  if (app.setup_status === "archived") return "archived";
-  if (app.setup_status === "configuring") return "configuring";
-  if (app.setup_status === "draft") return "draft";
-  return "active";
+  return app.setup_status === "archived" ? "archived" : "active";
 }
 
 function safeInstructionVersion(instructions) {
