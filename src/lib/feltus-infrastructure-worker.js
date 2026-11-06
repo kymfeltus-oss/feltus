@@ -35,7 +35,7 @@ function safeResourceReference(value) {
 
 function safeImageName(value) {
   return typeof value === "string" && value.length <= 255 &&
-    /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/.test(value);
+    /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$/.test(value);
 }
 
 function coolifyDeploymentId(value) {

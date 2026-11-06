@@ -31,7 +31,7 @@ const outboxCommand = {
   created_at: "2026-11-03T12:00:00.000Z"
 };
 
-function fixtures(environmentKind = "staging", targetActive = true, artifactStatus = "passed", environmentStatus = "active", deploymentStatus = "QUEUED", providerHistory = []) {
+function fixtures(environmentKind = "staging", targetActive = true, artifactStatus = "passed", environmentStatus = "active", deploymentStatus = "QUEUED", providerHistory = [], registryImage = image) {
   let coolifyImage = {
     docker_registry_image_name: "ghcr.io/feltus/old",
     docker_registry_image_tag: "old",
@@ -64,7 +64,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
     id: artifactId,
     organization_id: orgId,
     app_id: appId,
-    registry_image: image,
+    registry_image: registryImage,
     artifact_digest: digest,
     verification_status: artifactStatus
   };
@@ -206,6 +206,25 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   });
   assert.ok(calls.some(call => call.path?.includes("feltus_complete_infrastructure_outbox")));
   console.log("PASS outbox deployment validates scope and artifact, configures the digest, then completes the lease");
+}
+
+{
+  const generatedImage = `ghcr.io/feltus/${appId}:build-${outboxId}`;
+  const { rest, coolify, calls } = fixtures("staging", true, "passed", "active", "QUEUED", [], generatedImage);
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] }
+  });
+  assert.equal(await worker.processOne(outboxCommand), true);
+  assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
+    docker_registry_image_name: generatedImage,
+    docker_registry_image_tag: digest
+  });
+  assert.ok(calls.some(call => call.coolify_deploy));
+  console.log("PASS generated per-build image tags pass infrastructure artifact validation");
 }
 
 {
