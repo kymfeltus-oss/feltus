@@ -467,19 +467,37 @@ export function createGithubApiHandler({
         if (!profile || !/^[A-Za-z0-9-]{1,39}$/.test(String(profile.login || "")) || !app.organization_id) {
           throw new Error("GitHub account details could not be verified.");
         }
-        const savedConnection = await serviceRequest("/rest/v1/feltus_git_connections?select=id,account_label,created_at", {
-          method: "POST",
-          prefer: "return=representation",
-          body: {
-            organization_id: app.organization_id,
-            provider: "github",
-            account_label: String(profile.login).slice(0, 120),
-            credential_ciphertext: encryptGithubOAuthCredentialBundle(tokenResult, env.FELTUS_SECRET_ENCRYPTION_KEY),
-            encryption_key_version: ENCRYPTION_KEY_VERSION,
-            created_by: user.id
-          }
+        const credentialCiphertext = encryptGithubOAuthCredentialBundle(tokenResult, env.FELTUS_SECRET_ENCRYPTION_KEY);
+        const existingConnectionFilter = new URLSearchParams({
+          select: "id,account_label,created_at",
+          organization_id: "eq." + app.organization_id,
+          provider: "eq.github",
+          account_label: "ilike." + String(profile.login),
+          disabled_at: "is.null"
         });
-        const connection = firstRow(savedConnection, "GitHub connection");
+        const updatedConnections = rows(await serviceRequest(
+          "/rest/v1/feltus_git_connections?" + existingConnectionFilter.toString(),
+          {
+            method: "PATCH",
+            prefer: "return=representation",
+            body: { credential_ciphertext: credentialCiphertext }
+          }
+        ), "GitHub connection");
+        const connection = updatedConnections[0] || firstRow(await serviceRequest(
+          "/rest/v1/feltus_git_connections?select=id,account_label,created_at",
+          {
+            method: "POST",
+            prefer: "return=representation",
+            body: {
+              organization_id: app.organization_id,
+              provider: "github",
+              account_label: String(profile.login).slice(0, 120),
+              credential_ciphertext: credentialCiphertext,
+              encryption_key_version: ENCRYPTION_KEY_VERSION,
+              created_by: user.id
+            }
+          }
+        ), "GitHub connection");
         if (!connection?.id) throw new Error("GitHub connection could not be saved.");
         res.writeHead(302, {
           Location: "/apps/" + encodeURIComponent(app.id) + "/source?github=connected",

@@ -469,6 +469,134 @@ const linkedRepo = {
   default_branch: "main",
   webhook_id: null
 };
+const reconnectAccessToken = "gho_reconnected_access_token_never_returned";
+const reconnectRefreshToken = "ghr_reconnected_refresh_token_never_returned";
+const reconnectLegacyToken = "expired-legacy-github-access-token";
+const reconnectConnection = {
+  id: "6f6f6f6f-6666-4666-8666-666666666666",
+  organization_id: organizationId,
+  provider: "github",
+  account_label: "Feltus-Owner",
+  credential_ciphertext: encryptGithubSecret(reconnectLegacyToken, KEY, "github-oauth-token:v1"),
+  encryption_key_version: "aes-256-gcm-hkdf-v1",
+  disabled_at: null,
+  created_at: "2026-01-01T00:00:00.000Z"
+};
+const reconnectRepository = {
+  id: REPO_ID,
+  organization_id: organizationId,
+  git_connection_id: reconnectConnection.id,
+  provider_repository_id: "123456789",
+  repository_name: "feltus-owner/northwind",
+  clone_url: "https://github.com/feltus-owner/northwind.git",
+  default_branch: "codex/feltus-phase3-state-delivery-engine",
+  webhook_id: "4242",
+  webhook_secret_ciphertext: encryptGithubSecret(HOOK_SECRET, KEY, "github-webhook-secret:v1"),
+  webhook_secret_key_version: "aes-256-gcm-hkdf-v1",
+  archived_at: null
+};
+const reconnectProjectLink = {
+  organization_id: organizationId, app_id: APP_ID, repository_id: REPO_ID, attached_by: USER_ID
+};
+const reconnectDevelopmentEnvironment = "7f7f7f7f-7777-4777-8777-777777777777";
+const reconnectBranch = {
+  organization_id: organizationId,
+  app_id: APP_ID,
+  repository_id: REPO_ID,
+  environment_id: reconnectDevelopmentEnvironment,
+  branch_name: "codex/feltus-phase3-state-delivery-engine",
+  is_default: true,
+  latest_commit_sha: "b".repeat(40),
+  updated_at: "2026-11-01T12:00:00.000Z"
+};
+const reconnectRepositorySnapshot = structuredClone(reconnectRepository);
+const reconnectProjectLinkSnapshot = structuredClone(reconnectProjectLink);
+const reconnectBranchSnapshot = structuredClone(reconnectBranch);
+const reconnectWrites = [];
+let reconnectInsertCount = 0;
+const reconnectHandler = createGithubApiHandler({
+  tableRequest: async () => ({ status: 200, data: [{
+    id: APP_ID, owner_id: USER_ID, organization_id: organizationId, app_name: "Northwind"
+  }] }),
+  serviceRequest: async (path, options = {}) => {
+    if (path.includes("feltus_git_connections?") && options.method === "PATCH") {
+      reconnectWrites.push({ path, options });
+      assert.match(path, /organization_id=eq\./);
+      assert.match(path, /provider=eq\.github/);
+      assert.match(path, /account_label=ilike\.feltus-owner/i);
+      assert.match(path, /disabled_at=is\.null/);
+      const changedFields = Object.keys(options.body);
+      assert.deepEqual(changedFields, ["credential_ciphertext"]);
+      reconnectConnection.credential_ciphertext = options.body.credential_ciphertext;
+      return { status: 200, data: [{
+        id: reconnectConnection.id,
+        account_label: reconnectConnection.account_label,
+        created_at: reconnectConnection.created_at
+      }] };
+    }
+    if (path.includes("feltus_git_connections?") && options.method === "POST") {
+      reconnectInsertCount += 1;
+      return { status: 201, data: [{ id: "new-connection-must-not-exist", account_label: "feltus-owner" }] };
+    }
+    throw new Error("OAuth reconnect must not modify repository linkage records.");
+  },
+  readBody: async () => ({}),
+  getUser: () => ({ id: USER_ID }),
+  env: connectEnv,
+  fetchImpl: async url => {
+    if (String(url) === "https://github.com/login/oauth/access_token") {
+      return Response.json({
+        access_token: reconnectAccessToken,
+        expires_in: 28800,
+        refresh_token: reconnectRefreshToken,
+        refresh_token_expires_in: 15897600
+      });
+    }
+    if (String(url) === "https://api.github.com/user") return Response.json({ login: "feltus-owner" });
+    throw new Error("Unexpected reconnect OAuth request.");
+  }
+});
+const reconnectConnect = await makeRequest(reconnectHandler, reconnectHandler.handleAuthenticated.bind(reconnectHandler),
+  "/api/apps/" + APP_ID + "/github/connect", { method: "GET", headers: {} });
+const reconnectAuthorizationUrl = new URL(reconnectConnect.headers.Location);
+const reconnectCookie = reconnectConnect.headers["Set-Cookie"].split(";")[0];
+const reconnectCallback = await makeRequest(reconnectHandler, reconnectHandler.handleAuthenticated.bind(reconnectHandler),
+  "/api/github/callback?state=" + encodeURIComponent(reconnectAuthorizationUrl.searchParams.get("state")) + "&code=reconnect-code", {
+    method: "GET", headers: { cookie: reconnectCookie }
+  });
+assert.equal(reconnectCallback.status, 302);
+assert.equal(reconnectCallback.headers.Location, "/apps/" + APP_ID + "/source?github=connected");
+assert.equal(reconnectWrites.length, 1);
+assert.equal(reconnectInsertCount, 0);
+assert.equal(reconnectConnection.id, "6f6f6f6f-6666-4666-8666-666666666666");
+assert.notEqual(reconnectConnection.credential_ciphertext.includes(reconnectLegacyToken), true);
+assert.equal(reconnectConnection.credential_ciphertext.includes(reconnectAccessToken), false);
+assert.equal(reconnectConnection.credential_ciphertext.includes(reconnectRefreshToken), false);
+const reconnectedBundle = decryptGithubOAuthCredentialBundle(reconnectConnection.credential_ciphertext, KEY);
+assert.equal(reconnectedBundle.access_token, reconnectAccessToken);
+assert.equal(reconnectedBundle.refresh_token, reconnectRefreshToken);
+assert.equal(reconnectRepository.id, reconnectRepositorySnapshot.id);
+assert.equal(reconnectRepository.git_connection_id, reconnectConnection.id);
+assert.equal(reconnectRepository.webhook_id, reconnectRepositorySnapshot.webhook_id);
+assert.equal(reconnectRepository.webhook_secret_ciphertext, reconnectRepositorySnapshot.webhook_secret_ciphertext);
+assert.deepEqual(reconnectRepository, reconnectRepositorySnapshot);
+assert.deepEqual(reconnectProjectLink, reconnectProjectLinkSnapshot);
+assert.deepEqual(reconnectBranch, reconnectBranchSnapshot);
+assert.equal(reconnectBranch.branch_name, "codex/feltus-phase3-state-delivery-engine");
+const workerResolvedReconnectToken = await resolveGithubOAuthAccessToken({
+  credentialCiphertext: reconnectConnection.credential_ciphertext,
+  masterKey: KEY,
+  clientId: connectEnv.FELTUS_GITHUB_CLIENT_ID,
+  clientSecret: CLIENT_SECRET,
+  now: Date.now(),
+  fetchImpl: async () => { throw new Error("A newly reconnected token must already be valid."); }
+});
+assert.equal(workerResolvedReconnectToken.access_token, reconnectAccessToken);
+assert.equal(reconnectCallback.text.includes(reconnectAccessToken), false);
+assert.equal(reconnectCallback.text.includes(reconnectRefreshToken), false);
+assert.equal(reconnectCallback.text.includes(reconnectConnection.credential_ciphertext), false);
+console.log("PASS OAuth reconnect rotates the legacy credential in place and preserves repository, webhook, project-link, and selected-branch identities");
+
 let repositoryExists = false;
 const repositoryWrites = [];
 const repositoryFetches = [];
