@@ -15,6 +15,7 @@ const domainId = "7a000000-0000-4000-8000-000000000001";
 const resourceReference = "coolify-app-123";
 const image = "ghcr.io/feltus/app";
 const digest = `sha256:${"a".repeat(64)}`;
+const coolifyDigest = `sha256-${"a".repeat(64)}`;
 
 const outboxCommand = {
   id: outboxId,
@@ -31,13 +32,14 @@ const outboxCommand = {
   created_at: "2026-11-03T12:00:00.000Z"
 };
 
-function fixtures(environmentKind = "staging", targetActive = true, artifactStatus = "passed", environmentStatus = "active", deploymentStatus = "QUEUED", providerHistory = [], registryImage = image) {
+function fixtures(environmentKind = "staging", targetActive = true, artifactStatus = "passed", environmentStatus = "active", deploymentStatus = "QUEUED", providerHistory = [], registryImage = image, providerHistoryAfterUpdate = null, artifactDigest = digest) {
   let coolifyImage = {
     docker_registry_image_name: "ghcr.io/feltus/old",
     docker_registry_image_tag: "old",
     fqdn: "https://old.example.test",
     config_hash: "old-config"
   };
+  let coolifyHistory = providerHistory;
   const calls = [];
   const deployment = {
     id: deploymentId,
@@ -65,7 +67,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
     organization_id: orgId,
     app_id: appId,
     registry_image: registryImage,
-    artifact_digest: digest,
+    artifact_digest: artifactDigest,
     verification_status: artifactStatus
   };
   const rest = async (path, options = {}) => {
@@ -97,7 +99,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
     },
     async listApplicationDeployments(reference) {
       assert.equal(reference, resourceReference);
-      return providerHistory;
+      return coolifyHistory;
     },
     async updateApplication(reference, body) {
       assert.equal(reference, resourceReference);
@@ -107,6 +109,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
         ...body,
         ...(body.domains ? { fqdn: body.domains, config_hash: "updated-config" } : {})
       };
+      if (providerHistoryAfterUpdate !== null) coolifyHistory = providerHistoryAfterUpdate;
       return { uuid: reference };
     },
     async deployApplication(reference) {
@@ -120,7 +123,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
       return { message: "stopped" };
     }
   };
-  return { rest, coolify, calls };
+  return { rest, coolify, calls, artifact };
 }
 
 {
@@ -188,7 +191,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
 }
 
 {
-  const { rest, coolify, calls } = fixtures();
+  const { rest, coolify, calls, artifact } = fixtures();
   const worker = createInfrastructureWorker({
     rest,
     coolify,
@@ -201,11 +204,40 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   const deployIndex = calls.findIndex(call => call.coolify_deploy);
   assert.ok(updateIndex >= 0 && deployIndex > updateIndex, "the immutable image digest is configured before deploy");
   assert.deepEqual(calls[updateIndex].coolify_update, {
-    docker_registry_image_name: image,
-    docker_registry_image_tag: digest
+    docker_registry_image_name: `${image}@sha256`,
+    docker_registry_image_tag: coolifyDigest
   });
+  assert.equal(artifact.artifact_digest, digest, "the canonical FELTUS digest remains unchanged");
   assert.ok(calls.some(call => call.path?.includes("feltus_complete_infrastructure_outbox")));
-  console.log("PASS outbox deployment validates scope and artifact, configures the digest, then completes the lease");
+  console.log("PASS canonical SHA-256 digest is encoded for Coolify and refreshed application state is verified");
+}
+
+{
+  const { rest, coolify, calls } = fixtures();
+  const getApplication = coolify.getApplication.bind(coolify);
+  let applicationReads = 0;
+  coolify.getApplication = async (...args) => {
+    const refreshed = await getApplication(...args);
+    applicationReads += 1;
+    return applicationReads === 2
+      ? { ...refreshed, docker_registry_image_tag: digest }
+      : refreshed;
+  };
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] }
+  });
+  assert.equal(await worker.processOne(outboxCommand), false);
+  assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
+    docker_registry_image_name: `${image}@sha256`,
+    docker_registry_image_tag: coolifyDigest
+  });
+  const retry = calls.find(call => call.path?.includes("feltus_retry_infrastructure_outbox"));
+  assert.equal(retry?.body?.p_error_code, "COOLIFY_IMAGE_CONFIGURATION_MISMATCH");
+  console.log("PASS refreshed application verification rejects an unencoded Coolify digest");
 }
 
 {
@@ -220,8 +252,8 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   });
   assert.equal(await worker.processOne(outboxCommand), true);
   assert.deepEqual(calls.find(call => call.coolify_update)?.coolify_update, {
-    docker_registry_image_name: generatedImage,
-    docker_registry_image_tag: digest
+    docker_registry_image_name: `${generatedImage}@sha256`,
+    docker_registry_image_tag: coolifyDigest
   });
   assert.ok(calls.some(call => call.coolify_deploy));
   console.log("PASS generated per-build image tags pass infrastructure artifact validation");
@@ -229,7 +261,7 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
 
 {
   const history = [{
-    docker_registry_image_tag: digest,
+    docker_registry_image_tag: coolifyDigest,
     deployment_uuid: "coolify-deploy-previous-attempt",
     created_at: "2026-11-03T12:01:00.000Z",
     status: "in_progress"
@@ -241,6 +273,50 @@ function fixtures(environmentKind = "staging", targetActive = true, artifactStat
   assert.equal(calls.some(call => call.coolify_update), false);
   assert.ok(calls.some(call => call.path?.includes("feltus_complete_infrastructure_outbox")));
   console.log("PASS retries adopt an already accepted deployment with the same immutable digest");
+}
+
+{
+  const acceptedAfterConfiguration = [{
+    docker_registry_image_tag: coolifyDigest,
+    deployment_uuid: "coolify-deploy-accepted-after-config",
+    created_at: "2026-11-03T12:01:00.000Z",
+    status: "in_progress"
+  }];
+  const { rest, coolify, calls } = fixtures(
+    "staging", true, "passed", "active", "QUEUED", [], image, acceptedAfterConfiguration
+  );
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] }
+  });
+  assert.equal(await worker.processOne(outboxCommand), true);
+  assert.ok(calls.some(call => call.coolify_update), "the immutable image configuration is applied first");
+  assert.equal(calls.some(call => call.coolify_deploy), false, "the already accepted operation is not dispatched twice");
+  const completed = calls.find(call => call.path?.includes("feltus_complete_infrastructure_outbox"));
+  assert.equal(completed?.body?.p_provider_operation_id, "coolify-deploy-accepted-after-config");
+  console.log("PASS accepted-during-configuration history matches the Coolify-encoded digest");
+}
+
+{
+  const { rest, coolify, calls } = fixtures(
+    "staging", true, "passed", "active", "QUEUED", [], image, null, "sha256:not-a-valid-digest"
+  );
+  const worker = createInfrastructureWorker({
+    rest,
+    coolify,
+    workerId: "worker-test",
+    allowedEnvironments: ["staging"],
+    resourceMap: { staging: [resourceReference] }
+  });
+  assert.equal(await worker.processOne(outboxCommand), false);
+  assert.equal(calls.some(call => call.coolify_update || call.coolify_deploy), false);
+  const retry = calls.find(call => call.path?.includes("feltus_retry_infrastructure_outbox"));
+  assert.equal(retry?.body?.p_error_code, "ARTIFACT_REFERENCE_INVALID");
+  assert.equal(retry?.body?.p_retryable, false);
+  console.log("PASS invalid canonical digests fail closed before any Coolify request");
 }
 
 {

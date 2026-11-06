@@ -38,6 +38,12 @@ function safeImageName(value) {
     /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$/.test(value);
 }
 
+function coolifyDigestTag(artifactDigest) {
+  const match = /^sha256:([0-9a-f]{64})$/.exec(artifactDigest || "");
+  if (!match) throw failure("ARTIFACT_REFERENCE_INVALID");
+  return `sha256-${match[1]}`;
+}
+
 function coolifyDeploymentId(value) {
   return typeof value === "string" && /^[A-Za-z0-9._:-]{1,200}$/.test(value);
 }
@@ -223,6 +229,8 @@ export function createInfrastructureWorker({
 
   async function deploymentOperation(command, context, signal) {
     const { target, artifact } = context;
+    const imageName = `${artifact.registry_image}@sha256`;
+    const imageTag = coolifyDigestTag(artifact.artifact_digest);
     const application = await coolify.getApplication(target.provider_resource_reference, { signal });
     if (!application || !["dockerimage", "docker_image", "docker-image"].includes(String(application.build_pack || "").toLowerCase())) {
       throw failure("COOLIFY_RESOURCE_NOT_DOCKER_IMAGE");
@@ -233,19 +241,19 @@ export function createInfrastructureWorker({
     const existing = (Array.isArray(history) ? history : []).find(item => {
       const timestamp = Date.parse(item.created_at || "");
       const status = String(item.status || "").toLowerCase();
-      return item.docker_registry_image_tag === artifact.artifact_digest &&
+      return item.docker_registry_image_tag === imageTag &&
         item.deployment_uuid && Number.isFinite(timestamp) && Number.isFinite(createdAt) &&
         timestamp >= createdAt && !["failed", "error", "cancelled", "canceled"].includes(status);
     });
     if (existing && coolifyDeploymentId(existing.deployment_uuid)) return existing.deployment_uuid;
 
     await coolify.updateApplication(target.provider_resource_reference, {
-      docker_registry_image_name: artifact.registry_image,
-      docker_registry_image_tag: artifact.artifact_digest
+      docker_registry_image_name: imageName,
+      docker_registry_image_tag: imageTag
     }, { signal });
     const refreshed = await coolify.getApplication(target.provider_resource_reference, { signal });
-    if (refreshed?.docker_registry_image_name !== artifact.registry_image ||
-        refreshed?.docker_registry_image_tag !== artifact.artifact_digest) {
+    if (refreshed?.docker_registry_image_name !== imageName ||
+        refreshed?.docker_registry_image_tag !== imageTag) {
       throw failure("COOLIFY_IMAGE_CONFIGURATION_MISMATCH", true);
     }
 
@@ -258,7 +266,7 @@ export function createInfrastructureWorker({
     const acceptedDuringConfiguration = (Array.isArray(historyAfterConfiguration) ? historyAfterConfiguration : []).find(item => {
       const timestamp = Date.parse(item.created_at || "");
       const status = String(item.status || "").toLowerCase();
-      return item.docker_registry_image_tag === artifact.artifact_digest && item.deployment_uuid &&
+      return item.docker_registry_image_tag === imageTag && item.deployment_uuid &&
         Number.isFinite(timestamp) && Number.isFinite(createdAt) && timestamp >= createdAt &&
         !["failed", "error", "cancelled", "canceled"].includes(status);
     });
