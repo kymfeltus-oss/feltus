@@ -30,10 +30,16 @@ function response(res, status, value, headers = {}) {
   res.end(JSON.stringify(value));
 }
 
-function fail(status, message) {
+function fail(status, message, publicCode = null) {
   const error = new Error(message);
   error.status = status;
+  if (publicCode) error.publicCode = publicCode;
   return error;
+}
+
+function safeRpcDiagnosticCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return /^(?:[A-Z0-9]{5}|PGRST[0-9]{3})$/.test(code) ? `DB_${code}` : "DEPLOYMENT_RPC_FAILED";
 }
 
 function firstSuccessful(result, label) {
@@ -693,21 +699,27 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
         }
         if (environment === "preview") throw fail(409, "Temporary Preview deployment is not enabled until isolated preview provisioning is configured.");
         if (environment === "production" && !productionEnabled) throw fail(403, "Production deployment is disabled.");
-        const result = await serviceRequest("/rest/v1/rpc/feltus_request_artifact_deployment", {
-          method: "POST",
-          body: {
-            p_app_id: appId,
-            p_environment_kind: environment,
-            p_artifact_id: artifactId,
-            p_actor_id: user.id,
-            p_idempotency_key: idempotencyKey,
-            p_production_enabled: productionEnabled
-          }
-        });
+        let result;
+        try {
+          result = await serviceRequest("/rest/v1/rpc/feltus_request_artifact_deployment", {
+            method: "POST",
+            body: {
+              p_app_id: appId,
+              p_environment_kind: environment,
+              p_artifact_id: artifactId,
+              p_actor_id: user.id,
+              p_idempotency_key: idempotencyKey,
+              p_production_enabled: productionEnabled
+            }
+          });
+        } catch {
+          throw fail(502, "Deployment could not be queued (DEPLOYMENT_RPC_UNAVAILABLE).", "DEPLOYMENT_RPC_UNAVAILABLE");
+        }
         const deployment = firstRow(result);
-        if (result.status < 200 || result.status >= 300 || !deployment?.id) {
-          throw fail(result.status >= 400 && result.status < 500 ? result.status : 502,
-            result.data?.message || "Deployment could not be queued.");
+        if (!result || result.status < 200 || result.status >= 300 || !deployment?.id) {
+          const diagnosticCode = safeRpcDiagnosticCode(result?.data?.code);
+          throw fail(result?.status >= 400 && result.status < 500 ? result.status : 502,
+            `Deployment could not be queued (${diagnosticCode}).`, diagnosticCode);
         }
         response(res, 202, { deployment });
         return true;
@@ -772,9 +784,17 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
       response(res, 405, { error: "Method not allowed." }, { Allow: "GET, POST" });
       return true;
     } catch (error) {
-      response(res, Number.isInteger(error?.status) ? error.status : 502, {
-        error: error?.status && error.status < 500 ? error.message : "Application state could not be loaded. Try again shortly."
-      });
+      const body = {
+        error: error?.publicCode
+          ? error.message
+          : error?.status && error.status < 500
+            ? error.message
+            : "Application state could not be loaded. Try again shortly."
+      };
+      if (typeof error?.publicCode === "string" && /^[A-Z0-9_]{1,64}$/.test(error.publicCode)) {
+        body.error_code = error.publicCode;
+      }
+      response(res, Number.isInteger(error?.status) ? error.status : 502, body);
       return true;
     }
   };

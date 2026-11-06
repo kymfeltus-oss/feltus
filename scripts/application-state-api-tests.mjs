@@ -97,6 +97,9 @@ const tableRequest = async (table, method, options = {}) => {
 const serviceRequest = async (path, options = {}) => {
   serviceCalls += 1;
   lastServiceRequest = { path, body: options.body };
+  if (path === "/rest/v1/rpc/feltus_request_artifact_deployment") {
+    return { status: 200, data: { id: "99999999-9999-4999-8999-999999999999", environment: options.body.p_environment_kind, status: "QUEUED" } };
+  }
   return { status: 200, data: { id: "99999999-9999-4999-8999-999999999999", environment: "production", status: "QUEUED" } };
 };
 const handler = createApplicationStateHandler({
@@ -226,6 +229,67 @@ assert.equal(stagingTarget.status, 201);
 assert.match(lastServiceRequest.path, /feltus_set_environment_target/);
 assert.equal(Object.hasOwn(lastServiceRequest.body, "p_coolify_token"), false);
 console.log("PASS Staging target configuration depends on the live private worker without exposing Coolify credentials to the app API");
+
+const deploymentArtifactId = "abababab-abab-4bab-8bab-abababababab";
+const priorDeploymentFlags = {
+  enabled: process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED,
+  coolify: process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED
+};
+process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED = "false";
+process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED = "false";
+const deploymentResult = await invoke(`/api/apps/${APP_ID}/deployments`, "POST", {
+  environment: "staging",
+  artifact_id: deploymentArtifactId
+});
+assert.equal(deploymentResult.handled, true);
+assert.equal(deploymentResult.status, 202);
+assert.equal(lastServiceRequest.path, "/rest/v1/rpc/feltus_request_artifact_deployment");
+assert.deepEqual(Object.keys(lastServiceRequest.body).sort(), [
+  "p_app_id", "p_environment_kind", "p_artifact_id", "p_actor_id", "p_idempotency_key", "p_production_enabled"
+].sort());
+assert.deepEqual({
+  p_app_id: lastServiceRequest.body.p_app_id,
+  p_environment_kind: lastServiceRequest.body.p_environment_kind,
+  p_artifact_id: lastServiceRequest.body.p_artifact_id,
+  p_actor_id: lastServiceRequest.body.p_actor_id,
+  p_production_enabled: lastServiceRequest.body.p_production_enabled
+}, {
+  p_app_id: APP_ID,
+  p_environment_kind: "staging",
+  p_artifact_id: deploymentArtifactId,
+  p_actor_id: USER_ID,
+  p_production_enabled: false
+});
+assert.match(lastServiceRequest.body.p_idempotency_key, /^[0-9a-f-]{36}$/i);
+assert.equal(deploymentResult.body.deployment.environment, "staging");
+console.log("PASS Staging deployment POST invokes the artifact RPC with the exact contract and a generated idempotency key");
+
+const rpcFailureHandler = createApplicationStateHandler({
+  tableRequest,
+  serviceRequest: async () => ({
+    status: 500,
+    data: { code: "23514", message: "Constraint detail included bearer TEST_SECRET_VALUE and private row data." }
+  }),
+  readBody: async request => request.body || {},
+  getUser: () => ({ id: USER_ID })
+});
+const rpcFailure = { status: null, headers: {}, text: "" };
+await rpcFailureHandler({ method: "POST", headers: {}, body: { environment: "staging", artifact_id: deploymentArtifactId } }, {
+  writeHead(status, headers) { rpcFailure.status = status; rpcFailure.headers = headers; },
+  end(text) { rpcFailure.text = String(text || ""); }
+}, new URL(`http://feltus.test/api/apps/${APP_ID}/deployments`));
+const rpcFailureBody = JSON.parse(rpcFailure.text);
+assert.equal(rpcFailure.status, 502);
+assert.equal(rpcFailureBody.error_code, "DB_23514");
+assert.equal(rpcFailureBody.error, "Deployment could not be queued (DB_23514).");
+assert.equal(rpcFailure.text.includes("TEST_SECRET_VALUE"), false);
+assert.equal(rpcFailure.text.includes("Constraint detail"), false);
+console.log("PASS deployment RPC errors expose a sanitized diagnostic code without raw database details");
+if (priorDeploymentFlags.enabled === undefined) delete process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED;
+else process.env.FELTUS_PRODUCTION_DEPLOYMENTS_ENABLED = priorDeploymentFlags.enabled;
+if (priorDeploymentFlags.coolify === undefined) delete process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED;
+else process.env.FELTUS_COOLIFY_PRODUCTION_ENABLED = priorDeploymentFlags.coolify;
+
 data.feltus_worker_heartbeats.length = 0;
 
 const previousEnvironment = { ...process.env };
