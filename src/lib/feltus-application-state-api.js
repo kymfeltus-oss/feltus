@@ -582,7 +582,7 @@ export function createApplicationStateHandler({ tableRequest, serviceRequest, re
           throw fail(400, "Choose a connected repository, branch, and full commit SHA.");
         }
         const inputs = await loadInputs(app);
-        const currentState = makeState(app, inputs, null);
+        const currentState = makeState(app, inputs, inputs.blueprints[0] || null);
         if (!currentState.persisted || !currentState.blueprint) {
           throw fail(409, "Save the current application blueprint before starting a build.");
         }
