@@ -3,6 +3,8 @@ import {
   createGithubOAuthState,
   decryptGithubSecret,
   encryptGithubSecret,
+  encryptGithubOAuthCredentialBundle,
+  resolveGithubOAuthAccessToken,
   normalizeGithubBranch,
   parseGithubWebhookEvent,
   sha256Hex,
@@ -177,13 +179,59 @@ export function createGithubApiHandler({
     })), "GitHub connection");
   }
 
-  function connectionToken(connection) {
+  async function reloadConnectionCredential(connection) {
+    if (!connection?.id) return null;
+    return firstRow(await serviceRequest("/rest/v1/feltus_git_connections?" + new URLSearchParams({
+      select: "id,organization_id,provider,account_label,credential_ciphertext,encryption_key_version,disabled_at",
+      id: "eq." + connection.id,
+      disabled_at: "is.null",
+      limit: "1"
+    })), "GitHub connection");
+  }
+
+  async function connectionToken(connection, { forceRefresh = false } = {}) {
     if (!connection || connection.provider !== "github" || connection.encryption_key_version !== ENCRYPTION_KEY_VERSION) {
-      const error = new Error("Reconnect GitHub to refresh the encrypted connection.");
+      const error = new Error("GitHub authorization is unavailable. Reconnect GitHub.");
       error.status = 409;
       throw error;
     }
-    return decryptGithubSecret(connection.credential_ciphertext, env.FELTUS_SECRET_ENCRYPTION_KEY, "github-oauth-token:v1");
+    const resolved = await resolveGithubOAuthAccessToken({
+      credentialCiphertext: connection.credential_ciphertext,
+      masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY,
+      clientId: env.FELTUS_GITHUB_CLIENT_ID,
+      clientSecret: env.FELTUS_GITHUB_CLIENT_SECRET,
+      fetchImpl,
+      persist: async (nextCiphertext, previousCiphertext) => {
+        const filter = new URLSearchParams({
+          id: "eq." + connection.id,
+          disabled_at: "is.null",
+          credential_ciphertext: "eq." + previousCiphertext
+        });
+        const saved = await serviceRequest("/rest/v1/feltus_git_connections?" + filter.toString(), {
+          method: "PATCH",
+          prefer: "return=representation",
+          body: { credential_ciphertext: nextCiphertext }
+        });
+        const updated = firstRow(saved, "GitHub connection");
+        if (updated?.credential_ciphertext) connection.credential_ciphertext = updated.credential_ciphertext;
+        return Boolean(updated?.id);
+      },
+      reload: () => reloadConnectionCredential(connection),
+      forceRefresh
+    });
+    connection.credential_ciphertext = resolved.credential_ciphertext;
+    return resolved.access_token;
+  }
+
+  async function githubRequestWithConnection(path, connection, options = {}) {
+    let token = await connectionToken(connection);
+    try {
+      return await githubRequest(path, token, options);
+    } catch (error) {
+      if (error.status !== 409) throw error;
+      token = await connectionToken(connection, { forceRefresh: true });
+      return githubRequest(path, token, options);
+    }
   }
 
   async function attachedRepositories(app) {
@@ -218,15 +266,14 @@ export function createGithubApiHandler({
     }));
   }
 
-  async function githubRepositories(app) {
-    const connection = await loadConnection(app);
+  async function githubRepositories(app, knownConnection = null) {
+    const connection = knownConnection || await loadConnection(app);
     if (!connection) {
       const error = new Error("Connect GitHub before choosing a repository.");
       error.status = 409;
       throw error;
     }
-    const token = connectionToken(connection);
-    const payload = await githubRequest("/user/repos?per_page=100&type=all&sort=updated", token);
+    const payload = await githubRequestWithConnection("/user/repos?per_page=100&type=all&sort=updated", connection);
     if (!Array.isArray(payload)) throw new Error("GitHub returned an invalid repository list.");
     return payload.filter(repository =>
       repository && /^\d{1,30}$/.test(String(repository.id)) &&
@@ -245,7 +292,7 @@ export function createGithubApiHandler({
     }));
   }
 
-  async function setupWebhook(app, repository, remoteRepository, token) {
+  async function setupWebhook(app, repository, remoteRepository, connection) {
     const url = publicWebhookUrl(githubConfiguration(env).publicUrl, repository.id);
     if (!url) return { status: "not_configured", message: "A public HTTPS FELTUS URL is required before GitHub can send webhooks." };
     const secret = crypto.randomBytes(32).toString("base64url");
@@ -263,17 +310,17 @@ export function createGithubApiHandler({
       };
       if (existingHookId) {
         try {
-          hook = await githubRequest(repositoryPath + "/" + encodeURIComponent(existingHookId), token, {
+          hook = await githubRequestWithConnection(repositoryPath + "/" + encodeURIComponent(existingHookId), connection, {
             method: "PATCH",
             body
           });
         } catch (error) {
           if (error.status !== 404) throw error;
-          hook = await githubRequest(repositoryPath, token, { method: "POST", body });
+          hook = await githubRequestWithConnection(repositoryPath, connection, { method: "POST", body });
           createdNewHook = true;
         }
       } else {
-        hook = await githubRequest(repositoryPath, token, { method: "POST", body });
+        hook = await githubRequestWithConnection(repositoryPath, connection, { method: "POST", body });
         createdNewHook = true;
       }
     } catch (error) {
@@ -294,8 +341,8 @@ export function createGithubApiHandler({
     if (saved.status < 200 || saved.status >= 300) {
       if (createdNewHook) {
         try {
-          await githubRequest("/repos/" + encodeURIComponent(remoteRepository.owner.login) + "/" +
-            encodeURIComponent(remoteRepository.name) + "/hooks/" + encodeURIComponent(String(hook.id)), token, { method: "DELETE" });
+          await githubRequestWithConnection("/repos/" + encodeURIComponent(remoteRepository.owner.login) + "/" +
+            encodeURIComponent(remoteRepository.name) + "/hooks/" + encodeURIComponent(String(hook.id)), connection, { method: "DELETE" });
         } catch {}
       }
       return { status: "failed", message: "GitHub created the webhook, but FELTUS could not store its verification secret." };
@@ -427,7 +474,7 @@ export function createGithubApiHandler({
             organization_id: app.organization_id,
             provider: "github",
             account_label: String(profile.login).slice(0, 120),
-            credential_ciphertext: encryptGithubSecret(tokenResult.access_token, env.FELTUS_SECRET_ENCRYPTION_KEY, "github-oauth-token:v1"),
+            credential_ciphertext: encryptGithubOAuthCredentialBundle(tokenResult, env.FELTUS_SECRET_ENCRYPTION_KEY),
             encryption_key_version: ENCRYPTION_KEY_VERSION,
             created_by: user.id
           }
@@ -486,7 +533,7 @@ export function createGithubApiHandler({
         send(res, 200, {
           connected: Boolean(connection),
           account_label: connection?.account_label || null,
-          repositories: await githubRepositories(app),
+          repositories: await githubRepositories(app, connection),
           attached
         });
         return true;
@@ -516,14 +563,13 @@ export function createGithubApiHandler({
           send(res, 409, { error: "Connect GitHub before choosing a repository." });
           return true;
         }
-        const token = connectionToken(connection);
-        const choices = await githubRepositories(app);
+        const choices = await githubRepositories(app, connection);
         const selected = choices.find(repository => repository.provider_repository_id === providerRepositoryId);
         if (!selected) {
           send(res, 404, { error: "That repository is not available to the connected GitHub account." });
           return true;
         }
-        const remote = await githubRequest("/repositories/" + encodeURIComponent(providerRepositoryId), token);
+        const remote = await githubRequestWithConnection("/repositories/" + encodeURIComponent(providerRepositoryId), connection);
         const branch = requestedBranch || selected.default_branch;
         if (!remote || typeof remote.owner?.login !== "string" || typeof remote.name !== "string" ||
             normalizeGithubBranch(branch) !== branch || !remote.clone_url?.startsWith("https://github.com/")) {
@@ -570,8 +616,8 @@ export function createGithubApiHandler({
         });
         if (attached.status < 200 || attached.status >= 300) throw new Error("Repository could not be attached to this application.");
 
-        const branchResult = await githubRequest("/repos/" + encodeURIComponent(remote.owner.login) + "/" +
-          encodeURIComponent(remote.name) + "/branches/" + encodeURIComponent(branch), token);
+        const branchResult = await githubRequestWithConnection("/repos/" + encodeURIComponent(remote.owner.login) + "/" +
+          encodeURIComponent(remote.name) + "/branches/" + encodeURIComponent(branch), connection);
         const latestCommit = /^[0-9a-f]{40,64}$/i.test(String(branchResult?.commit?.sha || ""))
           ? branchResult.commit.sha.toLowerCase()
           : null;
@@ -602,7 +648,7 @@ export function createGithubApiHandler({
           repository.webhook_secret_key_version === ENCRYPTION_KEY_VERSION;
         const webhook = webhookIsVerified
           ? { status: "active", message: "Push and pull request updates are connected." }
-          : await setupWebhook(app, repository, remote, token);
+          : await setupWebhook(app, repository, remote, connection);
         send(res, 200, {
           repository: {
             id: repository.id,
@@ -621,14 +667,13 @@ export function createGithubApiHandler({
           return true;
         }
         const connection = await loadConnection(app);
-        const token = connectionToken(connection);
         const repositoryRecord = firstRow(await serviceRequest("/rest/v1/feltus_repositories?" + new URLSearchParams({
           select: "id,provider_repository_id,git_connection_id,webhook_id",
           id: "eq." + attached[0].id,
           limit: "1"
         })), "GitHub repository");
-        const remote = await githubRequest("/repositories/" + encodeURIComponent(repositoryRecord.provider_repository_id), token);
-        const webhook = await setupWebhook(app, repositoryRecord, remote, token);
+        const remote = await githubRequestWithConnection("/repositories/" + encodeURIComponent(repositoryRecord.provider_repository_id), connection);
+        const webhook = await setupWebhook(app, repositoryRecord, remote, connection);
         send(res, 200, { webhook });
         return true;
       }

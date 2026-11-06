@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { encryptGithubSecret } from "../src/lib/feltus-github.js";
+import { decryptGithubOAuthCredentialBundle, encryptGithubOAuthCredentialBundle, encryptGithubSecret } from "../src/lib/feltus-github.js";
 import {
   artifactImageReference,
   createBuildLogSanitizer,
@@ -92,6 +92,8 @@ const readyEnv = {
   FELTUS_GATEWAY_URL: "http://gateway:8000",
   FELTUS_SERVICE_ROLE_KEY: "service-role-placeholder",
   FELTUS_SECRET_ENCRYPTION_KEY: "x".repeat(32),
+  FELTUS_GITHUB_CLIENT_ID: "github-client-id",
+  FELTUS_GITHUB_CLIENT_SECRET: "github-worker-client-secret",
   FELTUS_BUILDKIT_ADDR: "tcp://builder.internal:1234",
   FELTUS_BUILDKIT_CA_PEM: caFixturePem,
   FELTUS_BUILDKIT_CLIENT_CERT_PEM: certFixturePem,
@@ -184,10 +186,15 @@ const sourceBlueprintId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const sourceOrgId = "11111111-1111-4111-8111-111111111111";
 const sourceLeaseId = "22222222-2222-4222-8222-222222222222";
 const commitSha = "1".repeat(40);
-const githubToken = "private-github-token-value";
+const githubToken = "expired-private-github-token-value";
+const githubRefreshToken = "private-github-refresh-token-value";
+const refreshedGithubToken = "private-github-refreshed-token-value";
+const rotatedGithubRefreshToken = "rotated-private-github-refresh-token";
+const githubClientSecret = "github-worker-client-secret";
 const masterKey = "unit-test-encryption-key-material-32-bytes";
 const restCalls = [];
 const persistedSteps = [];
+const githubRefreshRequests = [];
 let nextStep = 0;
 const repository = {
   id: sourceRepoId, organization_id: sourceOrgId,
@@ -197,12 +204,19 @@ const repository = {
 };
 const gitConnection = {
   id: repository.git_connection_id, provider: "github", disabled_at: null,
-  credential_ciphertext: encryptGithubSecret(githubToken, masterKey, "github-oauth-token:v1"),
+  credential_ciphertext: encryptGithubOAuthCredentialBundle({
+    access_token: githubToken,
+    refresh_token: githubRefreshToken,
+    expires_in: 1,
+    refresh_token_expires_in: 15897600
+  }, masterKey, { now: Date.now() - 60_000 }),
   encryption_key_version: "aes-256-gcm-hkdf-v1"
 };
 const sourceEnv = {
   ...fileCredentialEnv,
-  FELTUS_SECRET_ENCRYPTION_KEY: masterKey
+  FELTUS_SECRET_ENCRYPTION_KEY: masterKey,
+  FELTUS_GITHUB_CLIENT_ID: "github-client-id",
+  FELTUS_GITHUB_CLIENT_SECRET: githubClientSecret
 };
 const sourceWorker = createBuildWorker({
   env: sourceEnv,
@@ -210,7 +224,22 @@ const sourceWorker = createBuildWorker({
   spawnImpl: asyncSpawn,
   fetchImpl: async (url, init = {}) => {
     const address = String(url);
+    if (address === "https://github.com/login/oauth/access_token") {
+      const form = new URLSearchParams(init.body);
+      githubRefreshRequests.push({ form, headers: init.headers });
+      assert.equal(form.get("client_id"), "github-client-id");
+      assert.equal(form.get("client_secret"), githubClientSecret);
+      assert.equal(form.get("refresh_token"), githubRefreshToken);
+      assert.equal(form.get("grant_type"), "refresh_token");
+      return Response.json({
+        access_token: refreshedGithubToken,
+        expires_in: 28800,
+        refresh_token: rotatedGithubRefreshToken,
+        refresh_token_expires_in: 15897600
+      });
+    }
     if (address.startsWith("https://api.github.com/")) {
+      assert.equal(init.headers.Authorization, "Bearer " + refreshedGithubToken);
       if (address.endsWith("/commits/" + commitSha)) return Response.json({ sha: commitSha });
       return Response.json({ id: repository.provider_repository_id });
     }
@@ -219,6 +248,10 @@ const sourceWorker = createBuildWorker({
     }
     restCalls.push({ url: address, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null });
     if (address.includes("/rest/v1/feltus_repositories?")) return Response.json([repository]);
+    if (address.includes("/rest/v1/feltus_git_connections?") && init.method === "PATCH") {
+      gitConnection.credential_ciphertext = JSON.parse(init.body).credential_ciphertext;
+      return Response.json([{ id: gitConnection.id, credential_ciphertext: gitConnection.credential_ciphertext }]);
+    }
     if (address.includes("/rest/v1/feltus_git_connections?")) return Response.json([gitConnection]);
     if (address.includes("/rest/v1/feltus_build_steps") && init.method === "POST") {
       const step = { id: `step-${++nextStep}`, ...JSON.parse(init.body) };
@@ -240,12 +273,17 @@ function asyncSpawn(command, args, options) {
   child.stderr = new EventEmitter();
   child.kill = () => true;
   assert.equal(args.join(" ").includes(githubToken), false, "source credentials never enter the subprocess argument list");
+  assert.equal(JSON.stringify(options.env).includes(githubClientSecret), false, "GitHub client secret is never passed to Git or BuildKit subprocesses");
   process.nextTick(async () => {
     try {
       if (command === "git" && args[0] === "init") {
         await writeFile(path.join(options.cwd, "Dockerfile"), "FROM scratch\n");
-        child.stdout.emit("data", "checkout private-github-");
+        child.stdout.emit("data", "checkout Authorization: Bearer private-github-refreshed-");
         child.stdout.emit("data", "token-value\n");
+      }
+      if (command === "git" && args[0] === "fetch") {
+        const expectedAuth = "AUTHORIZATION: basic " + Buffer.from("x-access-token:" + refreshedGithubToken).toString("base64");
+        assert.equal(options.env.GIT_CONFIG_VALUE_0, expectedAuth, "pinned Git checkout must use the automatically refreshed token");
       }
       if (command === "git" && args[0] === "rev-parse") child.stdout.emit("data", `${commitSha}\n`);
       if (command === "buildctl" && args.includes("build")) {
@@ -268,6 +306,16 @@ const sourceResult = await sourceWorker.processBuild({
   source_branch: "main", commit_sha: commitSha, lease_token: sourceLeaseId, attempt_count: 1
 });
 assert.equal(sourceResult.status, "succeeded");
+assert.equal(githubRefreshRequests.length, 1, "expired worker credentials refresh exactly once before GitHub checkout");
+assert.notEqual(gitConnection.credential_ciphertext, "");
+assert.equal(decryptGithubOAuthCredentialBundle(gitConnection.credential_ciphertext, masterKey).access_token, refreshedGithubToken);
+assert.equal(gitConnection.credential_ciphertext.includes(refreshedGithubToken), false);
+assert.equal(gitConnection.credential_ciphertext.includes(githubRefreshToken), false);
+assert.equal(gitConnection.credential_ciphertext.includes(rotatedGithubRefreshToken), false);
+assert.equal(JSON.stringify(sourceWorker.health()).includes(githubClientSecret), false);
+assert.equal(JSON.stringify(restCalls).includes(githubClientSecret), false);
+assert.equal(JSON.stringify(restCalls).includes(githubRefreshToken), false);
+assert.equal(JSON.stringify(restCalls).includes(rotatedGithubRefreshToken), false);
 const finishCall = restCalls.find(call => call.url.includes("feltus_finish_application_build"));
 assert.ok(finishCall, "worker persists the verified artifact through the canonical completion RPC");
 assert.equal(finishCall.body.p_digest, digest);
@@ -276,12 +324,23 @@ assert.equal(finishCall.body.p_provenance.blueprint_id, sourceBlueprintId);
 assert.equal(persistedSteps.length, 3);
 assert.ok(persistedSteps.every(step => step.status === "succeeded"));
 assert.equal(persistedSteps.some(step => String(step.log_text).includes(githubToken)), false);
+assert.equal(persistedSteps.some(step => String(step.log_text).includes(refreshedGithubToken)), false, "rotated access token is redacted from build output");
+assert.equal(persistedSteps.some(step => String(step.log_text).includes(githubRefreshToken)), false);
+assert.equal(persistedSteps.some(step => String(step.log_text).includes(rotatedGithubRefreshToken)), false);
+assert.equal(persistedSteps.some(step => String(step.log_text).includes(githubClientSecret)), false);
 assert.equal(persistedSteps.some(step => String(step.log_text).includes(keyFixtureBody)), false, "BuildKit private-key material is redacted from persisted build logs");
 assert.ok(restCalls.some(call => call.url.includes("feltus_start_application_build")));
 assert.ok(restCalls.some(call => call.url.includes("feltus_update_build_status") && call.body.p_status === "building"));
 assert.ok(restCalls.some(call => call.url.includes("feltus_update_build_status") && call.body.p_status === "verifying"));
+const workerMetadataWrites = restCalls.filter(call => call.url.includes("feltus_worker_heartbeats"));
+assert.equal(JSON.stringify(workerMetadataWrites).includes(githubClientSecret), false);
+assert.equal(JSON.stringify(workerMetadataWrites).includes(githubToken), false);
+assert.equal(JSON.stringify(workerMetadataWrites).includes(refreshedGithubToken), false);
+assert.equal(restCalls.filter(call => call.method === "PATCH" && call.url.includes("feltus_git_connections?")).length, 1);
+assert.equal(restCalls.some(call => call.method !== "GET" && call.url.includes("feltus_repositories?")), false, "refresh does not modify the repository record");
+assert.equal(restCalls.some(call => call.url.includes("feltus_project_repositories?") || call.url.includes("feltus_repository_branches?")), false, "refresh does not recreate project links or branch selections");
 await sourceWorker.stop();
-console.log("PASS pinned GitHub checkout, isolated BuildKit invocation, redacted step logs, registry digest verification, and artifact lineage persistence");
+console.log("PASS expired GitHub access token refreshes and rotates before pinned checkout while preserving links, redacting credentials, and persisting artifact lineage");
 
 const cancellationBuildId = "44444444-4444-4444-8444-444444444444";
 let cancellationObserved = false;

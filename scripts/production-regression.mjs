@@ -275,6 +275,8 @@ check("application builds use a separate mTLS BuildKit worker and immutable veri
   assert.match(buildWorkerDockerfile, /moby\/buildkit:.*rootless/);
   assert.match(buildWorkerDockerfile, /COPY --from=buildkit \/usr\/bin\/buildctl/);
   assert.match(buildWorkerService, /createBuildWorker/);
+  assert.match(buildWorker, /resolveGithubOAuthAccessToken/);
+  assert.doesNotMatch(buildWorker, /decryptGithubSecret/);
   assert.match(buildWorker, /feltus_claim_builds/);
   assert.match(buildWorker, /feltus_heartbeat_build/);
   assert.match(buildWorker, /GIT_CONFIG_VALUE_0/);
@@ -307,6 +309,9 @@ check("Staging mounts BuildKit mTLS credentials as files without changing Produc
   const productionWorker = compose.split(/^  build-worker:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] || "";
   const stagingWorker = stagingCompose.split(/^  build-worker:\r?$/m)[1]?.split(/^  [a-z][a-z0-9-]*:\r?$/m)[0] || "";
   assert.match(productionWorker, /FELTUS_BUILDKIT_CLIENT_KEY_PEM/);
+  assert.doesNotMatch(productionWorker, /FELTUS_GITHUB_CLIENT_(?:ID|SECRET)/);
+  assert.match(stagingWorker, /FELTUS_GITHUB_CLIENT_ID: \$\{FELTUS_GITHUB_CLIENT_ID:-\}/);
+  assert.match(stagingWorker, /FELTUS_GITHUB_CLIENT_SECRET: \$\{FELTUS_GITHUB_CLIENT_SECRET:-\}/);
   assert.doesNotMatch(stagingWorker, /FELTUS_BUILDKIT_(?:CA|CLIENT_CERT|CLIENT_KEY)_PEM/);
   assert.match(stagingWorker, /FELTUS_BUILDKIT_CA_FILE: \/run\/secrets\/feltus_buildkit_ca/);
   assert.match(stagingWorker, /FELTUS_BUILDKIT_CLIENT_CERT_FILE: \/run\/secrets\/feltus_buildkit_client_cert/);

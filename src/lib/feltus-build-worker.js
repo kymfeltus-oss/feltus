@@ -3,7 +3,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { decryptGithubSecret, normalizeGithubBranch } from "./feltus-github.js";
+import { normalizeGithubBranch, resolveGithubOAuthAccessToken } from "./feltus-github.js";
 
 const MAX_LOG_CHARS = 50_000;
 const COMMIT_SHA = /^[0-9a-f]{40,64}$/i;
@@ -93,7 +93,7 @@ export function artifactImageReference(registry, appId, buildId) {
 
 const CONFIG_NAMES = [
   "FELTUS_BUILD_WORKER_ENABLED", "FELTUS_GATEWAY_URL", "FELTUS_SERVICE_ROLE_KEY",
-  "FELTUS_SECRET_ENCRYPTION_KEY", "FELTUS_BUILDKIT_ADDR",
+  "FELTUS_SECRET_ENCRYPTION_KEY", "FELTUS_GITHUB_CLIENT_ID", "FELTUS_GITHUB_CLIENT_SECRET", "FELTUS_BUILDKIT_ADDR",
   "FELTUS_ARTIFACT_REGISTRY", "FELTUS_ARTIFACT_REGISTRY_USERNAME", "FELTUS_ARTIFACT_REGISTRY_PASSWORD"
 ];
 
@@ -148,7 +148,7 @@ export function createBuildWorker({
   let lastProbeAt = 0;
   let runtimeDir = null;
   let runtimeFiles = null;
-  const secrets = [env.FELTUS_ARTIFACT_REGISTRY_PASSWORD, env.FELTUS_SECRET_ENCRYPTION_KEY].filter(Boolean);
+  const secrets = [env.FELTUS_ARTIFACT_REGISTRY_PASSWORD, env.FELTUS_SECRET_ENCRYPTION_KEY, env.FELTUS_GITHUB_CLIENT_SECRET].filter(Boolean);
   function rememberSecret(value) {
     const text = String(value || "");
     if (text.length >= 4 && !secrets.includes(text)) secrets.push(text);
@@ -185,6 +185,47 @@ export function createBuildWorker({
       throw error;
     }
     return data;
+  }
+
+  async function reloadGithubConnection(connection) {
+    if (!connection?.id) return null;
+    const query = new URLSearchParams({
+      select: "id,provider,credential_ciphertext,encryption_key_version,disabled_at",
+      id: `eq.${connection.id}`,
+      disabled_at: "is.null",
+      limit: "1"
+    });
+    return firstRow(await rest(`/rest/v1/feltus_git_connections?${query.toString()}`));
+  }
+
+  async function githubAccessToken(connection, { forceRefresh = false } = {}) {
+    const resolved = await resolveGithubOAuthAccessToken({
+      credentialCiphertext: connection.credential_ciphertext,
+      masterKey: env.FELTUS_SECRET_ENCRYPTION_KEY,
+      clientId: env.FELTUS_GITHUB_CLIENT_ID,
+      clientSecret: env.FELTUS_GITHUB_CLIENT_SECRET,
+      fetchImpl,
+      now: now(),
+      forceRefresh,
+      persist: async (nextCiphertext, previousCiphertext) => {
+        const query = new URLSearchParams({
+          id: `eq.${connection.id}`,
+          disabled_at: "is.null",
+          credential_ciphertext: `eq.${previousCiphertext}`
+        });
+        const saved = await rest(`/rest/v1/feltus_git_connections?${query.toString()}`, {
+          method: "PATCH",
+          prefer: "return=representation",
+          body: { credential_ciphertext: nextCiphertext }
+        });
+        const updated = firstRow(saved);
+        if (updated?.credential_ciphertext) connection.credential_ciphertext = updated.credential_ciphertext;
+        return Boolean(updated?.id);
+      },
+      reload: () => reloadGithubConnection(connection)
+    });
+    connection.credential_ciphertext = resolved.credential_ciphertext;
+    return resolved.access_token;
   }
 
   function tlsArgs() {
@@ -404,11 +445,11 @@ export function createBuildWorker({
     };
   }
 
-  async function fetchGithubJson(slug, pathPart, token) {
+  async function fetchGithubJson(slug, pathPart, connection) {
     const githubUrl = pathPart
       ? `https://api.github.com/repos/${slug}/${pathPart}`
       : `https://api.github.com/repos/${slug}`;
-    const response = await fetchImpl(githubUrl, {
+    const request = token => fetchImpl(githubUrl, {
       headers: {
         Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "FELTUS-Build-Worker"
@@ -416,6 +457,12 @@ export function createBuildWorker({
       redirect: "error",
       signal: AbortSignal.timeout(20_000)
     });
+    let token = await githubAccessToken(connection);
+    let response = await request(token);
+    if (response.status === 401) {
+      token = await githubAccessToken(connection, { forceRefresh: true });
+      response = await request(token);
+    }
     if (!response.ok) throw new BuildWorkerError(response.status === 401 ? "GITHUB_AUTH_EXPIRED" : response.status === 404 ? "GITHUB_SOURCE_UNAVAILABLE" : "GITHUB_SOURCE_REQUEST_FAILED");
     return response.json();
   }
@@ -443,16 +490,24 @@ export function createBuildWorker({
     if (!connection || connection.provider !== "github" || connection.disabled_at || connection.encryption_key_version !== ENCRYPTION_KEY_VERSION) {
       throw new BuildWorkerError("GITHUB_CONNECTION_UNAVAILABLE");
     }
-    let token;
-    try { token = decryptGithubSecret(connection.credential_ciphertext, env.FELTUS_SECRET_ENCRYPTION_KEY, "github-oauth-token:v1"); }
-    catch { throw new BuildWorkerError("GITHUB_CREDENTIAL_UNAVAILABLE"); }
-    const repoInfo = await fetchGithubJson(slug, "", token);
+    let repoInfo;
+    try { repoInfo = await fetchGithubJson(slug, "", connection); }
+    catch (error) {
+      if (error?.code) throw new BuildWorkerError(safeFailureCode(error.code, "GITHUB_CREDENTIAL_UNAVAILABLE"));
+      throw new BuildWorkerError("GITHUB_SOURCE_REQUEST_FAILED");
+    }
     if (String(repoInfo?.id) !== String(repository.provider_repository_id)) throw new BuildWorkerError("GITHUB_REPOSITORY_ID_MISMATCH");
-    const commit = await fetchGithubJson(slug, `commits/${encodeURIComponent(build.commit_sha)}`, token);
+    let commit;
+    try { commit = await fetchGithubJson(slug, `commits/${encodeURIComponent(build.commit_sha)}`, connection); }
+    catch (error) {
+      if (error?.code) throw new BuildWorkerError(safeFailureCode(error.code, "GITHUB_CREDENTIAL_UNAVAILABLE"));
+      throw new BuildWorkerError("GITHUB_SOURCE_REQUEST_FAILED");
+    }
     if (String(commit?.sha || "").toLowerCase() !== String(build.commit_sha).toLowerCase()) throw new BuildWorkerError("GITHUB_COMMIT_MISMATCH");
 
     const sourceDir = path.join(tempRoot, "source");
     await mkdir(sourceDir, { mode: 0o700 });
+    const token = await githubAccessToken(connection);
     const githubAuthSecret = Buffer.from("x-access-token:" + token).toString("base64");
     const githubAuthValue = "AUTHORIZATION: basic " + githubAuthSecret;
     secrets.push(token, githubAuthSecret);

@@ -9,6 +9,10 @@ import {
 } from "node:crypto";
 
 const MAX_SECRET_BYTES = 16 * 1024;
+export const GITHUB_OAUTH_CREDENTIAL_FORMAT = "github-oauth-credential-bundle:v2";
+export const GITHUB_OAUTH_CREDENTIAL_PURPOSE = "github-oauth-token-bundle:v2";
+const LEGACY_GITHUB_OAUTH_CREDENTIAL_PURPOSE = "github-oauth-token:v1";
+const GITHUB_ACCESS_TOKEN_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const COMMIT_SHA = /^[0-9a-f]{40,64}$/i;
 
@@ -57,6 +61,243 @@ export function decryptGithubSecret(value, masterKey, purpose = "github-secret:v
   const decipher = createDecipheriv("aes-256-gcm", deriveKey(masterKey, purpose), iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
+export class GithubOAuthCredentialError extends Error {
+  constructor(code, message, status = 502) {
+    super(message);
+    this.name = "GithubOAuthCredentialError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function oauthToken(value) {
+  return typeof value === "string" && value.length >= 20 && value.length <= 4096;
+}
+
+function expiresAtFromSeconds(value, now, { required = false } = {}) {
+  if (value === undefined || value === null || value === "") {
+    if (required) throw new TypeError("GitHub token response is missing its expiration.");
+    return null;
+  }
+  const seconds = Number(value);
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 10 * 365 * 24 * 60 * 60) {
+    throw new TypeError("GitHub token response has an invalid expiration.");
+  }
+  return new Date(now + seconds * 1000).toISOString();
+}
+
+function validStoredExpiration(value) {
+  if (value === null) return true;
+  if (typeof value !== "string") return false;
+  try {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+function makeGithubOAuthCredentialBundle(tokenResult, now, {
+  fallbackRefreshToken = null,
+  fallbackRefreshTokenExpiresAt = null,
+  requireAccessExpiration = false
+} = {}) {
+  if (!oauthToken(tokenResult?.access_token)) throw new TypeError("GitHub authorization did not return a valid access token.");
+  const suppliedRefreshToken = tokenResult.refresh_token;
+  if (suppliedRefreshToken !== undefined && suppliedRefreshToken !== null && !oauthToken(suppliedRefreshToken)) {
+    throw new TypeError("GitHub authorization returned an invalid refresh token.");
+  }
+  const refreshToken = suppliedRefreshToken || fallbackRefreshToken || null;
+  const accessExpiration = expiresAtFromSeconds(tokenResult.expires_in, now, {
+    required: requireAccessExpiration || Boolean(refreshToken)
+  });
+  const refreshExpiration = !refreshToken
+    ? null
+    : tokenResult.refresh_token_expires_in !== undefined && tokenResult.refresh_token_expires_in !== null
+      ? expiresAtFromSeconds(tokenResult.refresh_token_expires_in, now)
+      : fallbackRefreshTokenExpiresAt;
+  return {
+    credential_format: GITHUB_OAUTH_CREDENTIAL_FORMAT,
+    access_token: tokenResult.access_token,
+    refresh_token: refreshToken,
+    access_token_expires_at: accessExpiration,
+    refresh_token_expires_at: refreshExpiration
+  };
+}
+
+export function encryptGithubOAuthCredentialBundle(tokenResult, masterKey, {
+  now = Date.now(),
+  fallbackRefreshToken = null,
+  fallbackRefreshTokenExpiresAt = null,
+  requireAccessExpiration = false
+} = {}) {
+  const bundle = makeGithubOAuthCredentialBundle(tokenResult, now, {
+    fallbackRefreshToken,
+    fallbackRefreshTokenExpiresAt,
+    requireAccessExpiration
+  });
+  return encryptGithubSecret(JSON.stringify(bundle), masterKey, GITHUB_OAUTH_CREDENTIAL_PURPOSE);
+}
+
+export function decryptGithubOAuthCredentialBundle(ciphertext, masterKey) {
+  let plaintext;
+  try {
+    plaintext = decryptGithubSecret(ciphertext, masterKey, GITHUB_OAUTH_CREDENTIAL_PURPOSE);
+  } catch {
+    try {
+      const legacyToken = decryptGithubSecret(ciphertext, masterKey, LEGACY_GITHUB_OAUTH_CREDENTIAL_PURPOSE);
+      if (!oauthToken(legacyToken)) throw new TypeError("Invalid legacy token.");
+      return {
+        credential_format: "github-oauth-token:v1",
+        access_token: legacyToken,
+        refresh_token: null,
+        access_token_expires_at: null,
+        refresh_token_expires_at: null
+      };
+    } catch {
+      throw new GithubOAuthCredentialError("GITHUB_AUTH_EXPIRED", "GitHub authorization is unavailable. Reconnect GitHub.", 409);
+    }
+  }
+
+  let bundle;
+  try { bundle = JSON.parse(plaintext); } catch {
+    throw new GithubOAuthCredentialError("GITHUB_AUTH_EXPIRED", "GitHub authorization is unavailable. Reconnect GitHub.", 409);
+  }
+  const expectedKeys = [
+    "credential_format", "access_token", "refresh_token",
+    "access_token_expires_at", "refresh_token_expires_at"
+  ].sort();
+  if (!bundle || typeof bundle !== "object" || Array.isArray(bundle) ||
+      Object.keys(bundle).sort().join("\n") !== expectedKeys.join("\n") ||
+      bundle.credential_format !== GITHUB_OAUTH_CREDENTIAL_FORMAT ||
+      !oauthToken(bundle.access_token) ||
+      (bundle.refresh_token !== null && !oauthToken(bundle.refresh_token)) ||
+      !validStoredExpiration(bundle.access_token_expires_at) ||
+      !validStoredExpiration(bundle.refresh_token_expires_at) ||
+      (bundle.refresh_token_expires_at !== null && !bundle.refresh_token)) {
+    throw new GithubOAuthCredentialError("GITHUB_AUTH_EXPIRED", "GitHub authorization is unavailable. Reconnect GitHub.", 409);
+  }
+  return bundle;
+}
+
+function reconnectRequired() {
+  return new GithubOAuthCredentialError(
+    "GITHUB_AUTH_EXPIRED",
+    "GitHub authorization is no longer valid. Reconnect GitHub.",
+    409
+  );
+}
+
+function refreshUnavailable() {
+  return new GithubOAuthCredentialError("GITHUB_REFRESH_UNAVAILABLE", "GitHub is temporarily unavailable.", 502);
+}
+
+async function latestUsableGithubOAuthCredential({ reload, currentCiphertext, masterKey, now }) {
+  if (typeof reload !== "function") return null;
+  let latest;
+  try { latest = await reload(); } catch { return null; }
+  if (!latest || typeof latest.credential_ciphertext !== "string" || latest.credential_ciphertext === currentCiphertext) return null;
+  try {
+    const bundle = decryptGithubOAuthCredentialBundle(latest.credential_ciphertext, masterKey);
+    const expiration = bundle.access_token_expires_at === null ? null : Date.parse(bundle.access_token_expires_at);
+    if (expiration === null || expiration > now) {
+      return { access_token: bundle.access_token, credential_ciphertext: latest.credential_ciphertext };
+    }
+  } catch {}
+  return null;
+}
+
+export async function resolveGithubOAuthAccessToken({
+  credentialCiphertext,
+  masterKey,
+  clientId,
+  clientSecret,
+  fetchImpl = globalThis.fetch,
+  now = Date.now(),
+  forceRefresh = false,
+  persist,
+  reload
+} = {}) {
+  if (typeof fetchImpl !== "function") throw refreshUnavailable();
+  const bundle = decryptGithubOAuthCredentialBundle(credentialCiphertext, masterKey);
+  const accessExpiration = bundle.access_token_expires_at === null ? null : Date.parse(bundle.access_token_expires_at);
+  const accessExpired = accessExpiration !== null && accessExpiration <= now;
+  const refreshSoon = accessExpiration !== null && accessExpiration - now <= GITHUB_ACCESS_TOKEN_REFRESH_WINDOW_MS;
+  if (!forceRefresh && !accessExpired && (!refreshSoon || !bundle.refresh_token)) {
+    return { access_token: bundle.access_token, credential_ciphertext: credentialCiphertext };
+  }
+
+  const refreshExpiration = bundle.refresh_token_expires_at === null ? null : Date.parse(bundle.refresh_token_expires_at);
+  if (!forceRefresh && !accessExpired && (refreshExpiration !== null && refreshExpiration <= now || !clientId || !clientSecret)) {
+    return { access_token: bundle.access_token, credential_ciphertext: credentialCiphertext };
+  }
+  if (!bundle.refresh_token || (refreshExpiration !== null && refreshExpiration <= now) || !clientId || !clientSecret) {
+    const latest = await latestUsableGithubOAuthCredential({ reload, currentCiphertext: credentialCiphertext, masterKey, now });
+    if (latest) return latest;
+    throw reconnectRequired();
+  }
+
+  let response;
+  let payload = null;
+  try {
+    response = await fetchImpl("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "FELTUS-Labs"
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: bundle.refresh_token,
+        grant_type: "refresh_token"
+      }).toString(),
+      redirect: "error",
+      signal: AbortSignal.timeout(15000)
+    });
+    try { payload = await response.json(); } catch {}
+  } catch {
+    const latest = await latestUsableGithubOAuthCredential({ reload, currentCiphertext: credentialCiphertext, masterKey, now });
+    if (latest) return latest;
+    throw refreshUnavailable();
+  }
+
+  if (!response.ok || !payload || payload.error) {
+    const latest = await latestUsableGithubOAuthCredential({ reload, currentCiphertext: credentialCiphertext, masterKey, now });
+    if (latest) return latest;
+    if (payload?.error === "bad_refresh_token" || payload?.error === "invalid_grant") throw reconnectRequired();
+    throw refreshUnavailable();
+  }
+
+  let replacement;
+  let replacementCiphertext;
+  try {
+    replacement = makeGithubOAuthCredentialBundle(payload, now, {
+      fallbackRefreshToken: bundle.refresh_token,
+      fallbackRefreshTokenExpiresAt: bundle.refresh_token_expires_at,
+      requireAccessExpiration: true
+    });
+    if (!payload.refresh_token || payload.refresh_token_expires_in === undefined ||
+        payload.refresh_token_expires_in === null || !replacement.refresh_token_expires_at) {
+      throw new TypeError("GitHub did not return a complete rotated refresh token.");
+    }
+    replacementCiphertext = encryptGithubSecret(JSON.stringify(replacement), masterKey, GITHUB_OAUTH_CREDENTIAL_PURPOSE);
+  } catch {
+    throw refreshUnavailable();
+  }
+
+  if (typeof persist !== "function") throw new GithubOAuthCredentialError("GITHUB_CREDENTIAL_PERSIST_FAILED", "GitHub authorization could not be refreshed safely.", 502);
+  let persisted = false;
+  try { persisted = await persist(replacementCiphertext, credentialCiphertext) === true; } catch {}
+  if (!persisted) {
+    const latest = await latestUsableGithubOAuthCredential({ reload, currentCiphertext: credentialCiphertext, masterKey, now });
+    if (latest) return latest;
+    throw new GithubOAuthCredentialError("GITHUB_CREDENTIAL_PERSIST_FAILED", "GitHub authorization could not be refreshed safely.", 502);
+  }
+  return { access_token: replacement.access_token, credential_ciphertext: replacementCiphertext };
 }
 
 export function createGithubOAuthState({ appId, userId, masterKey, now = Date.now(), ttlMs = 10 * 60_000 } = {}) {

@@ -3,7 +3,10 @@ import { createHmac } from "node:crypto";
 import {
   createGithubOAuthState,
   decryptGithubSecret,
+  decryptGithubOAuthCredentialBundle,
   encryptGithubSecret,
+  encryptGithubOAuthCredentialBundle,
+  resolveGithubOAuthAccessToken,
   normalizeGithubBranch,
   parseGithubWebhookEvent,
   verifyGithubOAuthState,
@@ -16,6 +19,12 @@ const USER_ID = "b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2";
 const REPO_ID = "c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3";
 const KEY = "phase-three-test-key-that-is-longer-than-32-bytes";
 const OAUTH_TOKEN = "gho_test_token_value_that_must_never_be_returned";
+const OAUTH_REFRESH_TOKEN = "ghr_test_refresh_token_value_that_must_never_be_returned";
+const ROTATED_OAUTH_TOKEN = "gho_rotated_access_token_value_never_returned";
+const ROTATED_OAUTH_REFRESH_TOKEN = "ghr_rotated_refresh_token_never_returned";
+const CLIENT_SECRET = "client-secret-that-must-never-be-exposed";
+const organizationId = "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4";
+const gitConnectionId = "e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5";
 const HOOK_SECRET = "webhook-secret-used-only-for-signature-tests";
 
 function result() {
@@ -41,6 +50,91 @@ assert.equal(encrypted.includes(OAUTH_TOKEN), false);
 assert.equal(decryptGithubSecret(encrypted, KEY, "github-oauth-token:v1"), OAUTH_TOKEN);
 assert.throws(() => decryptGithubSecret(encrypted, "wrong-key-value-that-is-over-32-bytes", "github-oauth-token:v1"));
 console.log("PASS GitHub credentials are authenticated-encrypted and never stored as plaintext");
+
+const credentialNow = Date.now();
+const unexpiredCredentialCiphertext = encryptGithubOAuthCredentialBundle({
+  access_token: OAUTH_TOKEN, refresh_token: OAUTH_REFRESH_TOKEN,
+  expires_in: 3600, refresh_token_expires_in: 86400
+}, KEY, { now: credentialNow });
+let unexpectedRefreshCount = 0;
+const unexpiredCredential = await resolveGithubOAuthAccessToken({
+  credentialCiphertext: unexpiredCredentialCiphertext,
+  masterKey: KEY,
+  clientId: "client-id",
+  clientSecret: CLIENT_SECRET,
+  now: credentialNow,
+  fetchImpl: async () => { unexpectedRefreshCount += 1; throw new Error("Unexpired access tokens must not refresh."); }
+});
+assert.equal(unexpiredCredential.access_token, OAUTH_TOKEN);
+assert.equal(unexpectedRefreshCount, 0);
+console.log("PASS valid unexpired GitHub OAuth bundle is used without refresh");
+
+const expiredCredentialCiphertext = encryptGithubOAuthCredentialBundle({
+  access_token: OAUTH_TOKEN, refresh_token: OAUTH_REFRESH_TOKEN,
+  expires_in: 1, refresh_token_expires_in: 86400
+}, KEY, { now: credentialNow - 60_000 });
+let persistedCredentialCiphertext = null;
+let refreshRequestBody = null;
+const refreshedCredential = await resolveGithubOAuthAccessToken({
+  credentialCiphertext: expiredCredentialCiphertext,
+  masterKey: KEY,
+  clientId: "github-client-id",
+  clientSecret: CLIENT_SECRET,
+  now: credentialNow,
+  fetchImpl: async (url, init) => {
+    assert.equal(String(url), "https://github.com/login/oauth/access_token");
+    assert.equal(init.method, "POST");
+    refreshRequestBody = new URLSearchParams(init.body);
+    return Response.json({
+      access_token: ROTATED_OAUTH_TOKEN,
+      expires_in: 28800,
+      refresh_token: ROTATED_OAUTH_REFRESH_TOKEN,
+      refresh_token_expires_in: 15897600,
+      token_type: "bearer"
+    });
+  },
+  persist: async (ciphertext, previous) => {
+    assert.equal(previous, expiredCredentialCiphertext);
+    persistedCredentialCiphertext = ciphertext;
+    return true;
+  }
+});
+assert.equal(refreshRequestBody.get("client_id"), "github-client-id");
+assert.equal(refreshRequestBody.get("client_secret"), CLIENT_SECRET);
+assert.equal(refreshRequestBody.get("refresh_token"), OAUTH_REFRESH_TOKEN);
+assert.equal(refreshRequestBody.get("grant_type"), "refresh_token");
+assert.equal(refreshedCredential.access_token, ROTATED_OAUTH_TOKEN);
+assert.equal(refreshedCredential.credential_ciphertext, persistedCredentialCiphertext);
+assert.equal(persistedCredentialCiphertext.includes(ROTATED_OAUTH_TOKEN), false);
+assert.equal(persistedCredentialCiphertext.includes(ROTATED_OAUTH_REFRESH_TOKEN), false);
+const persistedBundle = decryptGithubOAuthCredentialBundle(persistedCredentialCiphertext, KEY);
+assert.deepEqual(Object.keys(persistedBundle).sort(), [
+  "access_token", "access_token_expires_at", "credential_format", "refresh_token", "refresh_token_expires_at"
+].sort());
+assert.equal(persistedBundle.access_token, ROTATED_OAUTH_TOKEN);
+assert.equal(persistedBundle.refresh_token, ROTATED_OAUTH_REFRESH_TOKEN);
+assert.ok(Date.parse(persistedBundle.access_token_expires_at) > credentialNow);
+assert.ok(Date.parse(persistedBundle.refresh_token_expires_at) > Date.parse(persistedBundle.access_token_expires_at));
+console.log("PASS expired GitHub OAuth credentials refresh, rotate, and persist only an encrypted versioned bundle");
+
+const legacyAccessToken = "legacy-v1-github-access-token-value";
+const legacyCredentialCiphertext = encryptGithubSecret(legacyAccessToken, KEY, "github-oauth-token:v1");
+const legacyCredential = await resolveGithubOAuthAccessToken({
+  credentialCiphertext: legacyCredentialCiphertext,
+  masterKey: KEY,
+  now: credentialNow,
+  fetchImpl: async () => { throw new Error("A valid legacy token does not need refresh."); }
+});
+assert.equal(legacyCredential.access_token, legacyAccessToken);
+assert.equal(legacyCredential.credential_ciphertext, legacyCredentialCiphertext);
+await assert.rejects(resolveGithubOAuthAccessToken({
+  credentialCiphertext: legacyCredentialCiphertext,
+  masterKey: KEY,
+  now: credentialNow,
+  forceRefresh: true,
+  fetchImpl: async () => { throw new Error("Legacy credentials have no refresh token."); }
+}), error => error.code === "GITHUB_AUTH_EXPIRED" && /Reconnect GitHub/.test(error.message));
+console.log("PASS legacy v1 credentials remain usable until invalidated and fail with a clear reconnect-required error");
 
 const oauth = createGithubOAuthState({ appId: APP_ID, userId: USER_ID, masterKey: KEY, now: 100_000 });
 assert.deepEqual(verifyGithubOAuthState(oauth.state, oauth.nonce, { masterKey: KEY, userId: USER_ID, now: 101_000 }), {
@@ -91,7 +185,7 @@ const connectEnv = {
   FELTUS_ENV: "production",
   FELTUS_PUBLIC_URL: "https://feltus.test",
   FELTUS_GITHUB_CLIENT_ID: "client-id",
-  FELTUS_GITHUB_CLIENT_SECRET: "client-secret",
+  FELTUS_GITHUB_CLIENT_SECRET: CLIENT_SECRET,
   FELTUS_SECRET_ENCRYPTION_KEY: KEY
 };
 let savedConnection = null;
@@ -115,7 +209,11 @@ const oauthHandler = createGithubApiHandler({
   env: connectEnv,
   fetchImpl: async (url, options) => {
     oauthFetches.push({ url: String(url), options });
-    if (String(url) === "https://github.com/login/oauth/access_token") return Response.json({ access_token: OAUTH_TOKEN, token_type: "bearer", scope: "repo,admin:repo_hook,read:user" });
+    if (String(url) === "https://github.com/login/oauth/access_token") return Response.json({
+      access_token: OAUTH_TOKEN, expires_in: 28800,
+      refresh_token: OAUTH_REFRESH_TOKEN, refresh_token_expires_in: 15897600,
+      token_type: "bearer", scope: "repo,admin:repo_hook,read:user"
+    });
     if (String(url) === "https://api.github.com/user") return Response.json({ login: "feltus-owner" });
     throw new Error("Unexpected GitHub request.");
   }
@@ -137,9 +235,16 @@ assert.equal(callback.status, 302);
 assert.equal(callback.headers.Location, "/apps/" + APP_ID + "/source?github=connected");
 assert.equal(savedConnection.provider, "github");
 assert.equal(savedConnection.credential_ciphertext.includes(OAUTH_TOKEN), false);
-assert.equal(decryptGithubSecret(savedConnection.credential_ciphertext, KEY, "github-oauth-token:v1"), OAUTH_TOKEN);
+assert.equal(savedConnection.credential_ciphertext.includes(OAUTH_REFRESH_TOKEN), false);
+const callbackBundle = decryptGithubOAuthCredentialBundle(savedConnection.credential_ciphertext, KEY);
+assert.equal(callbackBundle.access_token, OAUTH_TOKEN);
+assert.equal(callbackBundle.refresh_token, OAUTH_REFRESH_TOKEN);
+assert.ok(Date.parse(callbackBundle.access_token_expires_at) > Date.now());
+assert.ok(Date.parse(callbackBundle.refresh_token_expires_at) > Date.parse(callbackBundle.access_token_expires_at));
 assert.equal(callback.text.includes(OAUTH_TOKEN), false);
-console.log("PASS GitHub OAuth callback stores an encrypted token and returns to the app source screen");
+assert.equal(callback.text.includes(OAUTH_REFRESH_TOKEN), false);
+assert.equal(callback.text.includes(CLIENT_SECRET), false);
+console.log("PASS GitHub OAuth callback stores the encrypted versioned credential bundle and exposes no tokens");
 
 const failedCallbackHandler = createGithubApiHandler({
   tableRequest: async () => ({ status: 200, data: [{
@@ -206,8 +311,146 @@ assert.equal(statusPayload.repositories[0].webhook_status, "not_configured");
 assert.equal(connectionStatus.text.includes("webhook_secret_ciphertext"), false);
 console.log("PASS GitHub status does not call a legacy webhook active without its encrypted verification secret");
 
-const organizationId = "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4";
-const gitConnectionId = "e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5";
+const refreshRepository = {
+  id: REPO_ID,
+  organization_id: organizationId,
+  git_connection_id: gitConnectionId,
+  provider_repository_id: "123456789",
+  repository_name: "feltus-owner/northwind",
+  default_branch: "codex/feltus-phase3-state-delivery-engine",
+  webhook_id: "77",
+  webhook_secret_ciphertext: encryptGithubSecret(HOOK_SECRET, KEY, "github-webhook-secret:v1"),
+  webhook_secret_key_version: "aes-256-gcm-hkdf-v1",
+  archived_at: null
+};
+const refreshProjectLink = { app_id: APP_ID, repository_id: REPO_ID, attached_by: USER_ID };
+const refreshBranch = {
+  repository_id: REPO_ID,
+  branch_name: "codex/feltus-phase3-state-delivery-engine",
+  is_default: true,
+  latest_commit_sha: "a".repeat(40),
+  updated_at: new Date().toISOString()
+};
+const refreshConnection = {
+  id: gitConnectionId,
+  organization_id: organizationId,
+  provider: "github",
+  account_label: "feltus-owner",
+  credential_ciphertext: encryptGithubOAuthCredentialBundle({
+    access_token: OAUTH_TOKEN, refresh_token: OAUTH_REFRESH_TOKEN,
+    expires_in: 1, refresh_token_expires_in: 15897600
+  }, KEY, { now: Date.now() - 60_000 }),
+  encryption_key_version: "aes-256-gcm-hkdf-v1",
+  disabled_at: null
+};
+const originalRefreshCiphertext = refreshConnection.credential_ciphertext;
+const refreshWrites = [];
+const refreshHandler = createGithubApiHandler({
+  tableRequest: async () => ({ status: 200, data: [{
+    id: APP_ID, owner_id: USER_ID, organization_id: organizationId, app_name: "Northwind"
+  }] }),
+  serviceRequest: async (path, options = {}) => {
+    if (path.includes("feltus_git_connections?")) {
+      if (options.method === "PATCH") {
+        refreshWrites.push({ path, options });
+        if (!path.includes("credential_ciphertext=eq.")) return { status: 412, data: [] };
+        refreshConnection.credential_ciphertext = options.body.credential_ciphertext;
+        return { status: 200, data: [{ id: refreshConnection.id, credential_ciphertext: refreshConnection.credential_ciphertext }] };
+      }
+      return { status: 200, data: [refreshConnection] };
+    }
+    if (path.includes("feltus_project_repositories?")) return { status: 200, data: [refreshProjectLink] };
+    if (path.includes("feltus_repositories?")) return { status: 200, data: [refreshRepository] };
+    if (path.includes("feltus_repository_branches?")) return { status: 200, data: [refreshBranch] };
+    throw new Error("Unexpected token refresh database request.");
+  },
+  readBody: async () => ({}),
+  getUser: () => ({ id: USER_ID }),
+  env: connectEnv,
+  fetchImpl: async (url, options = {}) => {
+    if (String(url) === "https://github.com/login/oauth/access_token") {
+      const form = new URLSearchParams(options.body);
+      assert.equal(form.get("grant_type"), "refresh_token");
+      assert.equal(form.get("refresh_token"), OAUTH_REFRESH_TOKEN);
+      return Response.json({
+        access_token: ROTATED_OAUTH_TOKEN, expires_in: 28800,
+        refresh_token: ROTATED_OAUTH_REFRESH_TOKEN, refresh_token_expires_in: 15897600
+      });
+    }
+    if (String(url) === "https://api.github.com/user/repos?per_page=100&type=all&sort=updated") {
+      assert.equal(options.headers.Authorization, "Bearer " + ROTATED_OAUTH_TOKEN);
+      return Response.json([{ id: 123456789, full_name: "feltus-owner/northwind", clone_url: "https://github.com/feltus-owner/northwind.git", private: true, default_branch: "main", archived: false, disabled: false }]);
+    }
+    throw new Error("Unexpected API token refresh request.");
+  }
+});
+const repoSnapshot = structuredClone(refreshRepository);
+const linkSnapshot = structuredClone(refreshProjectLink);
+const branchSnapshot = structuredClone(refreshBranch);
+const refreshResponse = await makeRequest(refreshHandler, refreshHandler.handleAuthenticated.bind(refreshHandler),
+  "/api/apps/" + APP_ID + "/github/repositories", { method: "GET", headers: {} });
+assert.equal(refreshResponse.status, 200);
+assert.equal(refreshWrites.length, 1);
+assert.equal(refreshWrites[0].options.body.credential_ciphertext.includes(ROTATED_OAUTH_TOKEN), false);
+assert.notEqual(refreshConnection.credential_ciphertext, originalRefreshCiphertext);
+assert.equal(decryptGithubOAuthCredentialBundle(refreshConnection.credential_ciphertext, KEY).access_token, ROTATED_OAUTH_TOKEN);
+assert.deepEqual(refreshRepository, repoSnapshot);
+assert.deepEqual(refreshProjectLink, linkSnapshot);
+assert.deepEqual(refreshBranch, branchSnapshot);
+assert.equal(refreshResponse.text.includes(OAUTH_TOKEN), false);
+assert.equal(refreshResponse.text.includes(OAUTH_REFRESH_TOKEN), false);
+assert.equal(refreshResponse.text.includes(ROTATED_OAUTH_TOKEN), false);
+assert.equal(refreshResponse.text.includes(CLIENT_SECRET), false);
+assert.equal(refreshResponse.text.includes(refreshConnection.credential_ciphertext), false);
+const refreshedAttachedRepo = JSON.parse(refreshResponse.text).attached.find(row => row.id === REPO_ID);
+assert.equal(refreshedAttachedRepo.webhook_status, "active");
+assert.equal(refreshedAttachedRepo.branches[0].branch_name, "codex/feltus-phase3-state-delivery-engine");
+assert.equal(JSON.stringify(refreshWrites).includes(OAUTH_TOKEN), false);
+assert.equal(JSON.stringify(refreshWrites).includes(OAUTH_REFRESH_TOKEN), false);
+assert.equal(JSON.stringify(refreshWrites).includes(CLIENT_SECRET), false);
+console.log("PASS GitHub API transparently refreshes expired credentials without changing repository, webhook, or branch linkage");
+
+const invalidRefreshConnection = {
+  ...refreshConnection,
+  credential_ciphertext: encryptGithubOAuthCredentialBundle({
+    access_token: OAUTH_TOKEN, refresh_token: OAUTH_REFRESH_TOKEN,
+    expires_in: 1, refresh_token_expires_in: 15897600
+  }, KEY, { now: Date.now() - 60_000 })
+};
+const invalidRefreshWrites = [];
+const invalidRefreshHandler = createGithubApiHandler({
+  tableRequest: async () => ({ status: 200, data: [{
+    id: APP_ID, owner_id: USER_ID, organization_id: organizationId, app_name: "Northwind"
+  }] }),
+  serviceRequest: async (path, options = {}) => {
+    if (path.includes("feltus_git_connections?")) {
+      if (options.method === "PATCH") invalidRefreshWrites.push(options);
+      return { status: 200, data: [invalidRefreshConnection] };
+    }
+    if (path.includes("feltus_project_repositories?")) return { status: 200, data: [refreshProjectLink] };
+    if (path.includes("feltus_repositories?")) return { status: 200, data: [refreshRepository] };
+    if (path.includes("feltus_repository_branches?")) return { status: 200, data: [refreshBranch] };
+    throw new Error("Unexpected invalid refresh database request.");
+  },
+  readBody: async () => ({}),
+  getUser: () => ({ id: USER_ID }),
+  env: connectEnv,
+  fetchImpl: async url => {
+    assert.equal(String(url), "https://github.com/login/oauth/access_token");
+    return Response.json({ error: "bad_refresh_token", error_description: OAUTH_REFRESH_TOKEN + " " + CLIENT_SECRET }, { status: 400 });
+  }
+});
+const invalidRefreshResponse = await makeRequest(invalidRefreshHandler, invalidRefreshHandler.handleAuthenticated.bind(invalidRefreshHandler),
+  "/api/apps/" + APP_ID + "/github/repositories", { method: "GET", headers: {} });
+const invalidRefreshPayload = JSON.parse(invalidRefreshResponse.text);
+assert.equal(invalidRefreshResponse.status, 409);
+assert.match(invalidRefreshPayload.error, /Reconnect GitHub/);
+assert.equal(invalidRefreshResponse.text.includes(OAUTH_TOKEN), false);
+assert.equal(invalidRefreshResponse.text.includes(OAUTH_REFRESH_TOKEN), false);
+assert.equal(invalidRefreshResponse.text.includes(CLIENT_SECRET), false);
+assert.equal(invalidRefreshWrites.length, 0);
+console.log("PASS invalid GitHub refresh token returns a safe reconnect-required error without persisting or leaking response details");
+
 const developmentEnvironmentId = "f7f7f7f7-f7f7-47f7-87f7-f7f7f7f7f7f7";
 const gitConnection = {
   id: gitConnectionId,
