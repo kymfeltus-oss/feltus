@@ -405,7 +405,10 @@ export function createBuildWorker({
   }
 
   async function fetchGithubJson(slug, pathPart, token) {
-    const response = await fetchImpl(`https://api.github.com/repos/${slug}/${pathPart}`, {
+    const githubUrl = pathPart
+      ? `https://api.github.com/repos/${slug}/${pathPart}`
+      : `https://api.github.com/repos/${slug}`;
+    const response = await fetchImpl(githubUrl, {
       headers: {
         Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "FELTUS-Build-Worker"
