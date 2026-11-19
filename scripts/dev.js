@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 dotenv.config();
 
@@ -23,6 +25,10 @@ process.env.FELTUS_STORAGE_ROOT =
 process.env.FELTUS_CODE_WORKSPACE_ROOT =
   process.env.FELTUS_CODE_WORKSPACE_ROOT ||
   `${process.env.FELTUS_STORAGE_ROOT}/code-workspaces`;
+const developmentProjectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.env.FELTUS_CODE_LOCAL_SOURCE_ROOT =
+  process.env.FELTUS_CODE_LOCAL_SOURCE_ROOT ||
+  path.join(developmentProjectRoot, "development", "test-fixtures");
 process.env.FELTUS_GATEWAY_URL =
   process.env.FELTUS_LOCAL_GATEWAY_URL ||
   "http://127.0.0.1:54321";

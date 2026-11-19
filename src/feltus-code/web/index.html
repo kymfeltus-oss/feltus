@@ -2,79 +2,255 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FELTUS CODE</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
+  <title>Create · FELTUS</title>
+  <link rel="preload" href="/code-assets/feltus-code.css" as="style" />
+  <link rel="modulepreload" href="/code-assets/feltus-code.js" />
   <link rel="stylesheet" href="/code-assets/feltus-code.css" />
 </head>
 <body>
-  <div class="app">
-    <header>
-      <div class="brand"><strong>FELTUS CODE</strong><small id="session-title">Project code workspace</small></div>
-      <div class="top-actions"><span id="branch" class="branch">Git status</span><button id="refresh-tree">Refresh</button></div>
+  <div class="app-shell">
+    <header class="studio-header">
+      <a class="brand-lockup" href="/apps" target="_top" aria-label="FELTUS Home"><span class="brand-mark">F</span><div><strong>FELTUS</strong><small id="session-title">Your app workspace</small></div></a>
+      <div class="header-actions"><button id="refresh-studio" type="button" title="Refresh project state">Refresh</button></div>
     </header>
+
+    <nav id="primary-nav" class="primary-nav" aria-label="Application">
+      <a href="/apps" target="_top">Home</a>
+      <button class="active" type="button" data-workspace-tab="chat" aria-current="page">Create</button>
+      <button type="button" data-workspace-tab="preview">Preview <i id="preview-dot" class="state-dot"></i></button>
+      <button type="button" data-workspace-tab="design">Design</button>
+      <a id="connections-link" href="/apps" target="_top">Connections</a>
+      <button type="button" data-workspace-tab="launch">Launch</button>
+      <a id="my-app-link" href="/apps" target="_top">My App</a>
+    </nav>
 
     <section id="workspace-setup" class="workspace-setup" hidden>
       <div class="setup-mark">F</div>
-      <h2>Create this project's private code workspace</h2>
-      <p>FELTUS will create an isolated repository inside its persistent workspace volume. The browser never selects a server path. The new repository starts empty.</p>
-      <button id="initialize-workspace" class="primary">Initialize project repository</button>
+      <p class="eyebrow">Create your app</p>
+      <h1>Get your app ready to build</h1>
+      <p>FELTUS will prepare a private workspace for your application. Describe what you want to make in chat; technical tools stay tucked away under Advanced.</p>
+      <div id="workspace-initialize-error" class="workspace-error" role="alert" aria-live="polite"></div>
+      <button id="initialize-workspace" class="primary" type="button">Get started</button>
     </section>
 
     <main id="workspace-app" hidden>
-      <aside class="repository panel">
-        <div class="section-heading"><div><h2>Repository</h2><small id="tree-path">.</small></div><button id="tree-up" title="Parent folder">↑</button></div>
-        <div class="repo-actions"><button id="new-file">New file</button></div>
-        <input id="search" type="search" placeholder="Search this repository · Enter" />
-        <div id="search-results" class="search-results"></div>
-        <div id="tree" class="tree" aria-label="Project repository files"></div>
-        <div class="git-panel"><div class="section-heading"><h3>Git</h3><button id="git-log">Log</button></div><pre id="git-status">Loading status…</pre></div>
-      </aside>
+      <section class="workspace-panel panel">
+        <details id="advanced-tools" class="advanced-tools">
+          <summary>Advanced</summary>
+          <nav class="advanced-nav" aria-label="Advanced tools">
+            <button type="button" data-workspace-tab="code">Code</button>
+            <button type="button" data-workspace-tab="data">Data and schema</button>
+            <button type="button" data-workspace-tab="launch">Release tools</button>
+            <button type="button" data-workspace-tab="terminal">Terminal</button>
+            <button type="button" data-workspace-tab="changes">Changes <span id="change-count" class="count-badge" hidden>0</span></button>
+            <button id="quick-run" type="button">Run check</button>
+          </nav>
+          <div class="advanced-context"><span id="branch" class="branch">Reading Git state…</span><span id="role-badge" class="role-badge">Checking access…</span></div>
+          <aside class="project-panel panel" aria-label="Project files and tools">
+            <div class="panel-title"><div><p class="eyebrow">Project</p><h2>Files</h2></div><button id="refresh-tree" class="icon-button" type="button" title="Refresh files">↻</button></div>
+            <div class="project-actions"><button id="new-file" type="button">＋ File</button><button id="new-folder" type="button">＋ Folder</button><button id="go-to-file" type="button">Go to</button></div>
+            <label class="search-field"><span>⌕</span><input id="search" type="search" placeholder="Search project" autocomplete="off" /></label>
+            <div id="search-results" class="search-results" aria-live="polite"></div>
+            <div class="tree-heading"><button id="tree-up" type="button">↑</button><span id="tree-path">.</span></div>
+            <div id="tree" class="tree" aria-label="Project files"></div>
+            <section class="git-summary">
+              <div class="mini-heading"><strong>Repo state</strong><button id="git-log" type="button">Checkpoints</button></div>
+              <pre id="git-status">Loading Git state…</pre>
+            </section>
+          </aside>
+        </details>
 
-      <section class="editor panel">
-        <div class="editor-top">
-          <div id="tabs" class="tabs"></div>
-          <div class="editor-tools">
-            <strong id="active-file">No file selected</strong>
-            <div class="editor-buttons">
-              <button id="rename-file">Move/Rename</button>
-              <button id="delete-file" class="danger">Delete</button>
-              <button id="git-stage-current">Stage current</button>
-              <button id="git-checkpoint">Commit staged</button>
-              <button id="git-diff">Diff</button>
-              <button id="git-staged-diff">Staged diff</button>
-              <button id="save" class="primary" disabled>Save</button>
+        <section id="pane-chat" class="workspace-pane active" data-pane="chat">
+          <div id="chat-welcome" class="chat-welcome"><p class="eyebrow">Your app, built together</p><h1>What would you like to create?</h1>
+            <div class="chat-suggestions" aria-label="Ideas to get started">
+              <button type="button" data-chat-prompt="Build an appointment booking app for my business.">Appointment booking</button>
+              <button type="button" data-chat-prompt="Create a customer management system to track clients and follow-ups.">Customer management</button>
+              <button type="button" data-chat-prompt="Build a marketplace where customers can browse and order products.">Marketplace</button>
+              <button type="button" data-chat-prompt="Create an inventory application to track products and stock levels.">Inventory app</button>
+              <button type="button" data-chat-prompt="Build a business dashboard to manage day-to-day operations.">Business dashboard</button>
             </div>
           </div>
-        </div>
-        <div class="code-editor">
-          <pre id="line-numbers" aria-hidden="true">1</pre>
-          <textarea id="code" spellcheck="false" aria-label="Code editor" disabled></textarea>
-        </div>
-        <div class="output-panel">
-          <div class="output-heading"><strong id="output-title">Task output</strong><label>Validation task <select id="agent-task"></select></label><button id="run-task">Run task</button></div>
-          <pre id="output">Select a project file or run an allowlisted validation task.</pre>
-        </div>
+          <div id="conversation" class="conversation" aria-live="polite">
+            <article id="application-result-card" class="application-result-card" hidden>
+              <div class="application-result-copy"><span class="eyebrow">Your application</span><h2 id="application-result-name"></h2><p id="application-result-summary"></p><span id="application-result-status" class="status-pill">Changes applied</span></div>
+              <div class="application-result-actions"><button type="button" data-workspace-tab="preview">Open Preview</button><button id="request-app-change" type="button">Request Changes</button></div>
+            </article>
+            <article id="chat-preview-card" class="chat-preview-card" hidden>
+              <div class="chat-preview-heading"><div><span class="eyebrow">Your application</span><strong>Live preview</strong><small id="chat-preview-status">Start a preview to see your app here.</small></div><button type="button" data-workspace-tab="preview">Open Preview</button></div>
+              <iframe id="chat-preview-frame" title="Application preview in conversation" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin" hidden></iframe>
+              <button id="chat-start-preview" class="primary" type="button">Preview my app</button>
+            </article>
+          </div>
+          <section id="plan-card" class="plan-card" hidden>
+            <div class="mini-heading"><div><p class="eyebrow">Plan</p><h2 id="plan-title">Implementation plan</h2></div><span id="plan-state" class="status-pill">Ready</span></div>
+            <p id="plan-summary"></p><ol id="plan-steps" class="plan-steps"></ol><div id="plan-files" class="plan-files"></div>
+            <div class="action-row"><button id="start-build" class="primary" type="button">Continue</button><button id="dismiss-plan" type="button">Dismiss</button></div>
+          </section>
+          <aside id="project-assistant" class="ai-panel panel" aria-label="FELTUS AI">
+            <details class="advanced-controls">
+              <summary>Advanced AI controls</summary>
+              <div class="advanced-controls-content">
+                <div class="agent-roster" aria-label="Agent plan state"><span data-agent="app-architect">Architect</span><span data-agent="project-agent">Project</span><span data-agent="code-agent">Code</span><span data-agent="devops-agent">DevOps</span><span id="ai-runtime-status" class="state-dot large" role="status" title="Checking AI"></span></div>
+                <label class="field-label" for="model">Model</label><select id="model"></select>
+                <div class="mode-grid" role="group" aria-label="Assistant mode"><button class="active" type="button" data-ai-mode="Plan">Plan</button><button type="button" data-ai-mode="Build">Build</button><button type="button" data-ai-mode="Edit">Edit</button><button type="button" data-ai-mode="Fix">Fix</button><button type="button" data-ai-mode="Explain">Explain</button><button type="button" data-ai-mode="Review">Review</button><button type="button" data-ai-mode="Test">Test</button></div>
+                <button id="run-agent" type="button">Run agent with validation</button>
+                <p class="assistant-note">FELTUS reads only relevant project files, blocks secrets, and shows every proposed change for review before applying it.</p>
+                <div id="context-chips" class="context-chips" aria-label="Technical context included"><span>App context</span><span>Safe changes</span></div>
+              </div>
+            </details>
+            <div id="assistant-error" class="assistant-error" role="alert" aria-live="assertive" hidden></div>
+            <label class="sr-only" for="prompt">Describe what you want your app to do</label>
+            <div class="chat-composer">
+              <textarea id="prompt" rows="1" placeholder="Tell FELTUS what you want your app to do…" aria-label="Describe what you want your app to do"></textarea>
+              <button id="send-ai" class="primary send-button" type="button" aria-label="Send message">Create my app <span aria-hidden="true">↑</span></button>
+            </div>
+            <div class="chat-composer-footer"><button id="cancel-ai" class="danger" type="button" hidden>Stop</button></div>
+          </aside>
+        </section>
+
+        <section id="pane-code" class="workspace-pane code-pane" data-pane="code" hidden>
+          <div id="file-tabs" class="file-tabs" aria-label="Open files"></div>
+          <div class="editor-toolbar">
+            <strong id="active-file">No file selected</strong>
+            <div><button id="find-code" type="button">Find</button><button id="replace-code" type="button">Replace</button><button id="goto-line" type="button">Line</button><button id="rename-file" type="button">Rename</button><button id="delete-file" class="danger" type="button">Delete</button><button id="save" class="primary" type="button" disabled>Save</button></div>
+          </div>
+          <div class="code-editor-wrap">
+            <pre id="code-highlight" class="code-highlight" aria-hidden="true"><code></code></pre>
+            <pre id="line-numbers" aria-hidden="true">1</pre>
+            <textarea id="code" spellcheck="false" aria-label="Code editor" disabled></textarea>
+          </div>
+          <div class="selection-actions"><span id="selection-state">Select code to ask FELTUS about it.</span><button type="button" data-selection-action="Explain">Explain</button><button type="button" data-selection-action="Edit">Edit</button><button type="button" data-selection-action="Fix">Fix</button><button type="button" data-selection-action="Review">Review</button></div>
+        </section>
+
+        <section id="pane-preview" class="workspace-pane" data-pane="preview" hidden>
+          <div class="pane-toolbar"><div><strong>Live Preview</strong><small id="preview-status">Not running</small></div><div><button id="start-preview" class="primary" type="button">Start Preview</button><button id="reload-preview" type="button" disabled>Restart</button><button id="refresh-preview" type="button" disabled>Refresh</button><button id="open-preview" type="button" disabled>Open</button><button id="stop-preview" type="button" disabled>Stop</button></div></div>
+          <div id="preview-empty" class="preview-empty"><span>◧</span><strong>No preview running</strong><p>Start Preview to run this project’s safe development script.</p></div>
+          <iframe id="preview-frame" title="Current app preview" hidden sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"></iframe>
+          <section class="error-tray"><div class="mini-heading"><strong>Runtime and browser errors</strong><button id="fix-preview-errors" type="button" disabled>Ask FELTUS to fix</button></div><div id="preview-errors" class="error-list"><p>No preview errors recorded.</p></div></section>
+        </section>
+
+        <section id="pane-launch" class="workspace-pane launch-pane" data-pane="launch" hidden>
+        <div class="pane-heading"><div><p class="eyebrow">Advanced · Release tools</p><h1>Version and validation tools</h1><p>Existing checks and testing controls for this application.</p></div></div>
+          <section class="version-card"><div class="mini-heading"><strong>Version readiness</strong><button id="refresh-version" type="button">Refresh</button></div><div id="version-state"><p>Loading current version…</p></div><button id="prepare-version" type="button">Prepare version</button><button id="send-testing" class="primary" type="button" disabled>Send to testing</button><p class="assistant-note">Testing uses the existing FELTUS flow. Production is not available here.</p>
+            <section class="productionization-card" aria-labelledby="productionization-heading">
+              <div class="mini-heading"><strong id="productionization-heading">App quality</strong></div>
+              <div id="productionization-state" role="status" aria-live="polite"><p>Checking your app…</p></div>
+              <button id="run-release-checks" type="button">Check app quality</button>
+              <button id="propose-normalization" type="button">Prepare for testing</button>
+              <label class="field-label" for="export-checkpoint">Source checkpoint</label>
+              <select id="export-checkpoint"><option value="">Latest approved checkpoint</option></select>
+              <button id="export-application" type="button">Export app</button>
+              <details id="productionization-details"><summary>Technical details</summary><div id="productionization-detail-content"><p>Validation evidence will appear here.</p></div></details>
+            </section>
+            <section class="productionization-card" aria-labelledby="release-readiness-heading">
+              <div class="mini-heading"><strong id="release-readiness-heading">Release readiness</strong></div>
+              <div id="release-readiness-executive" role="status" aria-live="polite"><p>Check whether your app is ready to share.</p></div>
+              <button id="evaluate-release-readiness" type="button">Check release readiness</button>
+              <div id="release-readiness-categories" class="checkpoint-list"><p>Category summary appears after evaluation.</p></div>
+              <details id="release-readiness-details"><summary>Detailed evidence</summary><div id="release-readiness-detail-content"><p>Technical evidence stays here until you need it.</p></div></details>
+            </section>
+            <section id="reconciliation-controls" class="productionization-card" hidden aria-labelledby="reconciliation-heading">
+              <div class="mini-heading"><strong id="reconciliation-heading">Observed changes</strong></div>
+              <p id="reconciliation-summary"></p>
+              <button id="accept-observed-change" type="button" hidden>Review and accept observed change</button>
+              <label class="field-label" for="restore-target">Restore to desired version</label><select id="restore-target"></select>
+              <label class="field-label" for="restore-environment">Environment</label><select id="restore-environment"></select>
+              <label class="field-label" for="restore-reason">Reason</label><textarea id="restore-reason" maxlength="500" placeholder="Why should this desired version be restored?"></textarea>
+              <button id="restore-desired-state" type="button">Queue restoration</button>
+            </section>
+          </section>
+        </section>
+
+        <section id="pane-design" class="workspace-pane design-pane" data-pane="design" hidden>
+          <div class="pane-heading"><div><p class="eyebrow">Visual application system</p><h1>Design Studio</h1><p>Shape the real application preview with bounded visual controls. Every source change passes through FELTUS CODE review, isolated validation, checkpoint, and undo.</p></div><button id="design-refresh" type="button">Refresh Design State</button></div>
+          <section id="design-empty" class="empty-card" hidden><span class="empty-icon">✦</span><strong>Design State is ready to initialize</strong><p>FELTUS will read this application's classification, enabled capabilities, and current CODE source checkpoint.</p><button id="design-initialize" class="primary" type="button">Initialize Design Studio</button></section>
+          <div id="design-content" hidden>
+            <section class="design-overview-card">
+              <div><p class="eyebrow">Design Overview</p><h2 id="design-profile-name">Custom Design Profile</h2><p id="design-recommendation-note"></p></div>
+              <div class="design-metrics" id="design-sync-summary" aria-live="polite"></div>
+              <p id="design-source-status" role="status"></p>
+            </section>
+            <div class="design-columns">
+              <div class="design-main-column">
+                <section class="design-card" aria-labelledby="design-recipes-heading">
+                  <div class="mini-heading"><strong id="design-recipes-heading">Recipes</strong><span id="design-recipe-count"></span></div>
+                  <div class="design-recipe-row"><label class="field-label" for="design-recipe">Browse 75 visual systems</label><select id="design-recipe"></select><button id="design-select-recipe" type="button">Preview recipe</button></div>
+                  <div class="design-recommendations" id="design-recommendations"></div>
+                  <div class="design-variations" role="group" aria-label="Create a design variation"><span>Variations</span><button type="button" data-design-variation="Conservative">Conservative</button><button type="button" data-design-variation="Premium">Premium</button><button type="button" data-design-variation="Bold">Bold</button></div>
+                </section>
+
+                <section class="design-card design-canvas-card" aria-labelledby="design-canvas-heading">
+                  <div class="mini-heading"><div><strong id="design-canvas-heading">Canvas and Responsive Preview</strong><small>Actual isolated application preview</small></div><div class="design-viewports" role="group" aria-label="Responsive preview size"><button type="button" data-design-viewport="desktop" class="active">Desktop</button><button type="button" data-design-viewport="tablet">Tablet</button><button type="button" data-design-viewport="mobile">Mobile</button></div></div>
+                  <div class="design-canvas-toolbar"><label for="design-page">Page</label><select id="design-page"></select><label for="design-component">Selected component</label><select id="design-component"><option value="">Choose a managed component</option></select><button id="design-start-preview" type="button">Start actual Preview</button><button id="design-refresh-preview" type="button">Refresh Preview</button></div>
+                  <p id="design-canvas-help" class="assistant-note">Choose a component or select a tagged component in the running Preview. The Canvas uses component identity; it does not reposition arbitrary elements.</p>
+                  <div class="design-preview-shell"><iframe id="design-preview-frame" title="Actual application responsive preview" hidden sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"></iframe><div id="design-preview-empty" class="preview-empty"><span>◧</span><strong>Actual Preview is not running</strong><p>Start Preview to inspect this app's current source.</p></div></div>
+                </section>
+
+                <section class="design-card" aria-labelledby="design-properties-heading">
+                  <div class="mini-heading"><strong id="design-properties-heading">Component Properties</strong><span id="design-owner-state" class="status-pill">No component selected</span></div>
+                  <div class="design-property-row"><label class="field-label" for="design-property">Property</label><select id="design-property"><option value="layout">Layout</option><option value="alignment">Alignment</option><option value="width">Sizing</option><option value="padding">Spacing</option><option value="gap">Gap</option><option value="background">Background</option><option value="color">Text color</option><option value="radius">Corners</option><option value="shadow">Shadow</option><option value="font_size">Typography size</option><option value="visible">Visibility</option><option value="variant">Component variant</option><option value="content">Plain text</option></select><label class="field-label" for="design-value">Value</label><input id="design-value" type="text" list="design-value-options" autocomplete="off" /><datalist id="design-value-options"></datalist><button id="design-apply-property" class="primary" type="button">Preview property change</button></div>
+                  <div class="action-row"><button id="design-toggle-ownership" type="button" disabled>Detach from Design Studio</button></div>
+                </section>
+
+                <section class="design-card" aria-labelledby="design-ai-heading">
+                  <div class="mini-heading"><div><strong id="design-ai-heading">AI Design Chat</strong><small>Suggestions only; FELTUS never writes source from this chat.</small></div></div>
+                  <p id="design-ai-scope" class="assistant-note">Select a component in Canvas to scope AI edits automatically.</p>
+                  <label class="field-label" for="design-ai-prompt">Describe the design change</label><textarea id="design-ai-prompt" maxlength="3000" placeholder="Make this hero feel more premium…"></textarea>
+                  <button id="design-ai-propose" class="primary" type="button">Propose visual change</button>
+                </section>
+
+                <section id="design-proposal-card" class="design-card design-proposal-card" hidden aria-labelledby="design-proposal-heading">
+                  <div class="mini-heading"><strong id="design-proposal-heading">Review Design Proposal</strong><span class="status-pill">Review required</span></div>
+                  <p id="design-proposal-summary"></p><div id="design-proposal-paths" class="design-proposal-paths"></div>
+                  <div id="design-contract-review"></div><details id="design-source-diff"><summary>Review source changes</summary><div id="design-source-diff-content"></div></details>
+                  <div class="action-row"><button id="design-review-proposal" class="primary" type="button">Review exact CODE diff</button><button id="design-apply-proposal" type="button" hidden>Apply reviewed changes and checkpoint</button><button id="design-cancel-proposal" type="button">Discard proposal</button></div>
+                </section>
+              </div>
+
+              <aside class="design-side-column">
+                <section class="design-card" aria-labelledby="design-sync-heading"><div class="mini-heading"><strong id="design-sync-heading">Design Sync</strong><button id="design-reconcile" type="button">Reconcile source</button></div><div id="design-sync-details"></div><div id="design-reconciliation-evidence"></div><section id="design-undo-card" class="undo-section" hidden><strong>Last Design Studio checkpoint</strong><p>Undo creates a new CODE checkpoint and restores the prior Design State.</p><button id="design-undo" class="danger" type="button">Undo last design change</button></section></section>
+                <section class="design-card" aria-labelledby="design-guardrails-heading"><div class="mini-heading"><strong id="design-guardrails-heading">Brand Guardrails</strong></div><p class="assistant-note">Guardrails are stored in Design State and enforced before a proposal can be written.</p>
+                  <label class="field-label" for="design-allowed-colors">Allowed colors (hex, comma separated)</label><input id="design-allowed-colors" type="text" placeholder="#274c77, #ffffff" />
+                  <label class="field-label" for="design-prohibited-colors">Prohibited colors (hex, comma separated)</label><input id="design-prohibited-colors" type="text" placeholder="#ff0000" />
+                  <label class="field-label" for="design-logo-assets">Allowed logo/assets (repository paths)</label><input id="design-logo-assets" type="text" placeholder="public/brand/logo.svg" />
+                  <label class="field-label" for="design-lock-path">Lock a design value</label><select id="design-lock-path"><option value="tokens.colors.primary">Primary color</option><option value="tokens.colors.accent">Accent color</option><option value="tokens.typography.heading">Heading font</option><option value="tokens.typography.body">Body font</option><option value="tokens.spacing.density">Spacing density</option></select>
+                  <label class="field-label" for="design-lock-value">Locked value</label><input id="design-lock-value" type="text" placeholder="#274c77 or comfortable" />
+                  <button id="design-save-guardrails" type="button">Preview guardrails update</button>
+                </section>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <section id="pane-data" class="workspace-pane" data-pane="data" hidden>
+          <div class="pane-heading"><div><p class="eyebrow">App data</p><h1>Information and permissions</h1><p>See what this app remembers. Ask App Architect to propose additions in everyday language before anything changes.</p></div><button id="refresh-data" type="button">Refresh</button></div>
+          <div id="schema-content" class="schema-grid"><div class="skeleton-card"></div><div class="skeleton-card"></div></div>
+          <section id="schema-proposal" class="schema-proposal" hidden><div class="mini-heading"><strong>Proposed data changes</strong><span class="status-pill">Review required</span></div><div id="schema-proposal-content"></div><button id="apply-schema" class="primary" type="button">Apply approved data changes</button></section>
+        </section>
+
+        <section id="pane-terminal" class="workspace-pane terminal-pane" data-pane="terminal" hidden>
+          <div class="pane-toolbar"><div><strong>Tasks</strong><small>Controlled project commands only</small></div><div><select id="agent-task" aria-label="Project task"></select><button id="run-task" class="primary" type="button">Run</button><button id="cancel-task" type="button" hidden>Cancel</button></div></div>
+          <div class="task-presets"><button type="button" data-task="npm-check">Run check</button><button type="button" data-task="npm-test-core">Run tests</button><button type="button" data-task="npm-regression">Run regression</button><button type="button" data-task="git-diff">Show Git diff</button></div>
+          <div class="terminal-output"><div class="mini-heading"><strong id="output-title">No task running</strong><span id="task-result" class="status-pill">Ready</span></div><pre id="output">Choose an available project task. FELTUS never opens an unrestricted host shell.</pre></div>
+        </section>
+
+        <section id="pane-changes" class="workspace-pane" data-pane="changes" hidden>
+          <div class="pane-heading"><div><p class="eyebrow">Review</p><h1>Changes</h1><p>Nothing is applied until you review and approve it.</p></div><div class="action-row"><button id="working-diff" type="button">Working diff</button><button id="staged-diff" type="button">Staged diff</button></div></div>
+          <div id="changes-empty" class="empty-card"><span class="empty-icon">⑂</span><strong>No proposed changes</strong><p>Ask FELTUS to edit or build something. The full change set will appear here.</p></div>
+          <div id="changes-review" hidden>
+            <div id="changes-summary" class="changes-summary"></div><div id="change-files" class="change-files"></div>
+            <div class="sticky-actions"><button id="apply-all" class="primary" type="button">Apply all</button><button id="apply-selected" type="button">Apply selected</button><button id="reject-changes" class="danger" type="button">Reject</button></div>
+          </div>
+          <section class="checkpoint-section"><div class="mini-heading"><div><strong>Checkpoints</strong><small>Safe Git snapshots for this project</small></div><button id="create-checkpoint" type="button">Create checkpoint</button></div><div id="checkpoint-list" class="checkpoint-list"><p>No checkpoints yet.</p></div></section>
+          <section class="checkpoint-section"><div class="mini-heading"><div><strong>Recent activity</strong><small>Who changed this project and when</small></div></div><div id="studio-activity" class="checkpoint-list"><p>Loading recent activity…</p></div></section>
+          <section id="undo-section" class="undo-section" hidden><strong>Last applied change set</strong><p id="undo-description"></p><button id="undo-changes" type="button">Undo applied changes</button></section>
+        </section>
       </section>
 
-      <aside class="assistant panel">
-        <div class="section-heading"><div><h2>FELTUS AI</h2><small>Requests use the configured FELTUS provider and trust policy.</small><small id="ai-runtime-status" role="status">Checking runtime…</small></div></div>
-        <label class="field-label" for="model">Model</label>
-        <select id="model"></select>
-        <label class="field-label" for="prompt">Task</label>
-        <textarea id="prompt" placeholder="Describe the plan, edit, fix, explanation, or review you need…"></textarea>
-        <div class="agent-actions">
-          <button id="plan">Plan</button><button id="edit">Edit</button><button id="fix">Fix</button>
-          <button id="explain">Explain</button><button id="review">Review</button>
-        </div>
-        <div class="agent-run"><button id="agent" class="primary">Run Agent with validation</button></div>
-        <button id="cancel-ai" class="danger" hidden>Cancel AI request</button>
-        <p class="agent-note">Edit proposals show a review diff before applying. Agent runs require confirmation, edit only the selected file, and can run only an allowlisted FELTUS task.</p>
-        <div id="proposal" class="proposal"></div>
-        <button id="apply-edit" class="primary" hidden>Accept and apply edit</button>
-      </aside>
     </main>
 
-    <footer><span id="status" role="status" aria-live="polite">Starting FELTUS CODE…</span><span>FELTUS LABS · Project isolated</span></footer>
+    <footer><span id="status" role="status" aria-live="polite">Starting Build Studio…</span><span id="activity-owner">Checking who is signed in…</span></footer>
   </div>
   <script type="module" src="/code-assets/feltus-code.js"></script>
 </body>

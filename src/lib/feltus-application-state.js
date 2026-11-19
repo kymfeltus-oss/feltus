@@ -5,6 +5,20 @@ export const BLUEPRINT_STATUSES = Object.freeze(["draft", "ready", "building", "
 export const DELTA_STATUSES = Object.freeze(["changed", "added", "removed", "unknown"]);
 export const ENVIRONMENT_ORDER = Object.freeze(["development", "preview", "staging", "production"]);
 export const APPLICATION_LIFECYCLE_STATUSES = Object.freeze(["draft", "configuring", "active", "archived"]);
+export const APPLICATION_RUNTIME_LIFECYCLE_STATUSES = Object.freeze([
+  "active", "archived", "requested", "validated", "tombstoned", "cleanup_pending",
+  "cleanup_in_progress", "cleanup_failed", "cleanup_blocked", "cleanup_complete"
+]);
+
+export function resolveApplicationLifecycleStatus(app) {
+  const status = app?.lifecycle_status;
+  if (status === null || status === undefined || status === "") return "active";
+  return APPLICATION_RUNTIME_LIFECYCLE_STATUSES.includes(status) ? status : "unknown";
+}
+
+export function applicationLifecycleIsAccessible(app) {
+  return ["active", "archived"].includes(resolveApplicationLifecycleStatus(app));
+}
 
 const SENSITIVE_KEY = /(secret|password|credential|private[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token)/i;
 
@@ -49,6 +63,58 @@ function sortRecords(values, compare = (a, b) => recordKey(a).localeCompare(reco
   return values.map(scrub).sort(compare);
 }
 
+function normalizeStringList(values, path) {
+  if (!Array.isArray(values) || values.some(value => typeof value !== "string")) {
+    throw new TypeError(`${path} must be a list of strings.`);
+  }
+  return [...new Set(values.map(value => value.trim().normalize("NFC")).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeIntelligence(value) {
+  if (value === null || value === undefined) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("desired_state.intelligence must be an object.");
+  }
+  const intelligence = scrub(value);
+  for (const sectionName of ["classification", "capabilities", "permissions", "repository"]) {
+    const section = intelligence[sectionName];
+    if (section !== undefined && (!section || typeof section !== "object" || Array.isArray(section))) {
+      throw new TypeError(`desired_state.intelligence.${sectionName} must be an object.`);
+    }
+  }
+  const classification = intelligence.classification;
+  if (classification) {
+    for (const key of ["archetypes", "business_models", "audiences", "workflow_patterns"]) {
+      if (classification[key] === undefined) continue;
+      classification[key] = normalizeStringList(classification[key], `desired_state.intelligence.classification.${key}`);
+    }
+    if (classification.confidence !== undefined && classification.confidence !== null &&
+      (typeof classification.confidence !== "number" || !Number.isFinite(classification.confidence) ||
+       classification.confidence < 0 || classification.confidence > 1)) {
+      throw new TypeError("desired_state.intelligence.classification.confidence must be between 0 and 1 or null.");
+    }
+  }
+  if (intelligence.capabilities?.environment_kinds !== undefined) {
+    intelligence.capabilities.environment_kinds = normalizeStringList(
+      intelligence.capabilities.environment_kinds,
+      "desired_state.intelligence.capabilities.environment_kinds"
+    );
+  }
+  if (intelligence.environment_provider_state !== undefined) {
+    if (!Array.isArray(intelligence.environment_provider_state) || intelligence.environment_provider_state.some(item =>
+      !item || typeof item !== "object" || Array.isArray(item))) {
+      throw new TypeError("desired_state.intelligence.environment_provider_state must be a list of objects.");
+    }
+    const environmentRank = new Map(ENVIRONMENT_ORDER.map((kind, index) => [kind, index]));
+    intelligence.environment_provider_state.sort((a, b) =>
+      (environmentRank.get(a.kind) ?? ENVIRONMENT_ORDER.length) - (environmentRank.get(b.kind) ?? ENVIRONMENT_ORDER.length) ||
+      String(a.kind || "").localeCompare(String(b.kind || ""))
+    );
+  }
+  return intelligence;
+}
+
 function normalizeDesiredState(value = {}) {
   const data = value.data || {};
   const knowledge = value.knowledge || {};
@@ -66,7 +132,7 @@ function normalizeDesiredState(value = {}) {
       );
     }
   }
-  return scrub({
+  const desiredState = {
     data: {
       models,
       relationships: sortRecords(data.relationships || [], (a, b) => recordKey(a).localeCompare(recordKey(b)))
@@ -77,7 +143,11 @@ function normalizeDesiredState(value = {}) {
     ai: scrub(ai),
     code: scrub(code),
     environments
-  });
+  };
+  // Keep older v1 Blueprint hashes valid when they predate the optional
+  // intelligence profile. New state reconstruction writes this field.
+  if (Object.hasOwn(value, "intelligence")) desiredState.intelligence = normalizeIntelligence(value.intelligence);
+  return scrub(desiredState);
 }
 
 function normalizeExecution(value = {}) {
@@ -408,6 +478,13 @@ export function compareDesiredAndObserved(desired, observed) {
     deltas.push({ key: "environment", path: "environment", status: "unknown", desired: expectedEnvironment, observed: observed.environment || null });
   } else if (expectedEnvironment !== observed.environment) {
     deltas.push({ key: "environment", path: "environment", status: "changed", desired: expectedEnvironment, observed: observed.environment });
+  }
+  const expectedCommit = desired?.desired_state?.code?.commit || null;
+  const observedCommit = observed.commit_sha || null;
+  if (expectedCommit && observedCommit && String(expectedCommit).toLowerCase() !== String(observedCommit).toLowerCase()) {
+    deltas.push({ key: "source.commit", path: "source.commit", status: "changed", desired: expectedCommit, observed: observedCommit });
+  } else if (expectedCommit && !observedCommit) {
+    deltas.push({ key: "source.commit", path: "source.commit", status: "unknown", desired: expectedCommit, observed: null });
   }
   if (!desired?.artifact_digest || !observed.artifact_digest) {
     deltas.push({ key: "artifact.digest", path: "artifact.digest", status: "unknown", desired: desired?.artifact_digest || null, observed: observed.artifact_digest || null });

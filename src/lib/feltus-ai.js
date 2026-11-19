@@ -1,4 +1,4 @@
-﻿export class FeltusAI {
+export class FeltusAI {
   constructor({
     baseUrl =
       process.env.FELTUS_AI_ENDPOINT ||
@@ -137,6 +137,7 @@
       numPredict = 256,
       keepAlive = "10m",
       systemPrompt = "",
+      format = undefined,
       signal = null
     } = {}
   ) {
@@ -159,7 +160,8 @@
           body: {
             model,
             prompt: prompt.trim(),
-              system: String(systemPrompt || "").trim() || undefined,
+            system: String(systemPrompt || "").trim() || undefined,
+            format: format?.schema || format,
             stream: false,
 
             keep_alive:
@@ -167,6 +169,8 @@
 
             options: {
               temperature,
+
+              num_ctx: Number(process.env.FELTUS_AI_CONTEXT_TOKENS || 8192),
 
               num_predict:
                 numPredict
@@ -259,6 +263,8 @@
 
                 options: {
                   temperature,
+
+                  num_ctx: Number(process.env.FELTUS_AI_CONTEXT_TOKENS || 8192),
 
                   num_predict:
                     numPredict

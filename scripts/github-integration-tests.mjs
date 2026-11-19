@@ -226,6 +226,29 @@ const oauthHandler = createGithubApiHandler({
     throw new Error("Unexpected GitHub request.");
   }
 });
+const availability = await makeRequest(oauthHandler, oauthHandler.handleAuthenticated.bind(oauthHandler),
+  "/api/github/status", { method: "GET", headers: {} });
+assert.equal(availability.status, 200);
+assert.deepEqual(JSON.parse(availability.text), { configured: true });
+assert.equal(oauthFetches.length, 0, "GitHub availability must not contact the provider");
+let availabilityUser = { id: USER_ID };
+const unavailableStatusHandler = createGithubApiHandler({
+  tableRequest: async () => ({ status: 200, data: [] }),
+  serviceRequest: async () => ({ status: 200, data: [] }),
+  readBody: async () => ({}),
+  getUser: () => availabilityUser,
+  env: {}
+});
+const unavailableStatus = await makeRequest(unavailableStatusHandler, unavailableStatusHandler.handleAuthenticated.bind(unavailableStatusHandler),
+  "/api/github/status", { method: "GET", headers: {} });
+assert.equal(unavailableStatus.status, 200);
+assert.deepEqual(JSON.parse(unavailableStatus.text), { configured: false });
+availabilityUser = null;
+const unauthenticatedStatus = await makeRequest(unavailableStatusHandler, unavailableStatusHandler.handleAuthenticated.bind(unavailableStatusHandler),
+  "/api/github/status", { method: "GET", headers: {} });
+assert.equal(unauthenticatedStatus.status, 401);
+assert.equal(unauthenticatedStatus.text.includes("FELTUS_"), false);
+console.log("PASS authenticated GitHub availability check fails closed without contacting the provider");
 const connect = await makeRequest(oauthHandler, oauthHandler.handleAuthenticated.bind(oauthHandler),
   "/api/apps/" + APP_ID + "/github/connect", { method: "GET", headers: {} });
 assert.equal(connect.status, 302);
@@ -680,6 +703,63 @@ const repairedHook = repositoryFetches.find(call => call.url.endsWith("/hooks/77
 assert.equal(repairedHook.options.method, "PATCH");
 assert.equal(Boolean(linkedRepo.webhook_secret_ciphertext), true);
 console.log("PASS GitHub repository selection persists its commit and repairs legacy webhooks in place");
+
+let verifiedRemoteCommit = commit;
+let remoteUnavailable = false;
+const remoteVerificationRequests = [];
+const remoteVerifierHandler = createGithubApiHandler({
+  tableRequest: async () => ({ status: 200, data: [] }),
+  serviceRequest: async (path, options = {}) => {
+    remoteVerificationRequests.push({ kind: "database", path, method: options.method || "GET" });
+    if (path.includes("feltus_project_repositories?")) return { status: 200, data: [{ repository_id: REPO_ID }] };
+    if (path.includes("feltus_repositories?")) return { status: 200, data: [linkedRepo] };
+    if (path.includes("feltus_git_connections?")) return { status: 200, data: [gitConnection] };
+    throw new Error("Unexpected remote-verification database request.");
+  },
+  readBody: async () => ({}),
+  getUser: () => ({ id: USER_ID }),
+  env: connectEnv,
+  fetchImpl: async (url, options = {}) => {
+    remoteVerificationRequests.push({ kind: "remote", url: String(url), method: options.method || "GET" });
+    if (remoteUnavailable) throw new Error("Simulated remote outage.");
+    if (String(url) === "https://api.github.com/repositories/123456789") {
+      return Response.json({ owner: { login: "feltus-owner" }, name: "northwind" });
+    }
+    if (String(url) === "https://api.github.com/repos/feltus-owner/northwind/branches/main") {
+      return Response.json({ commit: { sha: verifiedRemoteCommit } });
+    }
+    throw new Error("Unexpected remote-verification request: " + String(url));
+  }
+});
+const remoteVerified = await remoteVerifierHandler.verifyRemoteBranch({
+  app: { id: APP_ID, organization_id: organizationId },
+  repositoryId: REPO_ID,
+  branch: "main",
+  expectedCommit: commit
+});
+assert.equal(remoteVerified.status, "REMOTE_VERIFIED");
+assert.equal(remoteVerified.remote_commit, commit);
+verifiedRemoteCommit = "b".repeat(40);
+const remoteDiverged = await remoteVerifierHandler.verifyRemoteBranch({
+  app: { id: APP_ID, organization_id: organizationId },
+  repositoryId: REPO_ID,
+  branch: "main",
+  expectedCommit: commit
+});
+assert.equal(remoteDiverged.status, "REMOTE_DIVERGED");
+assert.equal(remoteDiverged.remote_commit, verifiedRemoteCommit);
+remoteUnavailable = true;
+const remoteFailed = await remoteVerifierHandler.verifyRemoteBranch({
+  app: { id: APP_ID, organization_id: organizationId },
+  repositoryId: REPO_ID,
+  branch: "main",
+  expectedCommit: commit
+});
+assert.equal(remoteFailed.status, "REMOTE_UNAVAILABLE");
+assert.equal((await remoteVerifierHandler.verifyRemoteBranch({ app: { id: APP_ID }, branch: "main", expectedCommit: commit })).status, "NOT_CONNECTED");
+assert(remoteVerificationRequests.filter(request => request.kind === "remote").every(request => request.method === "GET"));
+assert(remoteVerificationRequests.filter(request => request.kind === "database").every(request => request.method === "GET"));
+console.log("PASS remote GitHub verification distinguishes matching, diverged, unavailable, and unconnected source using read-only requests");
 
 const webhookRepo = {
   id: REPO_ID,

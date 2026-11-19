@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>How to build an app with FELTUS</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #090714;
+      --panel: #11101f;
+      --panel-raised: #17152a;
+      --line: rgba(198, 174, 255, .18);
+      --text: #f7f5ff;
+      --muted: #b8b4c9;
+      --soft: #89849f;
+      --purple: #a879ff;
+      --pink: #ee8cca;
+      --green: #76e1b2;
+      --blue: #8dcfff;
+      --radius: 18px;
+      font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse at 20% 0%, rgba(116, 64, 196, .16), transparent 36rem),
+        radial-gradient(ellipse at 100% 80%, rgba(79, 74, 157, .1), transparent 32rem),
+        var(--page);
+    }
+    button, a { font: inherit; }
+    a { color: inherit; }
+    button:focus-visible, a:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+
+    .page-shell { width: min(1240px, calc(100% - 40px)); margin: 0 auto; padding: 34px 0 28px; }
+    .topline { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; font-weight: 800; letter-spacing: .04em; }
+    .brand-mark {
+      width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px;
+      color: white; font-weight: 900; background: linear-gradient(145deg, #a954ff, #6b43dc);
+      box-shadow: 0 8px 24px rgba(131, 73, 226, .28);
+    }
+    .brand small { display: block; margin-top: 2px; color: var(--soft); font-size: 10px; letter-spacing: .2em; }
+    .top-note { color: var(--muted); font-size: 13px; }
+
+    .intro { max-width: 760px; margin: 0 auto 28px; text-align: center; }
+    .eyebrow { margin: 0 0 10px; color: var(--pink); font-size: 11px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(32px, 5vw, 52px); line-height: 1.08; letter-spacing: -.045em; }
+    .intro-copy { max-width: 640px; margin: 16px auto 0; color: var(--muted); font-size: 16px; line-height: 1.65; }
+
+    .journey {
+      min-height: 600px;
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr) 270px;
+      gap: 24px;
+      padding: 24px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: linear-gradient(145deg, rgba(20, 18, 38, .98), rgba(10, 10, 20, .98));
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .38);
+    }
+
+    .step-nav { display: flex; flex-direction: column; border-right: 1px solid var(--line); padding-right: 20px; }
+    .nav-title, .panel-title { margin: 2px 0 16px; color: var(--soft); font-size: 10px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
+    .step-list { display: grid; gap: 9px; }
+    .step-button {
+      width: 100%; padding: 12px; text-align: left; color: var(--muted); cursor: pointer;
+      border: 1px solid transparent; border-radius: 13px; background: transparent;
+      transition: background-color .16s ease, border-color .16s ease, color .16s ease;
+    }
+    .step-button:hover { background: rgba(255, 255, 255, .035); color: var(--text); }
+    .step-button[aria-pressed="true"] { color: var(--text); border-color: rgba(168, 121, 255, .66); background: rgba(147, 92, 232, .12); }
+    .step-number { display: block; color: var(--purple); font-size: 10px; font-weight: 800; letter-spacing: .15em; }
+    .step-name { display: block; margin-top: 5px; font-size: 14px; font-weight: 700; }
+    .guide-note { margin-top: auto; padding: 14px; border: 1px solid var(--line); border-radius: 14px; color: var(--muted); background: rgba(255,255,255,.025); font-size: 12px; line-height: 1.55; }
+    .guide-note strong { display: block; margin-bottom: 6px; color: var(--green); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+
+    .main-panel { display: flex; min-width: 0; flex-direction: column; }
+    .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 2px 0 16px; border-bottom: 1px solid var(--line); }
+    .panel-heading h2 { margin: 0; font-size: clamp(20px, 2.6vw, 27px); letter-spacing: -.025em; }
+    .step-count { flex: 0 0 auto; padding: 6px 10px; color: var(--pink); border: 1px solid rgba(238, 140, 202, .27); border-radius: 999px; background: rgba(238, 140, 202, .07); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+    .step-content { min-height: 360px; padding: 18px 4px 20px 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .step-content p { margin: 0 0 14px; }
+    .step-content strong { color: var(--text); }
+    .detail-list { display: grid; gap: 9px; margin: 18px 0 0; padding: 0; list-style: none; }
+    .detail-list li { position: relative; padding: 11px 12px 11px 36px; border: 1px solid rgba(198,174,255,.1); border-radius: 12px; background: rgba(255,255,255,.025); }
+    .detail-list li::before { content: "✓"; position: absolute; top: 10px; left: 13px; color: var(--green); font-weight: 900; }
+    .detail-list li.optional::before { content: "·"; color: var(--blue); font-size: 20px; line-height: .9; }
+    .flow-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 17px; }
+    .flow-chip { padding: 6px 9px; color: var(--text); border: 1px solid rgba(168,121,255,.24); border-radius: 999px; background: rgba(168,121,255,.07); font-size: 11px; }
+    .flow-arrow { color: var(--soft); font-size: 12px; }
+    .caution { margin-top: 16px !important; padding: 12px 14px; color: #e3d8b1; border-left: 3px solid #e7c45b; border-radius: 0 10px 10px 0; background: rgba(231,196,91,.07); font-size: 12px; }
+
+    .panel-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); }
+    .button-row { display: flex; gap: 9px; }
+    .control-button, .open-link {
+      min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 0 13px; color: var(--text); border: 1px solid var(--line); border-radius: 11px;
+      background: var(--panel-raised); text-decoration: none; font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+    .control-button:hover, .open-link:hover { border-color: rgba(168,121,255,.6); background: #201a38; }
+    .control-button:disabled { color: var(--soft); cursor: default; opacity: .55; }
+    .open-link { border-color: transparent; background: linear-gradient(135deg, #984fe8, #6948d3); }
+    .open-link:hover { filter: brightness(1.08); background: linear-gradient(135deg, #984fe8, #6948d3); }
+
+    .right-panel { display: flex; flex-direction: column; border-left: 1px solid var(--line); padding-left: 20px; }
+    .truth-card { padding: 15px; border: 1px solid var(--line); border-radius: 15px; background: rgba(168,121,255,.055); }
+    .truth-card h3 { margin: 0 0 7px; font-size: 13px; }
+    .truth-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .truth-list { display: grid; gap: 10px; margin: 14px 0; padding: 0; list-style: none; }
+    .truth-list li { display: grid; grid-template-columns: 22px 1fr; gap: 9px; align-items: start; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .truth-icon { color: var(--blue); font-weight: 900; }
+    .live-note { margin-top: auto; padding: 13px; border: 1px solid rgba(141,207,255,.2); border-radius: 13px; background: rgba(141,207,255,.045); color: var(--muted); font-size: 11px; line-height: 1.55; }
+    .live-note strong { display: block; margin-bottom: 5px; color: var(--blue); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+    .page-footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 16px; color: var(--soft); font-size: 11px; line-height: 1.5; }
+
+    @media (max-width: 1020px) {
+      .journey { grid-template-columns: 220px minmax(0, 1fr); }
+      .right-panel { grid-column: 1 / -1; border-top: 1px solid var(--line); border-left: 0; padding: 18px 0 0; }
+      .right-panel-inner { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .right-panel .panel-title { grid-column: 1 / -1; margin-bottom: 0; }
+      .truth-list { margin: 0; }
+      .live-note { margin-top: 0; }
+    }
+    @media (max-width: 680px) {
+      .page-shell { width: min(100% - 24px, 600px); padding-top: 20px; }
+      .topline { align-items: flex-start; flex-direction: column; gap: 10px; margin-bottom: 22px; }
+      .intro { text-align: left; margin-bottom: 20px; }
+      .intro-copy { margin-left: 0; font-size: 14px; }
+      .journey { min-height: auto; grid-template-columns: 1fr; gap: 18px; padding: 16px; }
+      .step-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 16px; }
+      .step-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .step-button:last-child { grid-column: 1 / -1; }
+      .guide-note { margin-top: 14px; }
+      .step-content { min-height: 300px; }
+      .right-panel { grid-column: auto; }
+      .right-panel-inner { grid-template-columns: 1fr; }
+      .right-panel .panel-title { grid-column: auto; }
+      .panel-controls { align-items: stretch; flex-direction: column; }
+      .panel-controls .open-link { width: 100%; }
+      .button-row { justify-content: space-between; }
+      .page-footer { flex-direction: column; gap: 6px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="topline">
+      <a class="brand" href="#top" aria-label="FELTUS app-building guide">
+        <span class="brand-mark" aria-hidden="true">F</span>
+        <span>FELTUS <small>APP-BUILDING GUIDE</small></span>
+      </a>
+      <span class="top-note">A simple guide to the real app-building flow</span>
+    </header>
+
+    <section class="intro" id="top" aria-labelledby="page-title">
+      <p class="eyebrow">From first idea to a tested app</p>
+      <h1 id="page-title">Build your app one clear step at a time.</h1>
+      <p class="intro-copy">Choose a step to see what you do, what FELTUS does, and what comes next. This page is a standalone guide. It does not change your app or run tasks.</p>
+    </section>
+
+    <section class="journey" aria-label="FELTUS app-building steps">
+      <nav class="step-nav" aria-label="Choose a step">
+        <p class="nav-title">Your app journey</p>
+        <div class="step-list" role="group" aria-label="App-building steps">
+          <button class="step-button" type="button" data-step="0" aria-pressed="true"><span class="step-number">STEP 01</span><span class="step-name">Start your app</span></button>
+          <button class="step-button" type="button" data-step="1" aria-pressed="false"><span class="step-number">STEP 02</span><span class="step-name">Set it up</span></button>
+          <button class="step-button" type="button" data-step="2" aria-pressed="false"><span class="step-number">STEP 03</span><span class="step-name">Build in Studio</span></button>
+          <button class="step-button" type="button" data-step="3" aria-pressed="false"><span class="step-number">STEP 04</span><span class="step-name">Try and save</span></button>
+          <button class="step-button" type="button" data-step="4" aria-pressed="false"><span class="step-number">STEP 05</span><span class="step-name">Release and improve</span></button>
+        </div>
+        <div class="guide-note"><strong>Guide only</strong>These buttons switch between guide steps. To create or change a real app, open FELTUS.</div>
+      </nav>
+
+      <article class="main-panel" aria-live="polite" aria-atomic="true">
+        <div class="panel-heading">
+          <div><p class="eyebrow" id="step-eyebrow">STEP 01 · GET STARTED</p><h2 id="step-title">Start your app</h2></div>
+          <span class="step-count" id="step-count">1 OF 5</span>
+        </div>
+        <div class="step-content" id="step-content">
+          <p>Give your app a name and tell FELTUS what it should help people do. The setup begins with the app’s basics, then guides you through the next choices.</p>
+          <ul class="detail-list">
+            <li>Choose a name and a short description.</li>
+            <li>Pick the kind of app you want to make.</li>
+            <li>Save your progress as you go.</li>
+          </ul>
+        </div>
+        <div class="panel-controls">
+          <div class="button-row">
+            <button class="control-button" id="previous-step" type="button" disabled>← Back</button>
+            <button class="control-button" id="next-step" type="button">Next →</button>
+          </div>
+          <a class="open-link" id="open-feltus" href="http://127.0.0.1:8080/apps/new" target="_blank" rel="noreferrer">Open FELTUS <span aria-hidden="true">↗</span></a>
+        </div>
+      </article>
+
+      <aside class="right-panel" aria-label="How FELTUS handles your work">
+        <div class="right-panel-inner">
+          <p class="panel-title">What to expect</p>
+          <div class="truth-card">
+            <h3>You stay in control</h3>
+            <p>FELTUS shows proposed code changes before you choose to apply them.</p>
+          </div>
+          <ul class="truth-list">
+            <li><span class="truth-icon" aria-hidden="true">01</span><span><strong>Setup is saved separately.</strong> Saving your app details does not release an app.</span></li>
+            <li><span class="truth-icon" aria-hidden="true">02</span><span><strong>Changes can be reviewed.</strong> In Studio, you can apply, reject, or undo supported changes.</span></li>
+            <li><span class="truth-icon" aria-hidden="true">03</span><span><strong>Checks and release are separate.</strong> A successful save does not mean an app has been released.</span></li>
+          </ul>
+          <div class="live-note"><strong>Real status only</strong>This guide has no made-up scores, activity feed, or success timers. FELTUS shows real results inside your app workspace.</div>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="page-footer">
+      <span>Standalone HTML guide · No FELTUS app files, settings, or data are changed here.</span>
+      <span>Use the steps to learn the flow, then open FELTUS when you’re ready.</span>
+    </footer>
+  </main>
+
+  <script>
+    const steps = [
+      {
+        eyebrow: "STEP 01 · GET STARTED",
+        title: "Start your app",
+        content: `<p>Give your app a name and tell FELTUS what it should help people do. The setup begins with the app’s basics, then guides you through the next choices.</p>
+          <ul class="detail-list"><li>Choose a name and a short description.</li><li>Pick the kind of app you want to make.</li><li>Save your progress as you go.</li></ul>`
+      },
+      {
+        eyebrow: "STEP 02 · GUIDED SETUP",
+        title: "Set up what your app needs",
+        content: `<p>FELTUS walks through the app’s information, helpful material, code, and environment settings. You can move through the setup in order and return to saved progress.</p>
+          <div class="flow-strip" aria-label="Setup pages"><span class="flow-chip">Basics</span><span class="flow-arrow">→</span><span class="flow-chip">Data</span><span class="flow-arrow">→</span><span class="flow-chip">Knowledge</span><span class="flow-arrow">→</span><span class="flow-chip">AI</span><span class="flow-arrow">→</span><span class="flow-chip">Code</span><span class="flow-arrow">→</span><span class="flow-chip">Environment</span><span class="flow-arrow">→</span><span class="flow-chip">Review</span></div>
+          <ul class="detail-list"><li>Add information categories and the fields each one needs.</li><li>Add documents or other helpful material when needed.</li><li>Connect a code source or use the app’s private FELTUS CODE workspace.</li></ul>`
+      },
+      {
+        eyebrow: "STEP 03 · BUILD STUDIO",
+        title: "Describe what you want to build",
+        content: `<p>In Build Studio, explain the change in everyday words. FELTUS makes a plan and shows the files it wants to change before anything is applied.</p>
+          <ul class="detail-list"><li>Ask for a new page, feature, or focused fix.</li><li>Review the proposed changes.</li><li>Apply the changes you approve, reject them, or undo the last applied set when available.</li></ul>
+          <p class="caution">Studio does not apply a proposed change until you approve it.</p>`
+      },
+      {
+        eyebrow: "STEP 04 · CHECK YOUR WORK",
+        title: "Try the app and save a version",
+        content: `<p>Use Preview to try the app in its isolated development environment. Run the available checks, fix problems, then save a version when the app is ready.</p>
+          <ul class="detail-list"><li>Start Preview and try the main tasks.</li><li>Run the checks available to your workspace.</li><li>Save a checkpoint and prepare a named version from the reviewed work.</li></ul>
+          <p class="caution">A saved version is a record of your app’s state. It does not automatically release the app.</p>`
+      },
+      {
+        eyebrow: "STEP 05 · RELEASE AND IMPROVE",
+        title: "Send a ready version to an environment",
+        content: `<p>When release tools are set up for the app and your account can use them, choose the version and environment, review the details, and start the release. FELTUS reports the actual result in the app workspace.</p>
+          <ul class="detail-list"><li>Send a verified version to a testing environment when available.</li><li>Check its real status and health before moving forward.</li><li>Use production release or restore controls only when they are enabled and you have permission.</li><li>Review app activity and versions as you continue improving it.</li></ul>
+          <p class="caution">Release options depend on the app’s setup, available workers, connected providers, and your permissions. This guide does not start a release.</p>`
+      }
+    ];
+
+    const stepButtons = [...document.querySelectorAll("[data-step]")];
+    const previousButton = document.getElementById("previous-step");
+    const nextButton = document.getElementById("next-step");
+    let currentStep = 0;
+
+    function showStep(index) {
+      currentStep = Math.max(0, Math.min(steps.length - 1, index));
+      const step = steps[currentStep];
+      document.getElementById("step-eyebrow").textContent = step.eyebrow;
+      document.getElementById("step-title").textContent = step.title;
+      document.getElementById("step-count").textContent = `${currentStep + 1} OF ${steps.length}`;
+      document.getElementById("step-content").innerHTML = step.content;
+      stepButtons.forEach((button, buttonIndex) => {
+        button.setAttribute("aria-pressed", String(buttonIndex === currentStep));
+      });
+      previousButton.disabled = currentStep === 0;
+      nextButton.disabled = currentStep === steps.length - 1;
+    }
+
+    stepButtons.forEach(button => {
+      button.addEventListener("click", () => showStep(Number(button.dataset.step)));
+    });
+    previousButton.addEventListener("click", () => showStep(currentStep - 1));
+    nextButton.addEventListener("click", () => showStep(currentStep + 1));
+
+    const workspaceBase = window.location.protocol === "file:" ? "http://127.0.0.1:8080" : window.location.origin;
+    document.getElementById("open-feltus").href = `${workspaceBase}/apps/new`;
+    showStep(0);
+  </script>
+</body>
+</html>

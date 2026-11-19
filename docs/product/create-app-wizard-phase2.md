@@ -6,7 +6,7 @@ Phase 2 connects the wizard's Data, Relationships, Documents, AI, and CODE steps
 
 | Route | Behavior |
 | --- | --- |
-| `/apps/:appId/setup/data` | List model registry entries, inspect registered columns/system fields, create a model, change RLS |
+| `/apps/:appId/setup/data` | List model registry entries, inspect registered columns/system fields, create/edit a model schema, remove eligible custom fields after impact review, change RLS |
 | `/apps/:appId/setup/relationships` | Inspect the relationship map, add or remove supported foreign keys |
 | `/apps/:appId/setup/documents` | Upload a supported file, process it, download saved extraction evidence |
 | `/apps/:appId/setup/ai` | Save non-secret assistant settings and make a temporary streamed AI test |
@@ -24,11 +24,11 @@ The wizard saves its current step and reviewed steps through `/api/apps/:id/setu
 | Control | Action or state |
 | --- | --- |
 | Create model | `POST /api/models` with app ID, logical table name, custom column definitions, and RLS choice. FELTUS system fields are shown from the registered model schema. |
-| Add field / Remove field | Adds or removes an unsaved field row in the create form. |
+| Add field / Remove field | Adds a new field, removes an unsaved draft row, or opens an impact preview and explicit confirmation before permanently removing a saved custom field. System fields cannot be removed. |
 | RLS On/Off | `POST /api/models/rls` for the selected model. |
-| Edit, delete, duplicate model / preview rows | Not shown as enabled actions. The existing API has no model mutation or row-preview endpoint. The page states this limitation and shows the real schema preview. |
+| Delete/duplicate category / preview rows | Not shown as enabled actions. The API has no category deletion or row-preview endpoint. The older category-deletion boundary is superseded by the model deletion flow; see the [destructive lifecycle contract](../integration/feltus-destructive-lifecycle.md). The page shows the real schema preview. |
 | Create relationship | `POST /api/relationships` with a pre-existing UUID source field, target-column selector, target model primary key, and supported delete action. `id` is the only target column currently guaranteed by model creation. |
-| Remove relationship | Confirmation followed by `POST /api/relationships/delete`. Changing a relationship requires removing and recreating it because no update endpoint exists. |
+| Remove relationship | Loads `/api/relationships/deletion-impact`, verifies the exact registered database constraint, then requires explicit confirmation through `POST /api/relationships/delete`. The server reloads canonical state and verifies the registry change. Changing a relationship requires removing and recreating it because no update endpoint exists. |
 | Upload file | Raw file bytes sent to `POST /api/documents/upload`; the UI accepts TXT, MD, CSV, JSON, PDF, DOCX, and XLSX up to 20 MB. |
 | Process document | `POST /api/documents/process`; status is reloaded from `/api/documents`. FELTUS's actual successful status is `ready`, which marks the document as available to AI retrieval. Failed items can be retried. |
 | Download extraction evidence | Opens the existing `/api/documents/extraction` response for that document. Processed documents are eligible for the existing AI retrieval pipeline. Source trust policy remains server-managed. |
@@ -47,6 +47,8 @@ The wizard saves its current step and reviewed steps through `/api/apps/:id/setu
 ## Phase boundary
 
 No GitHub connection, generated starter app, build runner, immutable artifact, preview environment, deployment orchestration, production promotion, rollback, team invitations, app runtime preview, or infrastructure provisioning is introduced here. The Code workspace is the existing private FELTUS CODE capability only. Environment is a read-only display of the saved app label; secrets and environment-specific resource creation remain outside this phase.
+
+This phase document predates the later model and application deletion flows. Its statements about category/model deletion being unavailable are historical and are superseded by the [destructive lifecycle contract](../integration/feltus-destructive-lifecycle.md). Other phase boundaries above remain scoped to this wizard phase.
 
 ## Verification
 

@@ -23,6 +23,21 @@ function sampleState() {
       },
       knowledge: { documents: [{ id: "doc-1", version: 1, sha256: "abc" }] },
       ai: { model: "local-model", context_permissions: { documents: false, app_data: true, conversation_history: false } },
+      intelligence: {
+        classification: {
+          application_type: "web_application",
+          label: "operations workspace",
+          confidence: 0.87,
+          archetypes: ["workflow-led", "data-backed"],
+          business_models: ["subscription"],
+          audiences: ["workspace members"],
+          workflow_patterns: ["intake-review"]
+        },
+        capabilities: { data_models: true, ai_assistant: true },
+        permissions: { ai_context: { app_data: true, documents: false } },
+        repository: { source: "local", branch: "main" },
+        environment_provider_state: [{ kind: "development", provider: null, status: "active" }]
+      },
       code: { repository_id: "repo-1", branch: "main", commit_sha: "0123456789abcdef0123456789abcdef01234567" },
       environments: [
         { id: "env-prod", kind: "production", configured: false },
@@ -85,14 +100,49 @@ check("deterministic YAML serialization is stable and round-trips the contract",
   assert.match(first, /^---\ncontract: "feltus\.application-state\/v1"/);
   assert.doesNotMatch(first, /^\{\s*"contract"/);
   assert.deepEqual(parseApplicationBlueprint(first), revision);
+  assert.deepEqual(parseApplicationBlueprint(first).desired_state.intelligence, revision.desired_state.intelligence);
+});
+
+check("intelligence classification participates in canonical identity and normalizes taxonomy lists", () => {
+  const state = sampleState();
+  state.desired_state.intelligence.classification.archetypes = ["workflow-led", "data-backed", "workflow-led"];
+  state.desired_state.intelligence.environment_provider_state.push(
+    { kind: "production", provider: null, status: "not_configured" },
+    { kind: "preview", provider: "local", status: "active" }
+  );
+  const normalized = normalizeApplicationState(state);
+  assert.deepEqual(normalized.desired_state.intelligence.classification.archetypes, ["data-backed", "workflow-led"]);
+  assert.deepEqual(normalized.desired_state.intelligence.environment_provider_state.map(item => item.kind), ["development", "preview", "production"]);
+  const changed = structuredClone(state);
+  changed.desired_state.intelligence.classification.audiences = ["external partners"];
+  assert.notEqual(applicationStateHash(state), applicationStateHash(changed));
+  assert.throws(() => normalizeApplicationState({
+    ...state,
+    desired_state: { ...state.desired_state, intelligence: [] }
+  }), /intelligence must be an object/);
+  const invalidConfidence = structuredClone(state);
+  invalidConfidence.desired_state.intelligence.classification.confidence = 1.1;
+  assert.throws(() => normalizeApplicationState(invalidConfidence), /confidence must be between 0 and 1/);
+});
+
+check("legacy v1 state without intelligence keeps its original canonical shape", () => {
+  const state = sampleState();
+  delete state.desired_state.intelligence;
+  const legacyHash = applicationStateHash(state);
+  const legacyRevision = createBlueprintRevision({ state, blueprintId: "legacy-blueprint", createdBy: "user-1", createdAt: "2026-11-03T10:00:00Z" });
+  assert.equal(Object.hasOwn(normalizeApplicationState(state).desired_state, "intelligence"), false);
+  assert.equal(legacyRevision.blueprint.state_hash, legacyHash, "new v1 normalization keeps legacy Blueprint hashes verifiable");
+  assert.deepEqual(parseApplicationBlueprint(serializeApplicationBlueprint(legacyRevision)), legacyRevision);
 });
 
 check("secret values never enter canonical state", () => {
   const state = sampleState();
   state.desired_state.code.access_token = "do-not-persist";
+  state.desired_state.intelligence.permissions.api_key = "do-not-persist-either";
   state.desired_state.ai.max_tokens = 2048;
   const normalized = normalizeApplicationState(state);
   assert.equal("access_token" in normalized.desired_state.code, false);
+  assert.equal("api_key" in normalized.desired_state.intelligence.permissions, false);
   assert.equal(normalized.desired_state.ai.max_tokens, 2048);
 });
 

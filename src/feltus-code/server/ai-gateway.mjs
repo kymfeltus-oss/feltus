@@ -25,13 +25,14 @@ export function createFeltusCodeAIGateway(ai) {
   });
 
   return {
-    async complete({ messages = [], model, temperature = 0.1, maxTokens = 2500, signal } = {}) {
+    async complete({ messages = [], model, temperature = 0.1, maxTokens = 2500, responseFormat = null, signal } = {}) {
       const { systemPrompt, prompt } = flatten(messages);
       const result = await ai.generate(prompt, {
         model: model || ai.model,
         temperature,
         numPredict: Math.min(Math.max(Number(maxTokens) || 2500, 32), 8192),
         systemPrompt,
+        format: responseFormat === "json" ? "json" : responseFormat || undefined,
         signal
       });
       return normalizedResult(result, model);

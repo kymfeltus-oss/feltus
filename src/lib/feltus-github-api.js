@@ -284,6 +284,81 @@ export function createGithubApiHandler({
     }
   }
 
+  async function verifyRemoteBranch({ app, repositoryId, branch, expectedCommit } = {}) {
+    if (!repositoryId) {
+      return { status: "NOT_CONNECTED", branch: branch || null, expected_commit: expectedCommit || null };
+    }
+    const expected = String(expectedCommit || "").toLowerCase();
+    if (!UUID.test(String(app?.id || "")) || !UUID.test(String(app?.organization_id || "")) ||
+        !UUID.test(String(repositoryId)) || normalizeGithubBranch(branch) !== branch ||
+        !/^[0-9a-f]{40,64}$/.test(expected)) {
+      return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_VERIFICATION_INPUT_INVALID" };
+    }
+    try {
+      const links = rows(await serviceRequest("/rest/v1/feltus_project_repositories?" + new URLSearchParams({
+        select: "repository_id",
+        app_id: "eq." + app.id,
+        organization_id: "eq." + app.organization_id,
+        repository_id: "eq." + repositoryId,
+        limit: "1"
+      })), "Application repository link");
+      if (!links.some(link => link.repository_id === repositoryId)) {
+        return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_REPOSITORY_NOT_ATTACHED" };
+      }
+      const repository = firstRow(await serviceRequest("/rest/v1/feltus_repositories?" + new URLSearchParams({
+        select: "id,organization_id,git_connection_id,provider_repository_id,archived_at",
+        id: "eq." + repositoryId,
+        organization_id: "eq." + app.organization_id,
+        archived_at: "is.null",
+        limit: "1"
+      })), "GitHub repository");
+      if (!repository || !/^\d{1,30}$/.test(String(repository.provider_repository_id || "")) ||
+          !UUID.test(String(repository.git_connection_id || ""))) {
+        return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_REPOSITORY_UNAVAILABLE" };
+      }
+      const connection = firstRow(await serviceRequest("/rest/v1/feltus_git_connections?" + new URLSearchParams({
+        select: "id,organization_id,provider,account_label,credential_ciphertext,encryption_key_version,disabled_at",
+        id: "eq." + repository.git_connection_id,
+        organization_id: "eq." + app.organization_id,
+        provider: "eq.github",
+        disabled_at: "is.null",
+        limit: "1"
+      })), "GitHub connection");
+      if (!connection) {
+        return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_CONNECTION_UNAVAILABLE" };
+      }
+      const remote = await githubRequestWithConnection(
+        "/repositories/" + encodeURIComponent(repository.provider_repository_id),
+        connection
+      );
+      const owner = String(remote?.owner?.login || "");
+      const name = String(remote?.name || "");
+      if (!/^[A-Za-z0-9-]{1,39}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(name)) {
+        return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_REPOSITORY_IDENTITY_INVALID" };
+      }
+      const branchResult = await githubRequestWithConnection(
+        "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(name) +
+          "/branches/" + encodeURIComponent(branch),
+        connection
+      );
+      const remoteCommit = String(branchResult?.commit?.sha || "").toLowerCase();
+      if (!/^[0-9a-f]{40,64}$/.test(remoteCommit)) {
+        return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_BRANCH_COMMIT_INVALID" };
+      }
+      const matches = remoteCommit === expected;
+      return {
+        status: matches ? "REMOTE_VERIFIED" : "REMOTE_DIVERGED",
+        repository_id: repositoryId,
+        branch,
+        expected_commit: expected,
+        remote_commit: remoteCommit,
+        verified_at: new Date().toISOString()
+      };
+    } catch {
+      return { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_VERIFICATION_FAILED" };
+    }
+  }
+
   async function attachedRepositories(app) {
     const links = rows(await serviceRequest("/rest/v1/feltus_project_repositories?" + new URLSearchParams({
       select: "repository_id,created_at",
@@ -466,9 +541,10 @@ export function createGithubApiHandler({
 
   async function handleAuthenticated(req, res, url) {
     const callback = url.pathname === "/api/github/callback";
+    const status = url.pathname === "/api/github/status";
     const appMatch = /^\/api\/apps\/([0-9a-f-]{36})\/github(?:\/(connect|repositories|repository|webhook))?$/i.exec(url.pathname);
     let callbackAppId = null;
-    if (!callback && !appMatch) return false;
+    if (!callback && !status && !appMatch) return false;
     let user = getUser();
     try {
       if (callback && String(req.method || "").toUpperCase() === "GET") {
@@ -540,6 +616,19 @@ export function createGithubApiHandler({
           "Set-Cookie": cookieHeader("", { secure: String(env.FELTUS_ENV).toLowerCase() === "production", maxAge: 0 })
         });
         res.end();
+        return true;
+      }
+
+      if (status) {
+        if (String(req.method || "").toUpperCase() !== "GET") {
+          send(res, 405, { error: "Method not allowed." }, { Allow: "GET" });
+          return true;
+        }
+        if (!user?.id) {
+          send(res, 401, { error: "Authentication required." });
+          return true;
+        }
+        send(res, 200, { configured: githubConfiguration(env).available });
         return true;
       }
 
@@ -750,5 +839,5 @@ export function createGithubApiHandler({
     return true;
   }
 
-  return Object.freeze({ handleWebhook, handleAuthenticated });
+  return Object.freeze({ handleWebhook, handleAuthenticated, verifyRemoteBranch });
 }

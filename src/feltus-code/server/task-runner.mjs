@@ -4,8 +4,10 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { redactSecrets, isSensitivePath, normalizeRelativePath, assertNoSymlinkTraversal } from "./security.mjs";
+import { redactSecrets, isSensitivePath, normalizeRelativePath, assertNoSymlinkTraversal, safeProjectEnvironment } from "./security.mjs";
 import { assertExactGitRoot, isolatedGitEnvironment } from "./git-tools.mjs";
+import { normalizeChangeSet, reviewChangeSet } from "./change-set.mjs";
+import { createFileTools } from "./file-tools.mjs";
 
 export const DEFAULT_TASKS = Object.freeze({
   "git-status": { command: "git", args: ["status", "--short", "--branch"] },
@@ -17,16 +19,49 @@ export const DEFAULT_TASKS = Object.freeze({
 });
 
 const IGNORED_VALIDATION_PATHS = new Set([
-  ".git", "node_modules", ".feltus-code-backups", ".next", "dist", "build", "coverage", ".cache"
+  ".git", "node_modules", ".feltus-code-backups", ".next", "dist", "build", "coverage", ".cache",
+  "output", "tmp", "temp", "artifacts", "logs", ".supabase", ".temp", ".venv", "venv", "__pycache__",
+  ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "target", "vendor", ".terraform", ".vercel"
 ]);
+const MAX_VALIDATION_FILES = 2500;
+const MAX_VALIDATION_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_VALIDATION_TOTAL_BYTES = 256 * 1024 * 1024;
 const NPM_SCRIPTS = Object.freeze({
   "npm-check": "check",
   "npm-test-core": "test:core",
   "npm-regression": "regression"
 });
+const WINDOWS_PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
+
+function taskInvocation(task) {
+  if (process.platform !== "win32" || !WINDOWS_PACKAGE_MANAGERS.has(task.command)) {
+    return { command: task.command, args: task.args };
+  }
+  if (task.args.some(argument => !/^[A-Za-z0-9_:@./+-]+$/.test(argument))) {
+    throw Object.assign(new Error("Package-manager arguments contain unsupported characters."), { code: "TASK_ARGUMENTS_INVALID" });
+  }
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  return {
+    command: path.join(systemRoot, "System32", "cmd.exe"),
+    args: ["/d", "/s", "/c", [task.command, ...task.args].join(" ")]
+  };
+}
+
+async function removeValidationWorkspace(workspace) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.rm(workspace, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 12 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
+    }
+  }
+}
 
 function gitSetup(repoRoot, args) {
   return new Promise((resolve, reject) => {
+    let timedOut = false;
     const child = spawn("git", args, {
       cwd: repoRoot,
       shell: false,
@@ -34,9 +69,21 @@ function gitSetup(repoRoot, args) {
       env: isolatedGitEnvironment({ CI: "1" })
     });
     let stderr = "";
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, 30000);
     child.stderr.on("data", chunk => { stderr += chunk; });
-    child.on("error", reject);
+    child.on("error", error => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", code => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(Object.assign(new Error("Temporary Git initialization timed out."), { code: "VALIDATION_WORKSPACE_TIMEOUT" }));
+        return;
+      }
       if (code === 0) return resolve();
       reject(Object.assign(new Error(redactSecrets(stderr).trim() || `Temporary Git initialization failed (${code}).`), { code: "VALIDATION_WORKSPACE_FAILED" }));
     });
@@ -53,8 +100,11 @@ async function initializeValidationGit(repoRoot) {
   await gitSetup(repoRoot, ["-c", `core.hooksPath=${noHooks}`, "commit", "--quiet", "--allow-empty", "-m", "Temporary validation baseline"]);
 }
 
-async function createValidationWorkspace(repoRoot) {
-  const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), "feltus-code-validation-"));
+async function createValidationWorkspace(repoRoot, validationTempRoot = os.tmpdir()) {
+  await fs.mkdir(validationTempRoot, { recursive: true });
+  const snapshotRoot = await fs.mkdtemp(path.join(validationTempRoot, "feltus-code-validation-"));
+  let copiedFiles = 0;
+  let copiedBytes = 0;
   try {
     const canonicalRoot = path.resolve(repoRoot);
     await fs.cp(canonicalRoot, snapshotRoot, {
@@ -64,22 +114,31 @@ async function createValidationWorkspace(repoRoot) {
         const relative = path.relative(canonicalRoot, source);
         if (!relative) return true;
         const segments = relative.split(path.sep);
-        if (segments.some(segment => IGNORED_VALIDATION_PATHS.has(segment))) return false;
+        if (segments.some(segment => IGNORED_VALIDATION_PATHS.has(segment) || segment.startsWith(".phase")) ||
+            segments.some(segment => /^\.feltus-build-studio-/i.test(segment)) ||
+            segments.some(segment => segment.toLowerCase() === ".feltus-dev-auth.json")) return false;
         const isComposeExample = relative.replaceAll(path.sep, "/") === ".env.example";
         if (!isComposeExample && isSensitivePath(relative.replaceAll(path.sep, "/"))) return false;
         const stat = await fs.lstat(source);
-        return !stat.isSymbolicLink();
+        if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) return false;
+        if (stat.isDirectory()) return true;
+        copiedFiles += 1;
+        copiedBytes += stat.size;
+        if (copiedFiles > MAX_VALIDATION_FILES || stat.size > MAX_VALIDATION_FILE_BYTES || copiedBytes > MAX_VALIDATION_TOTAL_BYTES) {
+          throw Object.assign(new Error("The isolated validation snapshot exceeds the configured file or size limit."), { code: "VALIDATION_WORKSPACE_LIMIT" });
+        }
+        return true;
       }
     });
     await initializeValidationGit(snapshotRoot);
     return snapshotRoot;
   } catch (error) {
-    await fs.rm(snapshotRoot, { recursive: true, force: true }).catch(() => {});
+    await removeValidationWorkspace(snapshotRoot).catch(() => {});
     throw error;
   }
 }
 
-export function createTaskRunner({ repoRoot, tasks = DEFAULT_TASKS, timeoutMs = 120000 }) {
+export function createTaskRunner({ repoRoot, tasks = DEFAULT_TASKS, timeoutMs = 120000, validationTempRoot = os.tmpdir(), isolatedValidationWorkspace = false }) {
   function taskUnavailableReason(taskName, task) {
     if (taskName === "git-status" || taskName === "git-diff") {
       try {
@@ -154,12 +213,23 @@ export function createTaskRunner({ repoRoot, tasks = DEFAULT_TASKS, timeoutMs = 
     if (signal?.aborted) throw Object.assign(new Error("Task request was cancelled."), { code: "REQUEST_CANCELLED" });
 
     return new Promise((resolve, reject) => {
-      const child = spawn(task.command, task.args, {
+      const invocation = taskInvocation(task);
+      const child = spawn(invocation.command, invocation.args, {
         cwd: repoRoot,
         shell: false,
         windowsHide: true,
         ...(signal ? { signal } : {}),
-        env: isolatedGitEnvironment({ CI: "1" })
+        env: isolatedGitEnvironment({}, safeProjectEnvironment({
+          extra: isolatedValidationWorkspace && ["go", "gofmt"].includes(task.command)
+            ? {
+                GOCACHE: path.join(repoRoot, ".feltus-code-go-cache", "build"),
+                GOPATH: path.join(repoRoot, ".feltus-code-go-cache", "path"),
+                GOMODCACHE: path.join(repoRoot, ".feltus-code-go-cache", "path", "pkg", "mod"),
+                GOENV: "off",
+                GOTOOLCHAIN: "local"
+              }
+            : {}
+        }))
       });
 
       let stdout = "";
@@ -223,7 +293,7 @@ export function createTaskRunner({ repoRoot, tasks = DEFAULT_TASKS, timeoutMs = 
       normalizedFiles.push({ ...file, path: relativePath });
     }
 
-    const snapshotRoot = await createValidationWorkspace(repoRoot);
+      const snapshotRoot = await createValidationWorkspace(repoRoot, validationTempRoot);
     try {
       for (const file of normalizedFiles) {
         const snapshotPath = await assertNoSymlinkTraversal(snapshotRoot, file.path);
@@ -238,14 +308,57 @@ export function createTaskRunner({ repoRoot, tasks = DEFAULT_TASKS, timeoutMs = 
         }
         await fs.writeFile(snapshotPath, file.content, "utf8");
       }
-      const snapshotRunner = createTaskRunner({ repoRoot: snapshotRoot, tasks, timeoutMs });
+      const snapshotRunner = createTaskRunner({ repoRoot: snapshotRoot, tasks, timeoutMs, isolatedValidationWorkspace: true });
       return await snapshotRunner.run(taskName, { signal });
     } finally {
-      await fs.rm(snapshotRoot, { recursive: true, force: true });
+      await removeValidationWorkspace(snapshotRoot);
     }
   }
 
-  return { run, runAgainstProposed, list, unavailable, defaultTask };
+  async function runAgainstChangeSet(taskName, changeSet, { signal } = {}) {
+    const reason = taskUnavailableReason(taskName, tasks[taskName]);
+    if (reason) throw Object.assign(new Error(reason), { code: "TASK_UNAVAILABLE", task: taskName, reason });
+    if (signal?.aborted) throw Object.assign(new Error("Validation was cancelled."), { code: "REQUEST_CANCELLED" });
+    const normalized = normalizeChangeSet(changeSet);
+    await reviewChangeSet({ repoRoot, changeSet: normalized });
+      const snapshotRoot = await createValidationWorkspace(repoRoot, validationTempRoot);
+    try {
+      const snapshotFiles = createFileTools({ repoRoot: snapshotRoot });
+      for (const operation of normalized.operations) {
+        if (signal?.aborted) throw Object.assign(new Error("Validation was cancelled."), { code: "REQUEST_CANCELLED" });
+        if (operation.type === "create") {
+          await snapshotFiles.createFile(operation.path, operation.content);
+        } else if (operation.type === "update") {
+          await snapshotFiles.write(operation.path, operation.content, { expectedSha256: operation.before_sha256 });
+        } else if (operation.type === "rename") {
+          await snapshotFiles.rename(operation.from, operation.to);
+        } else if (operation.type === "delete") {
+          await snapshotFiles.remove(operation.path, { confirm: true });
+        }
+      }
+      const snapshotRunner = createTaskRunner({ repoRoot: snapshotRoot, tasks, timeoutMs, isolatedValidationWorkspace: true });
+      return await snapshotRunner.run(taskName, { signal });
+    } finally {
+      await removeValidationWorkspace(snapshotRoot);
+    }
+  }
+
+  async function runIsolated(taskName, { signal } = {}) {
+    const task = tasks[taskName];
+    if (!task) throw Object.assign(new Error("Task is not allowlisted."), { code: "TASK_NOT_ALLOWED" });
+    const reason = taskUnavailableReason(taskName, task);
+    if (reason) throw Object.assign(new Error(reason), { code: "TASK_UNAVAILABLE", task: taskName, reason });
+    if (signal?.aborted) throw Object.assign(new Error("Validation was cancelled."), { code: "REQUEST_CANCELLED" });
+    const snapshotRoot = await createValidationWorkspace(repoRoot, validationTempRoot);
+    try {
+      const snapshotRunner = createTaskRunner({ repoRoot: snapshotRoot, tasks, timeoutMs, isolatedValidationWorkspace: true });
+      return await snapshotRunner.run(taskName, { signal });
+    } finally {
+      await removeValidationWorkspace(snapshotRoot);
+    }
+  }
+
+  return { run, runAgainstProposed, runAgainstChangeSet, runIsolated, list, unavailable, defaultTask };
 }
 
 // Synchronous metadata reads keep the existing task-listing endpoint fast.

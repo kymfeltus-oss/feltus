@@ -6,6 +6,8 @@
 
 This document describes the implementation in the repository. It does not claim that a production server, DNS, TLS, backups, or external accounts have been configured.
 
+For the current field, relationship, model, and application deletion behavior—including retained state, worker gates, and the no-provider-delete boundary—see the [destructive lifecycle contract](../integration/feltus-destructive-lifecycle.md).
+
 ## Runtime topology
 
 The browser loads the single-page FELTUS application from the Node.js server. In production the server requires the configured owner to sign in, keeps Auth access and refresh tokens in process memory, and sets an opaque secure session cookie. Auth, REST, Realtime, and Storage APIs are supplied by the self-hosted Supabase-compatible services in the Compose stack. The Nginx gateway and all service ports stay on the private Compose network; Coolify's reverse proxy is intended to be the public ingress.

@@ -13,7 +13,13 @@ async function api(path, options = {}) {
   });
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json().catch(() => ({})) : {};
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `Request failed (${response.status}).`);
+    error.code = payload.code || null;
+    error.requestId = payload.request_id || response.headers.get("x-request-id") || null;
+    error.committed = payload.committed === true;
+    throw error;
+  }
   return payload;
 }
 
@@ -38,12 +44,12 @@ function date(value) {
 }
 
 function title(mode, step, page, appName = "your app") {
-  const names = { data: "Data", relationships: "Relationships", knowledge: "Knowledge", documents: "Knowledge", ai: "AI", code: "Code", logs: "Logs", infrastructure: "Infrastructure", review: "Review", environment: "Environment" };
+  const names = { data: "Data", relationships: "Relationships", knowledge: "Knowledge", documents: "Knowledge", "storage-backup": "Storage & Backup", ai: "AI", code: "Code", logs: "Logs", infrastructure: "Infrastructure", "my-services": "My Services", "my-environment": "My Environment", review: "Review", environment: "Environment" };
   const name = names[step || page] || "Workspace";
   if (name === "Data") return `<p class="eyebrow">Step 2 · Information</p><h1 class="page-title">What does your app need to remember?</h1><p class="page-lede">Choose the information your app needs to store. FELTUS handles the secure database structure behind the scenes.</p>`;
   if (name === "AI") return `<p class="eyebrow">Step 4 · Assistant</p><h1 class="page-title">Your AI Assistant</h1><p class="page-lede">FELTUS prepared an assistant for ${escapeCapabilityHtml(appName)}. Review the defaults, then customize them only if you need to.</p>`;
   if (name === "Knowledge") return `<p class="eyebrow">Step 3 · Knowledge</p><h1 class="page-title">Give your app useful knowledge.</h1><p class="page-lede">Add files your assistant may use to answer questions. Nothing is shared with AI until you allow it.</p>`;
-  return mode === "setup" ? `<p class="eyebrow">Step ${({ data: 2, knowledge: 3, documents: 3, ai: 4, code: 5, environment: 6, review: 7 })[step] || ""} · ${name}</p><h1 class="page-title">${name === "Review" ? "Review your app setup." : `${name} for your app.`}</h1><p class="page-lede">Configure this part of ${escapeCapabilityHtml(appName)} with the FELTUS tools already available.</p>` : `<p class="eyebrow">${({ data: "Build", relationships: "Build", knowledge: "Build", documents: "Build", ai: "Build", code: "Build", logs: "Operate", infrastructure: "Operate" })[page] || "SETUP"} · ${name}</p><h1 class="page-title">${name}</h1>`;
+  return mode === "setup" ? `<p class="eyebrow">Step ${({ data: 2, knowledge: 3, documents: 3, ai: 4, code: 5, environment: 6, review: 7 })[step] || ""} · ${name}</p><h1 class="page-title">${name === "Review" ? "Review your app setup." : `${name} for your app.`}</h1><p class="page-lede">Configure this part of ${escapeCapabilityHtml(appName)} with the FELTUS tools already available.</p>` : `<p class="eyebrow">${({ data: "Build", relationships: "Build", knowledge: "Build", documents: "Build", ai: "Build", code: "Build", logs: "Operate", infrastructure: "Operate", "my-services": "Manage", "my-environment": "Manage" })[page] || "SETUP"} · ${name}</p><h1 class="page-title">${name}</h1>`;
 }
 
 const FIELD_TYPE_LABELS = { text: "Text", integer: "Number", bigint: "Advanced number", numeric: "Money", boolean: "Yes / No", date: "Date", timestamptz: "Date & Time", uuid: "Unique ID", jsonb: "Advanced" };
@@ -78,8 +84,8 @@ function fieldTypes(selected = "text") {
   return ["text", "integer", "numeric", "boolean", "date", "timestamptz", "uuid", "bigint", "jsonb"].map(type => `<option value="${type}" ${selected === type ? "selected" : ""}>${friendlyType(type)}</option>`).join("");
 }
 
-function columnRow(name = "", type = "text", nullable = true) {
-  return `<div class="cap-column-row"><label><span>Field name</span><input class="input" name="column_name" maxlength="40" value="${escapeCapabilityHtml(name)}" placeholder="column_name" pattern="[a-z][a-z0-9_]{0,39}"></label><label><span>Field type</span><select class="select" name="column_type">${fieldTypes(type)}</select></label><label class="cap-check"><input name="column_nullable" type="checkbox" ${nullable ? "checked" : ""}> Nullable</label><button class="button button-quiet" type="button" data-remove-column aria-label="Remove field">Remove</button></div>`;
+function columnRow(name = "", type = "text", nullable = true, existing = false, lockNullable = false) {
+  return `<div class="cap-column-row"${existing ? ' data-existing-column="true"' : ""}><label><span>Field name</span><input class="input" name="column_name" required maxlength="40" value="${escapeCapabilityHtml(name)}" placeholder="column_name" pattern="[a-z][a-z0-9_]{0,39}" ${existing ? "readonly" : ""}></label><label><span>Field type</span><select class="select" name="column_type" ${existing ? "disabled" : ""}>${fieldTypes(type)}</select></label><label class="cap-check"><input name="column_nullable" type="checkbox" ${nullable ? "checked" : ""} ${lockNullable && existing ? "disabled" : ""}> Optional</label><button class="button button-quiet" type="button" data-remove-column aria-label="Remove field" ${existing ? "disabled hidden" : ""}>Remove</button></div>`;
 }
 
 function modelName(model) {
@@ -130,15 +136,67 @@ async function dataMarkup(app, mode) {
   const models = await loadModels(app.id);
   const suggestions = recommendDataCategories(app, models);
   const draft = app.setup_data?.wizard_drafts?.data || {};
-  const draftColumns = Array.isArray(draft.columns) && draft.columns.length
-    ? draft.columns.map(column => columnRow(column.name, column.type, column.nullable !== false)).join("")
-    : `${columnRow("name", "text", false)}${columnRow("description", "text", true)}`;
+  const draftModel = models.find(model => model.id === draft.model_id) || null;
+  const addingSavedField = Boolean(draftModel && draft.operation === "add-field");
+  const savedFieldNames = new Set(draftModel ? modelColumns(draftModel).map(column => column.column_name || column.name) : []);
+  const categoryDraft = draft.model_id ? {} : draft;
+  const defaultCategoryFields = Array.isArray(categoryDraft.columns) && categoryDraft.columns.length
+    ? categoryDraft.columns
+    : [{ name: "name", type: "text", nullable: false }, { name: "description", type: "text", nullable: true }];
+  const draftFieldValues = draftModel
+    ? [
+        ...modelColumns(draftModel).map(column => {
+          const name = column.column_name || column.name;
+          const savedDraft = (draft.columns || []).find(item => item.name === name);
+          return {
+            name,
+            type: column.data_type || column.type || "text",
+            nullable: savedDraft ? savedDraft.nullable !== false : column.is_nullable !== false && column.nullable !== false
+          };
+        }),
+        ...(Array.isArray(draft.columns) ? draft.columns.filter(column => !savedFieldNames.has(column.name)) : [])
+      ]
+    : Array.isArray(categoryDraft.columns) && categoryDraft.columns.length
+      ? categoryDraft.columns
+      : defaultCategoryFields;
+  if (addingSavedField && !draftFieldValues.some(column => !savedFieldNames.has(column.name))) {
+    draftFieldValues.push({ name: "", type: "text", nullable: true });
+  }
+  const draftColumns = draftFieldValues.map(column => columnRow(
+    column.name,
+    column.type,
+    column.nullable !== false,
+    savedFieldNames.has(column.name),
+    addingSavedField
+  )).join("");
   const modelCards = models.length ? `<div class="cap-list">${models.map(model => {
     const cols = modelColumns(model);
-    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(modelName(model))}</strong><small>${cols.length} field${cols.length === 1 ? "" : "s"}</small></div><span class="cap-status ${model.rls_enabled ? "ready" : "unavailable"}">${model.rls_enabled ? "Privacy protection on" : "Privacy protection off"}</span></div><div class="cap-tags">${cols.map(column => `<span class="cap-tag">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(friendlyType(column.data_type || column.type))}${column.is_nullable === false || column.nullable === false ? " · required" : ""}</span>`).join("")}</div><details class="cap-advanced"><summary>View technical details</summary><p><strong>Table:</strong> ${escapeCapabilityHtml(model.physical_table_name || "FELTUS managed table")} · <strong>RLS:</strong> ${model.rls_enabled ? "enabled" : "disabled"}</p><div class="cap-tags"><span class="cap-tag system">id · uuid · primary key</span><span class="cap-tag system">owner_id · uuid</span><span class="cap-tag system">created_at · timestamptz</span>${cols.map(column => `<span class="cap-tag system">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(column.data_type || column.type || "field")}</span>`).join("")}</div><button class="button button-quiet" type="button" data-rls="${escapeCapabilityHtml(model.id)}" data-enabled="${String(!model.rls_enabled)}">${model.rls_enabled ? "Turn off" : "Turn on"} row-level security</button></details><p class="cap-muted">Saved schema is shown here. Changing or removing existing fields is not available through the current model API.</p></article>`;
+    const fields = cols.map(column => ({
+      name: column.column_name || column.name,
+      type: column.data_type || column.type || "text",
+      nullable: column.is_nullable !== false && column.nullable !== false
+    }));
+    const modelId = escapeCapabilityHtml(model.id);
+    const modelDisplayName = escapeCapabilityHtml(modelName(model));
+    const modelFields = escapeCapabilityHtml(JSON.stringify(fields));
+    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${modelDisplayName}</strong><small>${cols.length} field${cols.length === 1 ? "" : "s"}</small></div><span class="cap-status ${model.rls_enabled ? "ready" : "unavailable"}">${model.rls_enabled ? "Privacy protection on" : "Privacy protection off"}</span></div><div class="cap-tags">${cols.map(column => {
+      const fieldName = column.column_name || column.name;
+      return `<span class="cap-tag">${escapeCapabilityHtml(fieldName)} · ${escapeCapabilityHtml(friendlyType(column.data_type || column.type))}${column.is_nullable === false || column.nullable === false ? " · required" : " · optional"}<button class="cap-field-remove" type="button" data-delete-field-model="${modelId}" data-field-name="${escapeCapabilityHtml(fieldName)}" data-model-name="${modelDisplayName}" aria-label="Remove ${escapeCapabilityHtml(fieldName)} from ${modelDisplayName}">Remove</button></span>`;
+    }).join("")}</div><div class="cap-item-actions"><button class="button button-primary" type="button" data-add-model-field="${modelId}" data-model-name="${modelDisplayName}" data-model-fields="${modelFields}">Add Field</button><button class="button button-quiet" type="button" data-edit-model="${modelId}" data-model-name="${modelDisplayName}" data-model-fields="${modelFields}">Edit fields</button><button class="button button-danger" type="button" data-delete-model="${modelId}" data-model-name="${modelDisplayName}">Delete category</button></div><details class="cap-advanced"><summary>View technical details</summary><p><strong>Table:</strong> ${escapeCapabilityHtml(model.physical_table_name || "FELTUS managed table")} · <strong>RLS:</strong> ${model.rls_enabled ? "enabled" : "disabled"}</p><div class="cap-tags"><span class="cap-tag system">id · uuid · primary key</span><span class="cap-tag system">owner_id · uuid</span><span class="cap-tag system">created_at · timestamptz</span>${cols.map(column => `<span class="cap-tag system">${escapeCapabilityHtml(column.column_name || column.name)} · ${escapeCapabilityHtml(column.data_type || column.type || "field")}</span>`).join("")}</div><button class="button button-quiet" type="button" data-rls="${modelId}" data-enabled="${String(!model.rls_enabled)}">${model.rls_enabled ? "Turn off" : "Turn on"} row-level security</button></details></article>`;
   }).join("")}</div>` : empty("No models yet", "Create a model below. FELTUS adds id, owner_id, and created_at to every managed table.");
   const suggestionCards = suggestions.length ? `<div class="cap-list">${suggestions.map(item => `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(item.label)}</strong><small>Suggested from your app description · review before adding</small></div><span class="cap-status pending">Suggested</span></div><div class="cap-tags">${item.fields.map(([name, type]) => `<span class="cap-tag">${escapeCapabilityHtml(name)} · ${escapeCapabilityHtml(friendlyType(type))}</span>`).join("")}</div><button class="button button-quiet" type="button" data-suggest-category="${item.key}">Review suggestion</button></article>`).join("")}</div>` : empty("No new categories suggested", app.description || app.setup_data?.intent_details ? "Your description did not match a built-in suggestion. You can add a category manually." : "Add a description in Basics so FELTUS can suggest information categories.");
-  return `${title(mode, "data", "data", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-view-blueprint="data">&lt;/&gt; View Blueprint</button></div><section class="cap-section"><div class="cap-section-head"><div><h2>Suggested information categories</h2><p>These are starting ideas inferred from your description. Review and edit each one before it is saved.</p></div></div>${suggestionCards}</section><section class="cap-section"><div class="cap-section-head"><div><h2>Information categories</h2><p>${models.length} saved categor${models.length === 1 ? "y" : "ies"} · Each category stores information your app needs.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${modelCards}</section><details class="cap-advanced" data-manual-data><summary>Add or edit a category manually</summary><form data-form="model" class="cap-form"><label class="field"><span>Category name</span><input class="input" name="table_name" required maxlength="40" pattern="[a-z][a-z0-9_]{0,39}" placeholder="customers" value="${escapeCapabilityHtml(draft.table_name || "")}"><small class="field-help">Use a simple name such as customers, orders, or products.</small></label><div class="field"><strong>Fields to keep</strong><div data-column-list>${draftColumns}</div><button class="button button-quiet" type="button" data-add-column>＋ Add Field</button></div><details class="cap-advanced"><summary>Advanced privacy setting</summary><label class="cap-check cap-check-strong"><input name="enable_rls" type="checkbox" ${draft.enable_rls === false ? "" : "checked"}> Protect each user’s rows</label></details><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Add Category</button></form></details><p class="cap-note">Privacy labels reflect the saved model settings. Existing fields cannot be changed through the current model API.</p>`;
+  const defaultFieldsJson = escapeCapabilityHtml(JSON.stringify(defaultCategoryFields));
+  const editorName = draftModel ? modelName(draftModel) : categoryDraft.table_name || "";
+  const editorTitle = draftModel
+    ? addingSavedField ? `Add a field to ${editorName}` : `Edit fields for ${editorName}`
+    : "Add a category";
+  const saveLabel = draftModel ? addingSavedField ? "Save Field" : "Save Changes" : "Add Category";
+  const editorHelp = draftModel
+    ? addingSavedField
+      ? "Save this field to the existing managed table. It is optional by default so existing records remain valid."
+      : "Field names and types stay fixed after saving. Save Changes updates optionality."
+    : 'Choose <strong>Add Category</strong> below to save it to this app. “Save Draft” only saves your setup for later.';
+  return `${title(mode, "data", "data", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-view-blueprint="data">&lt;/&gt; View Blueprint</button></div><section class="cap-section"><div class="cap-section-head"><div><h2>Suggested information categories</h2><p>These are starting ideas inferred from your description. Review and edit each one before it is saved.</p></div></div>${suggestionCards}</section><section class="cap-section"><div class="cap-section-head"><div><h2>Information categories</h2><p>${models.length} saved categor${models.length === 1 ? "y" : "ies"} · Each category stores information your app needs.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${modelCards}</section><details class="cap-advanced" data-manual-data data-category-summary="Add a category" ${draftModel ? "open" : ""}><summary>${escapeCapabilityHtml(editorTitle)}</summary><p class="cap-muted">${editorHelp}</p><form data-form="model" data-model-id="${escapeCapabilityHtml(draftModel?.id || "")}" data-adding-field="${addingSavedField}" data-default-fields="${defaultFieldsJson}" data-default-name="${escapeCapabilityHtml(categoryDraft.table_name || "")}" data-default-rls="${categoryDraft.enable_rls !== false}" class="cap-form"><label class="field"><span>Category name</span><input class="input" name="table_name" required maxlength="40" pattern="[a-z][a-z0-9_]{0,39}" placeholder="customers" value="${escapeCapabilityHtml(editorName)}" ${draftModel ? "readonly" : ""}><small class="field-help">Use a simple name such as customers, orders, or products.</small></label><div class="field"><strong>Fields to keep</strong><div data-column-list>${draftColumns}</div><button class="button button-quiet" type="button" data-add-column>＋ Add Field</button></div><details class="cap-advanced" data-model-privacy ${draftModel ? "hidden" : ""}><summary>Advanced privacy setting</summary><label class="cap-check cap-check-strong"><input name="enable_rls" type="checkbox" ${categoryDraft.enable_rls === false ? "" : "checked"}> Protect each user’s rows</label></details><div class="field-error" data-form-error role="alert" aria-live="polite"></div><div class="cap-form-actions"><button class="button button-primary" type="submit">${saveLabel}</button><button class="button button-quiet" type="button" data-cancel-model-edit ${draftModel ? "" : "hidden"}>Cancel</button></div></form></details><p class="cap-note">Use <strong>Add Field</strong> on a saved category to create a field now. New fields are optional by default so existing records remain valid.</p>`;
 }
 
 function relationshipDiagram(models, relationships) {
@@ -160,7 +218,7 @@ async function relationshipsMarkup(app, mode) {
   const list = relationships.length ? `<div class="cap-list">${relationships.map(item => {
     const source = models.find(model => model.id === item.source_model_id);
     const target = models.find(model => model.id === item.target_model_id);
-    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(modelName(source || {}))}.${escapeCapabilityHtml(item.source_column)} → ${escapeCapabilityHtml(modelName(target || {}))}.${escapeCapabilityHtml(item.target_column || "id")}</strong><small>Many-to-one foreign key · On delete: ${escapeCapabilityHtml(item.on_delete_action || item.on_delete || "RESTRICT")}</small></div><button class="button button-danger" type="button" data-delete-relationship="${escapeCapabilityHtml(item.id)}">Remove</button></div></article>`;
+    return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(modelName(source || {}))}.${escapeCapabilityHtml(item.source_column)} → ${escapeCapabilityHtml(modelName(target || {}))}.${escapeCapabilityHtml(item.target_column || "id")}</strong><small>Many-to-one foreign key · On delete: ${escapeCapabilityHtml(item.on_delete_action || item.on_delete || "RESTRICT")}</small></div><button class="button button-danger" type="button" data-delete-relationship="${escapeCapabilityHtml(item.id)}" data-source-name="${escapeCapabilityHtml(modelName(source || {}))}" data-source-field="${escapeCapabilityHtml(item.source_column)}" data-target-name="${escapeCapabilityHtml(modelName(target || {}))}" data-target-field="${escapeCapabilityHtml(item.target_column || "id")}">Remove</button></div></article>`;
   }).join("")}</div>` : empty("No relationships yet", models.length > 1 ? "Add a foreign key below to connect two models." : "Create at least two models before linking them.");
   const canCreate = models.length > 1;
   const draft = app.setup_data?.wizard_drafts?.relationships || {};
@@ -171,6 +229,23 @@ async function documentsMarkup(app, mode) {
   const documents = rows(await api(`/api/documents?app_id=${encodeURIComponent(app.id)}`), "documents");
   const documentCards = documents.length ? `<div class="cap-list">${documents.map(document => `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(document.original_name)}</strong><small>${escapeCapabilityHtml(document.mime_type || "Document")} · ${moneyBytes(document.size_bytes)} · Added ${date(document.created_at)}</small></div><span class="cap-status ${document.processing_status === "ready" ? "ready" : escapeCapabilityHtml(document.processing_status || "pending")}">${escapeCapabilityHtml(document.processing_status || "pending")}</span></div><div class="cap-item-actions">${document.processing_status === "ready" ? `<span class="cap-muted">AI context ready · ${date(document.processed_at)}</span>` : document.processing_status === "processing" ? `<span class="cap-muted">Processing… refresh for status</span>` : `<button class="button button-primary" type="button" data-process-document="${escapeCapabilityHtml(document.id)}">${document.processing_status === "failed" ? "Retry processing" : "Process document"}</button>`}${document.metadata?.extraction_artifact?.storage_key ? `<a class="button button-quiet" href="/api/documents/extraction?document_id=${encodeURIComponent(document.id)}">Download extraction evidence</a>` : `<span class="cap-muted">Evidence appears after processing</span>`}</div></article>`).join("")}</div>` : empty("No documents attached", "Upload a supported file, then process it so the existing document pipeline can index it.");
   return `${title(mode, "knowledge", "knowledge", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Knowledge files</h2><p>${documents.length} file${documents.length === 1 ? "" : "s"} · Uploaded files are private to this app and processed by the existing document pipeline.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${documentCards}</section><section class="cap-section"><h2>Add a knowledge file</h2><form data-form="document" class="cap-form"><label class="field"><span>Choose a file</span><input class="input" name="file" type="file" accept=".txt,.md,.csv,.json,.pdf,.docx,.xlsx" required><small class="field-help">Supported: TXT, Markdown, CSV, JSON, PDF, DOCX, XLSX. Maximum size: 20 MB.</small></label><div class="field-error" data-form-error role="alert"></div><button class="button button-primary" type="submit">Upload file</button></form></section><p class="cap-note">Processed files can be allowed as AI context in the AI step. Notes and URL ingestion are not available through the current document API.</p>`;
+}
+
+function backupStatus(status) {
+  return ({ creating: "Preparing", available: "Available", failed: "Couldn’t create" })[status] || "Checking";
+}
+
+function restoreStatus(status) {
+  return ({ not_started: "Not restored", restoring: "Restoring", succeeded: "Restored", failed: "Restore failed" })[status] || "Not restored";
+}
+
+async function storageBackupMarkup(app, mode) {
+  const payload = await api(`/api/apps/${encodeURIComponent(app.id)}/backups`);
+  const backups = rows(payload, "backups");
+  const history = backups.length
+    ? `<div class="cap-list">${backups.map(backup => `<article class="cap-item"><div class="cap-item-head"><div><strong>Backup from ${date(backup.created_at)}</strong><small>${backup.completed_at ? `Finished ${date(backup.completed_at)}` : `Started ${date(backup.started_at)}`}</small></div><span class="cap-status ${backup.status === "available" ? "ready" : backup.status === "failed" ? "unavailable" : "pending"}">${escapeCapabilityHtml(backupStatus(backup.status))}</span></div><p class="cap-muted">Restore: ${escapeCapabilityHtml(restoreStatus(backup.restore_status))}${backup.restore_failure_message ? ` · ${escapeCapabilityHtml(backup.restore_failure_message)}` : backup.failure_message ? ` · ${escapeCapabilityHtml(backup.failure_message)}` : ""}</p><div class="cap-item-actions">${backup.status === "available" && backup.restore_eligible === true ? `<button class="button button-quiet" type="button" data-restore-backup="${escapeCapabilityHtml(backup.id)}">Restore</button>` : ""}</div></article>`).join("")}</div>`
+    : empty("No backups yet", "Create a backup to save this app’s data models and private uploaded files.");
+  return `${title(mode, "storage-backup", "storage-backup", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Back up this app</h2><p>Save this app’s data and private uploaded files. Backups stay private to this app.</p></div></div><p data-backup-feedback class="cap-note" role="status" aria-live="polite"></p><button class="button button-primary" type="button" data-create-backup>Create Backup</button></section><section class="cap-section"><div class="cap-section-head"><div><h2>Backup history</h2><p>Review saved backups and restore an available version.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${history}</section><p class="cap-note">Restoring replaces this app’s saved model data and private uploaded files. FELTUS creates a safety backup first. Source checkpoints and deployment rollback are separate.</p>`;
 }
 
 async function aiMarkup(app, mode) {
@@ -323,14 +398,94 @@ async function logsMarkup(app, mode) {
 }
 
 async function infrastructureMarkup(app, mode) {
-  const [health, assets] = await Promise.all([
+  const [health, assets, appInfrastructure] = await Promise.all([
     api("/api/system-health").catch(error => ({ services: {}, error: error.message })),
-    api(`/api/assets?app_id=${encodeURIComponent(app.id)}`).catch(error => ({ assets: [], error: error.message }))
+    api(`/api/assets?app_id=${encodeURIComponent(app.id)}`).catch(error => ({ assets: [], error: error.message })),
+    api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure`).catch(() => ({ infrastructure: null }))
   ]);
   const services = health.services || {};
   const assetRows = rows(assets, "assets");
   const serviceCards = [["FELTUS runtime", services.runtime?.status], ["Database", services.database?.status], ["AI runtime", services.ai?.status]].map(([name, status]) => `<div class="detail-tile"><span>${name}</span><strong><i class="status-dot ${status === "online" || status === "healthy" ? "online" : status === "offline" || status === "unavailable" ? "offline" : ""}"></i> ${escapeCapabilityHtml(status || "Unknown")}</strong></div>`).join("");
-  return `${title(mode, "infrastructure", "infrastructure", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Platform health</h2><p>Live service health from the FELTUS system-health endpoint. This does not indicate that this app has been deployed.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div><div class="detail-grid">${serviceCards}</div>${health.error ? `<p class="cap-note">Health check unavailable: ${escapeCapabilityHtml(health.error)}</p>` : ""}</section><section class="cap-section"><h2>App resource records</h2><p>Read-only assets currently attached to this app.</p>${assets.error ? `<p class="cap-note">${escapeCapabilityHtml(assets.error)}</p>` : assetRows.length ? `<div class="cap-list">${assetRows.map(asset => `<article class="cap-item"><strong>${escapeCapabilityHtml(asset.asset_name || asset.name || "Resource")}</strong><small>${escapeCapabilityHtml(asset.asset_type || "FELTUS asset")} · ${date(asset.created_at)}</small></article>`).join("")}</div>` : empty("No resource records", "No app-scoped assets are attached yet.")}</section><div class="cap-note">Builds, environments, deployments, promotion, and rollback are managed in their own app workspace pages. Each control remains disabled until its required runner or provider is configured.</div>`;
+  const components = appInfrastructure.infrastructure?.components || {};
+  const registrations = appInfrastructure.infrastructure?.registrations || { services: [], environments: [] };
+  const appServiceCards = [
+    ["App data", components.database],
+    ["App sign-in", components.authentication],
+    ["Private project files", components.object_storage],
+    ["Latest backup", components.backups_recovery?.backup],
+    ["Latest restore", components.backups_recovery?.restore]
+  ].map(([name, component]) => {
+    const status = component?.status === "CONFIGURED"
+      ? name === "Latest backup" ? "Available" : "Restored"
+      : component?.status === "PARTIAL"
+        ? component.last_status === "failed" ? "Failed" : "In progress"
+        : component?.status === "UNAVAILABLE"
+          ? "Unavailable"
+          : name === "Latest backup" ? "Not created" : "Not restored";
+    return `<div class="detail-tile"><span>${name}</span><strong>${status}</strong></div>`;
+  }).join("");
+  const registrationCards = [...rows(registrations, "services"), ...rows(registrations, "environments")];
+  return `${title(mode, "infrastructure", "infrastructure", app.app_name)}<section class="cap-section"><div class="cap-section-head"><div><h2>Platform health</h2><p>Live service health from the FELTUS system-health endpoint. This does not indicate that this app has been deployed.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div><div class="detail-grid">${serviceCards}</div>${health.error ? `<p class="cap-note">Health check unavailable: ${escapeCapabilityHtml(health.error)}</p>` : ""}</section><section class="cap-section"><div class="cap-section-head"><div><h2>App services</h2><p>Current service configuration from this application’s infrastructure record.</p></div></div><div class="detail-grid">${appServiceCards}</div>${!appInfrastructure.infrastructure ? `<p class="cap-note">App service state is unavailable right now.</p>` : ""}<p class="cap-note">Customer backups and restores are reported separately from source checkpoints and deployment rollback.</p></section><section class="cap-section"><div class="cap-section-head"><div><h2>My Services and My Environment</h2><p>Customer records and endpoint observations attached to this app.</p></div></div>${registrationCards.length ? `<div class="cap-list">${registrationCards.map(item => `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(item.name)}</strong><small>${escapeCapabilityHtml(item.type.replaceAll("_", " "))} · ${item.owner === "CUSTOMER" ? "Owned and managed by you" : "Owned and managed outside FELTUS"}</small></div><span class="cap-status ${item.observation.status === "REACHABLE" ? "ready" : item.observation.status === "NEEDS_ATTENTION" || item.observation.status === "UNAVAILABLE" ? "error" : ""}">${registrationStatusLabel(item.observation.status)}</span></div>${item.observation.checked_at ? `<small>Last checked ${date(item.observation.checked_at)}${item.observation.http_status ? ` · HTTP ${item.observation.http_status}` : ""}</small>` : ""}</article>`).join("")}</div>` : empty("No customer service records", "Add services or an environment from their app workspace pages.")}<p class="cap-note">A record is not a connection. Endpoint checks use only the public address you entered and never send credentials or follow redirects.</p></section><section class="cap-section"><h2>App resource records</h2><p>Read-only assets currently attached to this app.</p>${assets.error ? `<p class="cap-note">${escapeCapabilityHtml(assets.error)}</p>` : assetRows.length ? `<div class="cap-list">${assetRows.map(asset => `<article class="cap-item"><strong>${escapeCapabilityHtml(asset.asset_name || asset.name || "Resource")}</strong><small>${escapeCapabilityHtml(asset.asset_type || "FELTUS asset")} · ${date(asset.created_at)}</small></article>`).join("")}</div>` : empty("No resource records", "No app-scoped assets are attached yet.")}</section><div class="cap-note">Builds, environments, deployments, promotion, and rollback are managed in their own app workspace pages. Each control remains disabled until its required runner or provider is configured.</div>`;
+}
+
+function registrationStatusLabel(status) {
+  return ({
+    NOT_CHECKED: "Not checked",
+    REACHABLE: "Reachable",
+    NEEDS_ATTENTION: "Needs attention",
+    UNAVAILABLE: "Unavailable"
+  })[status] || "Not checked";
+}
+
+function registrationObservationText(item) {
+  if (item.observation.status === "NOT_CHECKED") {
+    if (item.observation.failure_code === "ENDPOINT_NOT_PUBLIC") return "This address cannot be safely checked from FELTUS.";
+    return item.observation.method === "NONE"
+      ? "No external connection has been made."
+      : "This endpoint has not been checked.";
+  }
+  if (item.observation.status === "REACHABLE") {
+    return `FELTUS received HTTP ${item.observation.http_status}. This confirms a response, not an integration.`;
+  }
+  if (item.observation.status === "NEEDS_ATTENTION") {
+    return `The endpoint returned HTTP ${item.observation.http_status || "error"}.`;
+  }
+  if (item.observation.failure_code === "TIMEOUT") return "The endpoint did not respond within a few seconds.";
+  if (item.observation.failure_code === "DNS_LOOKUP_FAILED") return "FELTUS could not find a public address for this endpoint.";
+  return "FELTUS could not reach this endpoint.";
+}
+
+function registrationOwnerLabel(item) {
+  return item.owner === "CUSTOMER"
+    ? "Owned by you · Managed by you"
+    : "Owned by an outside provider · Managed outside FELTUS";
+}
+
+function registrationCard(item, kind) {
+  const canCheck = item.observation.method === "HTTP_HEAD";
+  return `<article class="cap-item"><div class="cap-item-head"><div><strong>${escapeCapabilityHtml(item.name)}</strong><small>${escapeCapabilityHtml(item.type.replaceAll("_", " "))}${item.provider ? ` · ${escapeCapabilityHtml(item.provider)}` : ""} · ${registrationOwnerLabel(item)}</small></div><span class="cap-status ${item.observation.status === "REACHABLE" ? "ready" : item.observation.status === "NEEDS_ATTENTION" || item.observation.status === "UNAVAILABLE" ? "error" : ""}">${registrationStatusLabel(item.observation.status)}</span></div>${item.endpoint ? `<p class="cap-muted">${escapeCapabilityHtml(item.endpoint)}</p>` : ""}<p>${escapeCapabilityHtml(registrationObservationText(item))}</p>${item.observation.checked_at ? `<small>Last checked ${date(item.observation.checked_at)}</small>` : ""}<div class="cap-item-actions">${canCheck ? `<button class="button button-quiet" type="button" data-registration-check data-registration-kind="${kind}" data-registration-id="${escapeCapabilityHtml(item.id)}">Check endpoint</button>` : ""}<button class="button button-quiet" type="button" data-registration-remove data-registration-kind="${kind}" data-registration-id="${escapeCapabilityHtml(item.id)}">Disconnect</button></div></article>`;
+}
+
+async function myServicesMarkup(app, mode) {
+  const result = await api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure-registrations`);
+  const services = rows(result.registrations, "services");
+  return `${title(mode, "my-services", "my-services", app.app_name)}<section class="cap-section"><h2>Add a service</h2><p>Save a service name, type, provider, and ownership for this app. This does not sign in to or change the service.</p><form data-registration-form="services"><label class="field"><span>Service name</span><input class="input" name="name" required maxlength="80" autocomplete="off"></label><label class="field"><span>Service type</span><select class="select" name="type" required><option value="database">Database</option><option value="authentication">Sign-in or account service</option><option value="object_storage">File storage</option><option value="api_endpoint">Public API endpoint</option></select></label><label class="field"><span>Provider (optional)</span><input class="input" name="provider" maxlength="80" autocomplete="off"></label><label class="field"><span>Ownership</span><select class="select" name="owner"><option value="CUSTOMER">Owned and managed by me</option><option value="EXTERNAL_PROVIDER">Owned and managed by another provider</option></select></label><label class="field"><span>Public web address (optional)</span><input class="input" name="endpoint" type="url" maxlength="300" placeholder="https://service.example"></label><p class="cap-note">Only a public API endpoint receives a read-only check. Database, sign-in, and storage records are labels only. Do not enter passwords, keys, or private addresses.</p><p data-registration-feedback class="cap-note" role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Add Service</button></form></section><section class="cap-section"><div class="cap-section-head"><div><h2>Your services</h2><p>Status comes from an actual public endpoint response or is shown as not checked.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${services.length ? `<div class="cap-list">${services.map(item => registrationCard(item, "services")).join("")}</div>` : empty("No services added", "Add a service to keep its app-specific details here.")}</section>`;
+}
+
+async function myEnvironmentMarkup(app, mode) {
+  const result = await api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure-registrations`);
+  const environments = rows(result.registrations, "environments");
+  return `${title(mode, "my-environment", "my-environment", app.app_name)}<section class="cap-section"><h2>Add an environment</h2><p>Record an existing public app or runtime endpoint. This does not give FELTUS access to your server.</p><form data-registration-form="environments"><label class="field"><span>Environment name</span><input class="input" name="name" required maxlength="80" autocomplete="off"></label><label class="field"><span>Environment type</span><select class="select" name="type" required><option value="customer_runtime">Server or runtime I manage</option><option value="existing_hosted_runtime">App hosted by another provider</option></select></label><label class="field"><span>Provider (optional)</span><input class="input" name="provider" maxlength="80" autocomplete="off"></label><label class="field"><span>Public base address</span><input class="input" name="endpoint" type="url" required maxlength="300" placeholder="https://app.example"></label><p class="cap-note">FELTUS checks only this public address using a short, read-only request. Private addresses are not checked. This does not include SSH, credentials, deployment, container management, or DNS changes.</p><p data-registration-feedback class="cap-note" role="status" aria-live="polite"></p><button class="button button-primary" type="submit">Add Environment</button></form></section><section class="cap-section"><div class="cap-section-head"><div><h2>Your environments</h2><p>A response confirms reachability only. It does not confirm deployment control or app health.</p></div><button class="button button-quiet" type="button" data-refresh>Refresh</button></div>${environments.length ? `<div class="cap-list">${environments.map(item => registrationCard(item, "environments")).join("")}</div>` : empty("No environments added", "Add an endpoint to see its owner and latest reachability check.")}</section><p class="cap-note">Remote container runtimes are not supported here. FELTUS records and checks a public endpoint only.</p>`;
+}
+
+export function customerInfrastructureStatus(component) {
+  if (component?.status === "CONFIGURED") {
+    return component.verification?.status === "VERIFIED" ? "Ready" : "Not checked";
+  }
+  if (component?.status === "PARTIAL") return "Needs attention";
+  if (component?.status === "UNAVAILABLE") return "Unavailable";
+  if (component?.status === "NOT_CONFIGURED") return "Setting up";
+  return "Not connected";
 }
 
 async function reviewMarkup(app, mode) {
@@ -372,6 +527,27 @@ async function reviewMarkup(app, mode) {
 }
 
 const ENVIRONMENT_LABELS = { development: "Development", preview: "Preview", staging: "Staging", production: "Production" };
+const ENVIRONMENT_KINDS = ["development", "preview", "staging", "production"];
+
+export function loadEnvironments(appId) {
+  return api(`/api/apps/${encodeURIComponent(appId)}/environments`);
+}
+
+function environmentPanel(app, mode, cards, { loading = false, error = "" } = {}) {
+  const toolbar = loading && !error
+    ? `<button class="button button-quiet" type="button" disabled>Loading environments…</button>`
+    : `<button class="button button-quiet" type="button" data-refresh>${error ? "Try again" : "Refresh environments"}</button>`;
+  const feedback = error
+    ? `<p class="error-banner" role="alert">${escapeCapabilityHtml(error)}</p>`
+    : "";
+  return `${title(mode, "environment", "environment", app.app_name)}<p class="page-lede">FELTUS uses separate environments so you can build, test, and launch safely.</p><div class="cap-toolbar">${toolbar}</div><div class="environment-feedback" data-environment-feedback aria-live="polite">${feedback}</div><section class="cap-section"><div class="cap-environment-grid"${loading ? ' data-environment-loading="true"' : ""}>${cards}</div></section>`;
+}
+
+export function renderEnvironmentLoadingPanel(app, mode = "workspace", { error = "" } = {}) {
+  const cards = ENVIRONMENT_KINDS.map(kind => `<article class="cap-item env-card env-card-loading" aria-hidden="true"><div class="cap-item-head"><div><span class="env-skeleton env-skeleton-title"></span><span class="env-skeleton env-skeleton-copy"></span></div><span class="env-skeleton env-skeleton-status"></span></div><div class="detail-grid env-detail-grid">${Array.from({ length: 4 }, () => `<div class="detail-tile"><span class="env-skeleton env-skeleton-label"></span><span class="env-skeleton env-skeleton-value"></span></div>`).join("")}</div><div class="cap-advanced env-skeleton-details"><span class="env-skeleton env-skeleton-copy"></span></div><div class="cap-item-actions"><span class="env-skeleton env-skeleton-button"></span><span class="env-skeleton env-skeleton-button secondary"></span></div><span class="visually-hidden">Loading ${ENVIRONMENT_LABELS[kind]} environment</span></article>`).join("");
+  return environmentPanel(app, mode, cards, { loading: true, error });
+}
+
 function statusClass(status) {
   const value = String(status || "unknown").toLowerCase();
   return ["healthy", "succeeded", "ready", "active", "passed"].includes(value) ? "ready" : ["failed", "unhealthy", "revoked", "error"].includes(value) ? "unavailable" : "pending";
@@ -382,8 +558,8 @@ function statusLabel(status) {
   return ({ not_configured: "Not Configured", active: "Ready", queued: "Configuring", running: "Deploying", healthy: "Healthy", succeeded: "Complete", failed: "Failed", unhealthy: "Unhealthy", unknown: "Unknown" })[value.replaceAll(" ", "_")] || value.replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
-async function environmentsMarkup(app, mode) {
-  const payload = await api(`/api/apps/${encodeURIComponent(app.id)}/environments`);
+async function environmentsMarkup(app, mode, environmentPayload) {
+  const payload = environmentPayload ?? await loadEnvironments(app.id);
   const environments = rows(payload, "environments");
   const cards = environments.map(environment => {
     const label = ENVIRONMENT_LABELS[environment.kind] || environment.kind;
@@ -396,7 +572,7 @@ async function environmentsMarkup(app, mode) {
     const deploy = deployReady ? `<button class="button button-primary" type="button" data-deploy-artifact="${escapeCapabilityHtml(artifact.id)}" data-environment="${escapeCapabilityHtml(environment.kind)}">Deploy to ${label}</button>` : `<button class="button button-primary" type="button" disabled title="${escapeCapabilityHtml(deployReason)}">Deploy unavailable</button>`;
     return `<article class="cap-item env-card"><div class="cap-item-head"><div><strong>${label}</strong><small>${({ development: "Your workspace for building.", preview: "A temporary version for review.", staging: "A stable environment for testing.", production: "Your customer-facing application." })[environment.kind]}</small></div><span class="cap-status ${statusClass(environment.health === "unknown" ? status : environment.health)}">${escapeCapabilityHtml(environment.health === "unknown" ? statusLabel(status) : statusLabel(environment.health))}</span></div><div class="detail-grid env-detail-grid"><div class="detail-tile"><span>Current version</span><strong>${environment.current_blueprint ? `Blueprint v${environment.current_blueprint}` : "None"}</strong></div><div class="detail-tile"><span>Health</span><strong>${escapeCapabilityHtml(statusLabel(environment.health || "Unknown"))}</strong></div><div class="detail-tile"><span>Deployment</span><strong>${escapeCapabilityHtml(environment.deployment ? statusLabel(environment.deployment.status) : "None")}</strong></div><div class="detail-tile"><span>Artifact</span><strong>${artifact ? escapeCapabilityHtml(artifact.digest.slice(0, 19) + "…") : "None verified"}</strong></div></div><details class="cap-advanced"><summary>${environment.status === "active" ? "Configure environment" : "Environment details"}</summary><p class="cap-muted">Provider: ${escapeCapabilityHtml(environment.provider || "Not configured")} · Resource: ${escapeCapabilityHtml(environment.resource_reference || "Not configured")} · No secret values are shown.</p>${targetForm}</details><div class="cap-item-actions">${deploy}<button class="button button-quiet" type="button" data-view-blueprint="full">View Blueprint</button></div></article>`;
   }).join("");
-  return `${title(mode, "environment", "environment", app.app_name)}<p class="page-lede">FELTUS uses separate environments so you can build, test, and launch safely.</p><div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh environments</button></div><section class="cap-section"><div class="cap-environment-grid">${cards || empty("No environments configured", "Environment records will appear after the application state migration is applied.")}</div></section>`;
+  return environmentPanel(app, mode, cards || empty("No environments configured", "Environment records will appear after the application state migration is applied."));
 }
 
 async function buildsMarkup(app, mode) {
@@ -450,39 +626,51 @@ async function deploymentsMarkup(app, mode) {
 }
 
 async function githubMarkup(app) {
-  const status = await api("/api/apps/" + encodeURIComponent(app.id) + "/github")
-    .catch(error => ({ configured: false, configuration_reason: error.message, repositories: [] }));
+  const [status, workspace, access] = await Promise.all([
+    api(`/api/apps/${encodeURIComponent(app.id)}/github`)
+      .catch(error => ({ configured: false, configuration_reason: error.message, repositories: [] })),
+    api(`/api/code/workspace?app_id=${encodeURIComponent(app.id)}`)
+      .catch(error => ({ initialized: false, error: error.message, request_id: error.requestId })),
+    api(`/api/code/capabilities?app_id=${encodeURIComponent(app.id)}`)
+      .catch(() => ({ capabilities: {} }))
+  ]);
+  const localGit = workspace.initialized
+    ? await api(`/api/code/git/status?app_id=${encodeURIComponent(app.id)}`)
+      .catch(error => ({ error: error.message, request_id: error.requestId }))
+    : null;
   const githubResult = new URLSearchParams(globalThis.location?.search || "").get("github");
   const callbackNotice = githubResult === "connection_failed"
     ? '<p class="error-banner" role="alert">GitHub could not finish connecting. Try again; your app changes were saved.</p>'
     : githubResult === "authorization_failed"
-      ? '<p class="error-banner" role="alert">GitHub authorization could not be verified. Start a new connection from this page.</p>'
+      ? '<p class="error-banner" role="alert">We could not confirm the GitHub connection. Start again from this page.</p>'
       : '';
   const repository = status.repositories?.[0] || null;
   const defaultBranch = repository?.branches?.find(branch => branch.branch_name === repository.default_branch) ||
     repository?.branches?.find(branch => branch.is_default) || null;
   let sourceCard;
   if (repository) {
-    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>Repository connected</strong><p>' +
-      escapeCapabilityHtml(repository.name) + ' · ' + escapeCapabilityHtml(repository.default_branch || "Default branch unavailable") +
-      '</p></div></div><div class="detail-grid"><div class="detail-tile"><span>Latest branch commit</span><strong>' +
+    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>App files connected</strong><p>' +
+      escapeCapabilityHtml(repository.name) +
+      '</p></div></div><details class="cap-advanced"><summary>Technical details</summary><p class="cap-note">Default branch: ' +
+      escapeCapabilityHtml(repository.default_branch || "Unavailable") +
+      '</p><div class="detail-grid"><div class="detail-tile"><span>Latest version</span><strong>' +
       escapeCapabilityHtml(defaultBranch?.latest_commit_sha || "Not received") +
       '</strong></div><div class="detail-tile"><span>Webhook</span><strong>' +
       (repository.webhook_status === "active" ? "Connected" : "Not configured") +
-      '</strong></div></div><div class="cap-item-actions"><button class="button button-quiet" type="button" data-github-load-repositories>Change Repository</button>' +
+      '</strong></div></div><div class="cap-item-actions"><button class="button button-quiet" type="button" data-github-load-repositories>Change app files</button>' +
       (repository.webhook_status !== "active" && status.webhook_setup_available
         ? '<button class="button button-quiet" type="button" data-github-setup-webhook>Set Up Webhook</button>'
         : '') +
-      '</div>' +
+      '</div></details>' +
       (repository.webhook_status !== "active" && !status.webhook_setup_available
         ? '<p class="cap-note">Commit updates need a public HTTPS FELTUS URL. Manual repository actions remain available.</p>'
         : '');
   } else if (!status.configured) {
-    sourceCard = '<p class="cap-note">' + escapeCapabilityHtml(status.configuration_reason || "GitHub connection is not configured for this workspace.") +
-      '</p><button class="button button-primary" type="button" disabled title="' +
-      escapeCapabilityHtml(status.configuration_reason || "GitHub connection is not configured.") + '">Connect GitHub</button>';
+    sourceCard = '<p>GitHub connection is not available right now.</p><details class="cap-advanced"><summary>Technical details</summary><p class="cap-note">' +
+      escapeCapabilityHtml(status.configuration_reason || "GitHub connection is not configured for this workspace.") +
+      '</p></details><button class="button button-primary" type="button" disabled title="GitHub connection is not available yet.">Connect GitHub</button>';
   } else if (!status.connected) {
-    sourceCard = '<p>Connect a GitHub account to choose a repository for this app. FELTUS keeps the access credential on the server.</p><a class="button button-primary" href="/api/apps/' +
+    sourceCard = '<p>Connect a GitHub account to choose where FELTUS gets this app’s files. Your access stays protected.</p><a class="button button-primary" href="/api/apps/' +
       encodeURIComponent(app.id) + '/github/connect">Connect GitHub</a>';
   } else {
     const reconnectConnections = new Map();
@@ -501,10 +689,19 @@ async function githubMarkup(app) {
           encodeURIComponent(connectionId) + '">' + escapeCapabilityHtml(label) + '</a>';
       }).join("")
       : '<a class="button" href="/api/apps/' + encodeURIComponent(app.id) + '/github/connect">Reconnect GitHub</a>';
-    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>GitHub connected</strong><p>Choose the repository that contains this app.</p></div></div><button class="button button-primary" type="button" data-github-load-repositories>Choose a Repository</button>' + reconnectActions;
+    sourceCard = '<div class="cap-readiness"><span class="cap-readiness-mark ready">✓</span><div><strong>GitHub account connected</strong><p>Choose the app files you want FELTUS to use.</p></div></div><button class="button button-primary" type="button" data-github-load-repositories>Choose app files</button>' + reconnectActions;
   }
-  return '<p class="eyebrow">Build · Repository</p><h1 class="page-title">Connect your app source</h1><p class="page-lede">Choose the code FELTUS should build. Commit updates are recorded for this app; they do not trigger deployment automatically.</p>' +
-    callbackNotice + '<section class="cap-section"><h2>App source</h2>' + sourceCard + '<div class="cap-list" data-github-repository-list hidden></div></section>';
+  const connectedRepository = Boolean(repository);
+  const workspaceCard = workspace.initialized
+    ? `<article class="cap-item"><div class="cap-item-head"><div><strong>FELTUS workspace ready</strong><small>Private app workspace</small></div><span class="cap-status ready">Ready</span></div><p class="cap-muted">Build in a private FELTUS workspace. Connect app files from GitHub later if you want to.</p>${localGit?.stdout ? `<details class="cap-advanced"><summary>Technical details</summary><p class="cap-note">Local branch: <strong>${escapeCapabilityHtml(localGit.stdout.split(/\r?\n/)[0].replace(/^##\s*/, "").replace(/^No commits yet on /, ""))}</strong></p></details>` : localGit?.error ? `<details class="cap-advanced"><summary>Technical details</summary><p class="error-banner" role="alert">Workspace status could not be loaded. ${escapeCapabilityHtml(localGit.error)}${localGit.request_id ? ` · request ${escapeCapabilityHtml(localGit.request_id)}` : ""}</p></details>` : ""}<div class="cap-item-actions"><a class="button button-primary" href="/apps/${encodeURIComponent(app.id)}/code" data-nav>Open Build Studio</a></div></article>`
+    : workspace.error
+      ? `<article class="cap-item"><strong>Workspace status is unavailable.</strong><p>Try again in a little while.</p><details class="cap-advanced"><summary>Technical details</summary><p class="error-banner" role="alert">${escapeCapabilityHtml(workspace.error)}${workspace.request_id ? ` · request ${escapeCapabilityHtml(workspace.request_id)}` : ""}</p></details><button class="button button-quiet" type="button" data-refresh>Try again</button></article>`
+      : connectedRepository
+        ? ""
+        : `<article class="cap-item"><div class="cap-item-head"><div><strong>Set up a private workspace</strong><small>Recommended for new apps</small></div><span class="cap-status ready">Private</span></div><p class="cap-muted">Build in a private FELTUS workspace. Connect app files from GitHub later if you want to.</p><div class="field-error" data-code-workspace-error role="alert" aria-live="polite"></div><button class="button button-primary" type="button" data-initialize-code-workspace ${access.capabilities?.canEditCode ? "" : "disabled"}>Set up workspace</button>${access.capabilities?.canEditCode ? "" : '<p class="cap-muted">Ask an app editor to set up this workspace.</p>'}</article>`;
+  const githubCard = `<article class="cap-item"><div class="cap-item-head"><div><strong>Connect app files from GitHub</strong><small>Use files from a GitHub account you already have.</small></div></div>${sourceCard}<div class="cap-list" data-github-repository-list hidden></div></article>`;
+  return '<p class="eyebrow">App files</p><h1 class="page-title">Connect your app files</h1><p class="page-lede">Choose where your app files are kept. A private FELTUS workspace works without a GitHub connection.</p>' +
+    callbackNotice + '<section class="cap-section"><h2>App files</h2><div class="cap-list">' + workspaceCard + githubCard + '</div></section>';
 }
 
 async function eventsMarkup(app, mode) {
@@ -514,16 +711,19 @@ async function eventsMarkup(app, mode) {
   return `${title(mode, "activity", "activity", app.app_name)}<div class="cap-toolbar"><button class="button button-quiet" type="button" data-refresh>Refresh activity</button></div><section class="cap-section"><h2>Application activity</h2><p>Open an event to see what happened. Technical lineage is available on demand.</p>${items}</section>`;
 }
 
-async function capabilityMarkup(app, page, mode) {
+async function capabilityMarkup(app, page, mode, options = {}) {
   if (page === "data") return dataMarkup(app, mode);
   if (page === "relationships") return relationshipsMarkup(app, mode);
   if (page === "knowledge" || page === "documents") return documentsMarkup(app, mode);
+  if (page === "storage-backup") return storageBackupMarkup(app, mode);
   if (page === "ai") return aiMarkup(app, mode);
   if (page === "logs") return logsMarkup(app, mode);
   if (page === "infrastructure") return infrastructureMarkup(app, mode);
+  if (page === "my-services") return myServicesMarkup(app, mode);
+  if (page === "my-environment") return myEnvironmentMarkup(app, mode);
   if (page === "builds") return buildsMarkup(app, mode);
   if (page === "deployments") return deploymentsMarkup(app, mode);
-  if (page === "environments" || page === "environment") return environmentsMarkup(app, mode);
+  if (page === "environments" || page === "environment") return environmentsMarkup(app, mode, options.environmentPayload);
   if (page === "activity") return eventsMarkup(app, mode);
   if (page === "source") return githubMarkup(app, mode);
   if (page === "review") return reviewMarkup(app, mode);
@@ -537,14 +737,17 @@ async function capabilityMarkup(app, page, mode) {
       const sourceConnected = state?.state?.desired_state?.code?.status === "connected";
       return `${title(mode, "code", "code", app.app_name)}<section class="cap-section"><div class="cap-readiness"><span class="cap-readiness-mark ${initialized ? "ready" : "pending"}">${initialized ? "✓" : "·"}</span><div><strong>${initialized ? "Your app workspace is ready" : "Your workspace is available"}</strong><p>${initialized ? "FELTUS CODE is ready for you to open and work in." : "The code workspace has not been initialized for this app yet."}</p></div></div>${workspace.error ? `<p class="cap-note">Workspace status could not be checked: ${escapeCapabilityHtml(workspace.error)}</p>` : ""}<div class="cap-item-actions"><a class="button button-primary" href="/apps/${encodeURIComponent(app.id)}/code" data-nav>Open Code Workspace</a><a class="button button-quiet" href="/apps/${encodeURIComponent(app.id)}/source" data-nav>${sourceConnected ? "Manage Repository" : "Connect Repository"}</a></div></section><details class="cap-advanced"><summary>Technical details</summary><p>Workspace: ${initialized ? "initialized" : "not initialized"}<br>Remote repository: ${sourceConnected ? "connected" : "not connected"}<br>Build runner: ${state?.features?.build_runner ? "available" : "not configured"}</p></details>`;
     }
-    return `${title(mode, "code", "code", app.app_name)}<p class="page-lede">Open the current FELTUS CODE workspace for this app.</p><div class="cap-code-frame"><iframe title="FELTUS CODE project workspace" src="/api/code/ui?app_id=${encodeURIComponent(app.id)}" loading="lazy" referrerpolicy="no-referrer"></iframe></div><p class="cap-note">This workspace uses the existing FELTUS CODE tools. Repository connection, builds, and deployment status are available from their own workspace pages.</p>`;
+    const pane = ["preview", "design", "data", "launch"].includes(options.pane)
+      ? `&amp;pane=${options.pane}`
+      : "";
+    return `<div class="cap-code-frame"><iframe title="FELTUS AI app workspace" src="/api/code/ui?app_id=${encodeURIComponent(app.id)}${pane}&amp;embedded=1" loading="lazy" referrerpolicy="no-referrer"></iframe></div>`;
   }
   return `${title(mode, page, page, app.app_name)}${empty("This capability is not connected", "No action is available on this screen yet.")}`;
 }
 
-export async function renderCapabilityPanel(app, page, mode = "workspace") {
+export async function renderCapabilityPanel(app, page, mode = "workspace", options = {}) {
   try {
-    return await capabilityMarkup(app, page, mode);
+    return await capabilityMarkup(app, page, mode, options);
   } catch (error) {
     return `${title(mode, page, page, app.app_name)}<div class="error-banner" role="alert">${escapeCapabilityHtml(error.message)} <button class="button button-quiet" type="button" data-refresh>Try again</button></div>`;
   }
@@ -562,7 +765,15 @@ export function collectCapabilityDraft(root, app, step) {
     return {
       wizard_drafts: {
         ...(app.setup_data?.wizard_drafts || {}),
-        data: { table_name: form.elements.table_name.value.trim(), columns, enable_rls: form.elements.enable_rls.checked }
+        data: {
+          operation: form.dataset.modelId
+            ? form.dataset.addingField === "true" ? "add-field" : "edit-fields"
+            : "create-category",
+          ...(form.dataset.modelId ? { model_id: form.dataset.modelId } : {}),
+          table_name: form.elements.table_name.value.trim(),
+          columns,
+          enable_rls: form.elements.enable_rls.checked
+        }
       }
     };
   }
@@ -597,6 +808,50 @@ function setFormError(form, message) {
   if (node) node.textContent = message || "";
 }
 
+function blueprintStatusText(blueprint) {
+  const commit = blueprint?.source_commit || blueprint?.state?.desired_state?.code?.commit;
+  const parts = [
+    `Version ${blueprint.version}`,
+    `Blueprint ${String(blueprint.id).slice(0, 8)}`
+  ];
+  if (commit) parts.push(`Commit ${String(commit).slice(0, 8)}`);
+  parts.push(`SHA-256 ${blueprint.state_hash}`);
+  return parts.join(" · ");
+}
+
+export function blueprintViewFromSave(result) {
+  const blueprint = result?.blueprint;
+  if (!blueprint?.id || !Number.isInteger(blueprint.version) || !blueprint.state_hash || !blueprint.state || !result?.yaml || !result?.export_url) {
+    throw new Error("The saved Blueprint response is incomplete.");
+  }
+  return {
+    blueprint,
+    yaml: result.yaml,
+    exportUrl: result.export_url,
+    status: blueprintStatusText(blueprint),
+    data: blueprint.state?.desired_state?.data || {}
+  };
+}
+
+export function createBlueprintSaveController(appId, { request = api } = {}) {
+  let pending = false;
+  return {
+    get pending() { return pending; },
+    async save() {
+      if (pending) return null;
+      pending = true;
+      try {
+        return await request(`/api/apps/${encodeURIComponent(appId)}/blueprints`, {
+          method: "POST",
+          body: JSON.stringify({ confirm: true })
+        });
+      } finally {
+        pending = false;
+      }
+    }
+  };
+}
+
 async function openBlueprintDrawer(root, app, section = "full") {
   root.querySelector("[data-blueprint-drawer]")?.remove();
   const drawer = document.createElement("div");
@@ -614,10 +869,14 @@ async function openBlueprintDrawer(root, app, section = "full") {
   const copyButton = $('[data-copy-blueprint]', drawer);
   const saveButton = $('[data-save-blueprint]', drawer);
   const exportLink = $('[data-export-blueprint]', drawer);
+  const saveController = createBlueprintSaveController(app.id);
   const refreshBlueprint = async () => {
     status.textContent = "Loading the saved application state…";
-    stateResult = await api(`/api/apps/${encodeURIComponent(app.id)}/state`);
-    const history = await api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`);
+    const [nextState, history] = await Promise.all([
+      api(`/api/apps/${encodeURIComponent(app.id)}/state`),
+      api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`)
+    ]);
+    stateResult = nextState;
     blueprints = rows(history, "blueprints");
     activeBlueprint = blueprints[0] || null;
     const currentMatches = Boolean(activeBlueprint && activeBlueprint.state_hash === stateResult.state_hash);
@@ -625,7 +884,7 @@ async function openBlueprintDrawer(root, app, section = "full") {
       const response = await fetch(`/api/apps/${encodeURIComponent(app.id)}/blueprints/${encodeURIComponent(activeBlueprint.id)}/export`, { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) throw new Error("The saved Blueprint could not be exported.");
       yaml = await response.text();
-      status.textContent = `Version ${activeBlueprint.version} · SHA-256 ${activeBlueprint.state_hash}`;
+      status.textContent = blueprintStatusText(activeBlueprint);
       exportLink.href = `/api/apps/${encodeURIComponent(app.id)}/blueprints/${encodeURIComponent(activeBlueprint.id)}/export`;
       exportLink.hidden = false;
       saveButton.hidden = true;
@@ -649,11 +908,32 @@ async function openBlueprintDrawer(root, app, section = "full") {
     code.textContent = "";
   }
   saveButton.addEventListener("click", async () => {
+    if (saveController.pending) return;
     saveButton.disabled = true;
     saveButton.textContent = "Saving…";
     try {
-      await api(`/api/apps/${encodeURIComponent(app.id)}/blueprints`, { method: "POST", body: JSON.stringify({ confirm: true }) });
-      await refreshBlueprint();
+      const result = await saveController.save();
+      saveButton.disabled = false;
+      saveButton.textContent = "Save Blueprint";
+      if (!result) return;
+      const saved = blueprintViewFromSave(result);
+      activeBlueprint = saved.blueprint;
+      blueprints = [activeBlueprint, ...blueprints.filter(item => item.id !== activeBlueprint.id)];
+      yaml = saved.yaml;
+      stateResult = {
+        ...stateResult,
+        state: activeBlueprint.state,
+        state_hash: activeBlueprint.state_hash,
+        latest_blueprint: activeBlueprint,
+        persisted: true,
+        yaml_preview: yaml
+      };
+      status.textContent = saved.status;
+      exportLink.href = saved.exportUrl;
+      exportLink.hidden = false;
+      saveButton.hidden = true;
+      code.textContent = view === "data" ? JSON.stringify(saved.data, null, 2) : yaml;
+      copyButton.disabled = false;
       showLocalNotice(root, "Blueprint saved.");
     } catch (error) {
       status.textContent = error.message;
@@ -691,6 +971,13 @@ function showLocalNotice(root, message) {
   setTimeout(() => notice.remove(), 3000);
 }
 
+function showEnvironmentFeedback(root, message, error = false) {
+  const feedback = $("[data-environment-feedback]", root);
+  if (!feedback) return false;
+  feedback.innerHTML = `<p class="${error ? "error-banner" : "cap-note"}" role="${error ? "alert" : "status"}">${escapeCapabilityHtml(message)}</p>`;
+  return true;
+}
+
 async function clearWizardDraft(app, key) {
   const wizardDrafts = { ...(app.setup_data?.wizard_drafts || {}), [key]: null };
   await api(`/api/apps/${encodeURIComponent(app.id)}/setup`, {
@@ -704,17 +991,277 @@ async function submitModel(form, app, root, refresh) {
     name: $('[name="column_name"]', row).value.trim(),
     type: $('[name="column_type"]', row).value,
     nullable: $('[name="column_nullable"]', row).checked
-  })).filter(column => column.name);
+  }));
+  if (!columns.length) throw new Error("Add at least one field before saving.");
+  if (columns.some(column => !column.name)) throw new Error("Name every field or remove the blank field before saving.");
+  const invalidName = columns.find(column => !/^[a-z][a-z0-9_]{0,39}$/.test(column.name) || ["id", "owner_id", "created_at"].includes(column.name));
+  if (invalidName) throw new Error(`“${invalidName.name}” is not a valid field name.`);
   const duplicates = columns.filter((column, index) => columns.findIndex(item => item.name === column.name) !== index);
   if (duplicates.length) throw new Error(`The field name “${duplicates[0].name}” is repeated.`);
-  await api("/api/models", { method: "POST", body: JSON.stringify({ app_id: app.id, table_name: form.elements.table_name.value.trim(), columns, enable_rls: form.elements.enable_rls.checked }) });
+  const modelId = form.dataset.modelId;
+  const payload = modelId
+    ? { app_id: app.id, model_id: modelId, columns }
+    : { app_id: app.id, table_name: form.elements.table_name.value.trim(), columns, enable_rls: form.elements.enable_rls.checked };
+  await api("/api/models", { method: modelId ? "PATCH" : "POST", body: JSON.stringify(payload) });
   await clearWizardDraft(app, "data");
   delete root.dataset.capabilityDirty;
   await refresh();
 }
 
+function resetModelEditor(form) {
+  form.dataset.modelId = "";
+  form.dataset.addingField = "false";
+  form.elements.table_name.readOnly = false;
+  form.elements.table_name.value = form.dataset.defaultName || "";
+  form.elements.enable_rls.checked = form.dataset.defaultRls !== "false";
+  const defaults = JSON.parse(form.dataset.defaultFields || "[]");
+  $(`[data-column-list]`, form).innerHTML = defaults
+    .map(column => columnRow(column.name, column.type, column.nullable !== false)).join("");
+  const privacySettings = $(`[data-model-privacy]`, form);
+  if (privacySettings) privacySettings.hidden = false;
+  const addColumnButton = $(`[data-add-column]`, form);
+  if (addColumnButton) addColumnButton.hidden = false;
+  const submit = $('button[type="submit"]', form);
+  if (submit) submit.textContent = "Add Category";
+  const cancel = $(`[data-cancel-model-edit]`, form);
+  if (cancel) cancel.hidden = true;
+  const disclosure = form.closest("details[data-manual-data]");
+  const summary = disclosure?.querySelector("summary");
+  if (summary) summary.textContent = disclosure.dataset.categorySummary || "Add a category";
+}
+
+function editModel(form, button, { addingField = false } = {}) {
+  let fields;
+  try {
+    fields = JSON.parse(button.dataset.modelFields || "[]");
+  } catch {
+    throw new Error("This category could not be opened for editing. Refresh the page and try again.");
+  }
+  if (!Array.isArray(fields)) throw new Error("This category could not be opened for editing. Refresh the page and try again.");
+  form.dataset.modelId = button.dataset.editModel || button.dataset.addModelField;
+  form.dataset.addingField = String(addingField);
+  form.elements.table_name.value = button.dataset.modelName || "";
+  form.elements.table_name.readOnly = true;
+  const columnList = $(`[data-column-list]`, form);
+  columnList.innerHTML = fields
+    .map(column => columnRow(column.name, column.type, column.nullable !== false, true)).join("");
+  if (addingField) {
+    $$('[data-existing-column] [name="column_nullable"]', columnList).forEach(input => { input.disabled = true; });
+    columnList.insertAdjacentHTML("beforeend", columnRow());
+  }
+  const submit = $('button[type="submit"]', form);
+  if (submit) submit.textContent = addingField ? "Save Field" : "Save Changes";
+  const addColumnButton = $(`[data-add-column]`, form);
+  if (addColumnButton) addColumnButton.hidden = addingField;
+  const privacySettings = $(`[data-model-privacy]`, form);
+  if (privacySettings) privacySettings.hidden = true;
+  const cancel = $(`[data-cancel-model-edit]`, form);
+  if (cancel) cancel.hidden = false;
+  const disclosure = form.closest("details[data-manual-data]");
+  const summary = disclosure?.querySelector("summary");
+  if (summary) summary.textContent = addingField
+    ? `Add a field to ${button.dataset.modelName || "this category"}`
+    : `Edit fields for ${button.dataset.modelName || "this category"}`;
+}
+
+async function confirmSchemaRemoval(root, trigger, {
+  impactUrl,
+  actionUrl,
+  actionMethod,
+  actionBody,
+  titleText,
+  objectText,
+  dataLossText,
+  actionText,
+  impactKind
+}, onRefresh) {
+  if (trigger.disabled) return;
+  trigger.disabled = true;
+  const dialog = document.createElement("dialog");
+  dialog.className = "cap-delete-dialog";
+  dialog.setAttribute("aria-labelledby", "cap-delete-title");
+  dialog.innerHTML = `<form method="dialog" class="cap-delete-panel"><p class="eyebrow">Please review</p><h2 id="cap-delete-title">${escapeCapabilityHtml(titleText)}</h2><p class="cap-muted">${escapeCapabilityHtml(objectText)}</p><section class="cap-delete-impact" aria-live="polite"><p data-delete-impact-status>Checking what will change…</p><div data-delete-impact-details></div></section><p class="cap-delete-warning">${escapeCapabilityHtml(dataLossText)}</p><p class="field-error" data-delete-error role="alert" aria-live="assertive"></p><div class="cap-form-actions"><button class="button button-quiet" type="button" data-delete-cancel>Cancel</button><button class="button button-danger" type="button" data-delete-confirm disabled>${escapeCapabilityHtml(actionText)}</button></div></form>`;
+  document.body.append(dialog);
+  const confirmButton = dialog.querySelector("[data-delete-confirm]");
+  const cancelButton = dialog.querySelector("[data-delete-cancel]");
+  const statusNode = dialog.querySelector("[data-delete-impact-status]");
+  const detailsNode = dialog.querySelector("[data-delete-impact-details]");
+  const errorNode = dialog.querySelector("[data-delete-error]");
+  let impact = null;
+  let committing = false;
+  const close = () => {
+    if (dialog.open) dialog.close();
+    dialog.remove();
+    trigger.disabled = false;
+  };
+  dialog.addEventListener("cancel", event => {
+    if (committing) event.preventDefault();
+  });
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    trigger.disabled = false;
+  }, { once: true });
+  cancelButton.addEventListener("click", close);
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog && !committing) close();
+  });
+  dialog.showModal();
+  cancelButton.focus();
+
+  try {
+    impact = await api(impactUrl);
+    const lines = [];
+    if (impactKind === "field") {
+      lines.push(`${Number(impact.affected_rows || 0)} saved row${Number(impact.affected_rows || 0) === 1 ? "" : "s"} contain a value in this field.`);
+      lines.push(impact.reversible ? "This change can be reversed." : "Field values will be permanently removed.");
+    } else if (impactKind === "relationship") {
+      lines.push("Removing this link does not change stored field values.");
+      lines.push(`Database link: ${impact.constraint_verified ? "verified" : "could not be verified"}.`);
+    } else {
+      const fieldCount = Number(impact.field_count || 0);
+      const rowCount = Number(impact.row_count || 0);
+      const fields = Array.isArray(impact.registered_fields) ? impact.registered_fields : [];
+      lines.push(`${fieldCount} saved field${fieldCount === 1 ? "" : "s"}: ${fields.map(field => field.name).filter(Boolean).join(", ") || "No custom fields"}.`);
+      lines.push(`${rowCount} saved record${rowCount === 1 ? "" : "s"} in this category will be permanently removed.`);
+      const inbound = Array.isArray(impact.inbound_relationships) ? impact.inbound_relationships : [];
+      const outbound = Array.isArray(impact.outbound_relationships) ? impact.outbound_relationships : [];
+      for (const relationship of inbound) {
+        lines.push(`Used by ${relationship.source_model || "another category"}: ${relationship.source_field || "field"} → ${relationship.target_field || "id"}.`);
+      }
+      for (const relationship of outbound) {
+        lines.push(`Links to ${relationship.target_model || "another category"}: ${relationship.source_field || "field"} → ${relationship.target_field || "id"}.`);
+      }
+      if (!inbound.length && !outbound.length && !(impact.foreign_key_constraints || []).length && !impact.registry_mismatch) {
+        lines.push("No saved relationships use this category.");
+      }
+      for (const blocker of Array.isArray(impact.blockers) ? impact.blockers : []) {
+        if (blocker?.message) lines.push(blocker.message);
+      }
+      lines.push("The app’s saved state will update. Saved Blueprints will stay unchanged.");
+    }
+    const dependencies = Array.isArray(impact.dependencies) ? impact.dependencies : [];
+    if (dependencies.length) {
+      lines.push("Remove these links first:");
+      for (const dependency of dependencies) {
+        if (typeof dependency === "string") lines.push(dependency);
+        else lines.push(`${dependency.source_field || dependency.source_column || "Field"} → ${dependency.target_field || dependency.target_column || "Field"}`);
+      }
+    }
+    statusNode.textContent = impact.can_delete
+      ? "Review the details, then choose the remove button to continue."
+      : impactKind === "model"
+        ? "This category cannot be removed until the listed links or database dependencies are cleared."
+        : "This item cannot be removed yet because a link needs attention.";
+    const technicalDetails = impactKind === "model"
+      ? `<details class="cap-advanced"><summary>Technical details</summary><p>Table: ${escapeCapabilityHtml(impact.physical_table || "Not available")}</p>${(impact.foreign_key_constraints || []).length ? `<p>Foreign key constraints: ${impact.foreign_key_constraints.map(item => escapeCapabilityHtml(item.constraint_name || "Unnamed constraint")).join(", ")}</p>` : ""}${(impact.dependent_database_objects || []).length ? `<ul>${impact.dependent_database_objects.map(item => `<li>${escapeCapabilityHtml(item.description || item.object_type || "Database dependency")}</li>`).join("")}</ul>` : ""}</details>`
+      : "";
+    detailsNode.innerHTML = `<ul>${lines.map(line => `<li>${escapeCapabilityHtml(line)}</li>`).join("")}</ul>${technicalDetails}`;
+    confirmButton.disabled = impact.can_delete !== true;
+  } catch (error) {
+    statusNode.textContent = "FELTUS could not check this item.";
+    errorNode.textContent = error.message;
+  }
+
+  confirmButton.addEventListener("click", async () => {
+    if (!impact?.can_delete || committing) return;
+    committing = true;
+    confirmButton.disabled = true;
+    cancelButton.disabled = true;
+    confirmButton.textContent = "Removing…";
+    statusNode.textContent = "Removing and checking the saved app state…";
+    errorNode.textContent = "";
+    try {
+      const result = await api(actionUrl, {
+        method: actionMethod,
+        body: JSON.stringify(actionBody(impact))
+      });
+      if (result.persisted !== true || !result.state_hash) {
+        throw new Error("The change was not confirmed in the saved app state. Refresh before continuing.");
+      }
+      statusNode.textContent = "Removed and saved. The app state has been updated.";
+      await onRefresh();
+      close();
+    } catch (error) {
+      statusNode.textContent = "The change could not be confirmed.";
+      errorNode.textContent = error.message;
+      cancelButton.disabled = false;
+      confirmButton.textContent = "Try again";
+      confirmButton.disabled = error.committed === true;
+      committing = false;
+    }
+  });
+}
+
 async function bindCapabilityActions(root, app, mode, onRefresh) {
   root.addEventListener("click", async event => {
+    const createBackup = event.target.closest("[data-create-backup]");
+    if (createBackup) {
+      const feedback = $("[data-backup-feedback]", root);
+      createBackup.disabled = true;
+      createBackup.textContent = "Creating backup…";
+      if (feedback) feedback.textContent = "";
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/backups`, { method: "POST", body: "{}" });
+        if (feedback) feedback.textContent = "Backup is available.";
+        await onRefresh();
+      } catch (error) {
+        if (feedback) feedback.textContent = error.message || "FELTUS could not create the backup.";
+        createBackup.disabled = false;
+        createBackup.textContent = "Create Backup";
+      }
+      return;
+    }
+    const restoreBackup = event.target.closest("[data-restore-backup]");
+    if (restoreBackup) {
+      if (!window.confirm("Restore this backup? Current app data and files will be replaced. FELTUS will create a safety backup first.")) return;
+      const feedback = $("[data-backup-feedback]", root);
+      restoreBackup.disabled = true;
+      restoreBackup.textContent = "Restoring…";
+      if (feedback) feedback.textContent = "";
+      try {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/backups/${encodeURIComponent(restoreBackup.dataset.restoreBackup)}/restore`, {
+          method: "POST",
+          body: "{}"
+        });
+        if (feedback) feedback.textContent = "Restore completed and the app data and files were checked.";
+        await onRefresh();
+      } catch (error) {
+        if (feedback) feedback.textContent = error.message || "FELTUS could not restore this backup.";
+        restoreBackup.disabled = false;
+        restoreBackup.textContent = "Restore";
+      }
+      return;
+    }
+    const initializeCodeWorkspace = event.target.closest("[data-initialize-code-workspace]");
+    if (initializeCodeWorkspace) {
+      if (initializeCodeWorkspace.disabled) return;
+      const errorNode = $(`[data-code-workspace-error]`, root);
+      initializeCodeWorkspace.disabled = true;
+      initializeCodeWorkspace.textContent = "Initializing…";
+      if (errorNode) errorNode.textContent = "";
+      try {
+        const result = await api("/api/code/workspace", {
+          method: "POST",
+          body: JSON.stringify({ app_id: app.id, action: "initialize" })
+        });
+        if (result.workspace?.initialized !== true) {
+          throw new Error("FELTUS could not confirm the new workspace. Try again.");
+        }
+        await onRefresh();
+      } catch (error) {
+        if (errorNode) {
+          errorNode.textContent = `${error.code || "REQUEST_FAILED"}: ${error.message}${error.requestId ? ` · request ${error.requestId}` : ""}`;
+        } else {
+          alert(error.message);
+        }
+      } finally {
+        if (initializeCodeWorkspace.isConnected !== false) {
+          initializeCodeWorkspace.disabled = false;
+          initializeCodeWorkspace.textContent = "Initialize workspace";
+        }
+      }
+      return;
+    }
     const navLink = event.target.closest("a[data-nav]");
     if (navLink && root.dataset.capabilityDirty === "true") {
       if (!window.confirm("This section has unsaved form values. Leave and discard them?")) {
@@ -798,6 +1345,81 @@ if (selectGithubRepository) {
       }
       return;
     }
+    const addFieldButton = event.target.closest("[data-add-model-field]");
+    if (addFieldButton) {
+      const form = $('[data-form="model"]', root);
+      const disclosure = $(`[data-manual-data]`, root);
+      if (!form || !disclosure) return;
+      try {
+        editModel(form, addFieldButton, { addingField: true });
+        disclosure.open = true;
+        root.dataset.capabilityDirty = "true";
+        form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (error) {
+        setFormError(form, error.message);
+      }
+      return;
+    }
+    const removeSavedField = event.target.closest("[data-delete-field-model]");
+    if (removeSavedField) {
+      const modelId = removeSavedField.dataset.deleteFieldModel;
+      const fieldName = removeSavedField.dataset.fieldName;
+      const query = new URLSearchParams({ app_id: app.id, model_id: modelId, field_name: fieldName });
+      await confirmSchemaRemoval(root, removeSavedField, {
+        impactUrl: `/api/models/field-impact?${query}`,
+        actionUrl: "/api/models",
+        actionMethod: "DELETE",
+        actionBody: () => ({ app_id: app.id, model_id: modelId, field_name: fieldName, confirm: true }),
+        titleText: "Remove this field?",
+        objectText: `${removeSavedField.dataset.modelName || "This category"}.${fieldName}`,
+        dataLossText: "This cannot be undone. Values stored in this field will be permanently removed.",
+        actionText: "Remove field",
+        impactKind: "field"
+      }, onRefresh);
+      return;
+    }
+    const deleteModel = event.target.closest("[data-delete-model]");
+    if (deleteModel) {
+      const modelId = deleteModel.dataset.deleteModel;
+      const query = new URLSearchParams({ app_id: app.id, model_id: modelId });
+      await confirmSchemaRemoval(root, deleteModel, {
+        impactUrl: `/api/models/deletion-impact?${query}`,
+        actionUrl: "/api/models",
+        actionMethod: "DELETE",
+        actionBody: () => ({ app_id: app.id, model_id: modelId, confirm: true }),
+        titleText: "Delete this category?",
+        objectText: deleteModel.dataset.modelName || "This category",
+        dataLossText: "This cannot be undone. The category, its fields, and every saved record will be permanently removed.",
+        actionText: "Delete category",
+        impactKind: "model"
+      }, onRefresh);
+      return;
+    }
+    const editModelButton = event.target.closest("[data-edit-model]");
+    if (editModelButton) {
+      const form = $('[data-form="model"]', root);
+      const disclosure = $(`[data-manual-data]`, root);
+      if (!form || !disclosure) return;
+      try {
+        editModel(form, editModelButton);
+        disclosure.open = true;
+        root.dataset.capabilityDirty = "true";
+        form.elements.table_name.focus({ preventScroll: true });
+        form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      } catch (error) {
+        setFormError(form, error.message);
+      }
+      return;
+    }
+    const cancelModelEdit = event.target.closest("[data-cancel-model-edit]");
+    if (cancelModelEdit) {
+      const form = $('[data-form="model"]', root);
+      if (!form) return;
+      resetModelEditor(form);
+      delete root.dataset.capabilityDirty;
+      setFormError(form, "");
+      return;
+    }
     const addColumn = event.target.closest("[data-add-column]");
     if (addColumn) {
       $('[data-column-list]', root).insertAdjacentHTML("beforeend", columnRow());
@@ -810,6 +1432,7 @@ if (selectGithubRepository) {
       const form = $('[data-form="model"]', root);
       const disclosure = $("[data-manual-data]", root);
       if (!suggestion || !form || !disclosure) return;
+      resetModelEditor(form);
       disclosure.open = true;
       form.elements.table_name.value = suggestionButton.dataset.suggestCategory;
       $("[data-column-list]", form).innerHTML = suggestion.fields
@@ -843,17 +1466,23 @@ if (selectGithubRepository) {
     }
     const deployArtifact = event.target.closest("[data-deploy-artifact]");
     if (deployArtifact) {
+      if (deployArtifact.disabled) return;
       const environment = deployArtifact.dataset.environment;
       if (!window.confirm(`Queue deployment to ${ENVIRONMENT_LABELS[environment] || environment}? This will use the same verified artifact and record its outcome.`)) return;
       deployArtifact.disabled = true;
       deployArtifact.textContent = "Queueing…";
+      showEnvironmentFeedback(root, `Starting deployment to ${ENVIRONMENT_LABELS[environment] || environment}…`);
       try {
         await api(`/api/apps/${encodeURIComponent(app.id)}/deployments`, {
           method: "POST",
           body: JSON.stringify({ environment, artifact_id: deployArtifact.dataset.deployArtifact })
         });
         await onRefresh();
-      } catch (error) { deployArtifact.disabled = false; deployArtifact.textContent = `Deploy to ${ENVIRONMENT_LABELS[environment] || environment}`; alert(error.message); }
+      } catch (error) {
+        deployArtifact.disabled = false;
+        deployArtifact.textContent = `Deploy to ${ENVIRONMENT_LABELS[environment] || environment}`;
+        if (!showEnvironmentFeedback(root, error.message, true)) alert(error.message);
+      }
       return;
     }
     const promoteDeployment = event.target.closest("[data-promote-deployment]");
@@ -932,12 +1561,19 @@ if (selectGithubRepository) {
     }
     const deleteRelationship = event.target.closest("[data-delete-relationship]");
     if (deleteRelationship) {
-      if (!window.confirm("Remove this foreign-key relationship? Existing row values are not changed by this request.")) return;
-      deleteRelationship.disabled = true;
-      try {
-        await api("/api/relationships/delete", { method: "POST", body: JSON.stringify({ relationship_id: deleteRelationship.dataset.deleteRelationship }) });
-        await onRefresh();
-      } catch (error) { deleteRelationship.disabled = false; alert(error.message); }
+      const relationshipId = deleteRelationship.dataset.deleteRelationship;
+      const query = new URLSearchParams({ app_id: app.id, relationship_id: relationshipId });
+      await confirmSchemaRemoval(root, deleteRelationship, {
+        impactUrl: `/api/relationships/deletion-impact?${query}`,
+        actionUrl: "/api/relationships/delete",
+        actionMethod: "POST",
+        actionBody: () => ({ app_id: app.id, relationship_id: relationshipId, confirm: true }),
+        titleText: "Remove this relationship?",
+        objectText: `${deleteRelationship.dataset.sourceName || "Source"}.${deleteRelationship.dataset.sourceField || "field"} → ${deleteRelationship.dataset.targetName || "Target"}.${deleteRelationship.dataset.targetField || "field"}`,
+        dataLossText: "This removes only the link. Existing field values and rows will stay in place.",
+        actionText: "Remove relationship",
+        impactKind: "relationship"
+      }, onRefresh);
       return;
     }
     const processDocument = event.target.closest("[data-process-document]");
@@ -968,10 +1604,17 @@ if (selectGithubRepository) {
   root.addEventListener("submit", async event => {
     const form = event.target.closest("[data-form]");
     if (!form) return;
-    event.preventDefault();
-    const kind = form.dataset.form;
     const submitButton = $('button[type="submit"]', form);
+    event.preventDefault();
+    if (submitButton?.disabled) return;
+    const kind = form.dataset.form;
+    const originalSubmitLabel = submitButton?.textContent || "";
     if (submitButton) submitButton.disabled = true;
+    if (submitButton && kind === "model") {
+      submitButton.textContent = form.dataset.addingField === "true"
+        ? "Saving field…"
+        : form.dataset.modelId ? "Saving changes…" : "Saving category…";
+    }
     setFormError(form, "");
     try {
       if (kind === "model") await submitModel(form, app, root, onRefresh);
@@ -1030,7 +1673,87 @@ if (selectGithubRepository) {
         output.textContent = error.message;
       }
     } finally {
-      if (submitButton?.isConnected) submitButton.disabled = false;
+      if (submitButton?.isConnected) {
+        submitButton.disabled = false;
+        submitButton.textContent = originalSubmitLabel;
+      }
+    }
+  });
+}
+
+function bindInfrastructureRegistrationActions(root, app, onRefresh) {
+  root.addEventListener("submit", async event => {
+    const form = event.target.closest("[data-registration-form]");
+    if (!form) return;
+    event.preventDefault();
+    const kind = form.dataset.registrationForm;
+    const button = form.querySelector('[type="submit"]');
+    const feedback = $("[data-registration-feedback]", root);
+    if (kind === "services" && form.elements.type.value === "api_endpoint" && !form.elements.endpoint.value.trim()) {
+      if (feedback) feedback.textContent = "Enter the public address for this API endpoint.";
+      form.elements.endpoint.focus();
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = kind === "services" ? "Adding service…" : "Adding environment…";
+    }
+    if (feedback) feedback.textContent = "";
+    try {
+      await api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure-registrations`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          type: form.elements.type.value,
+          name: form.elements.name.value.trim(),
+          provider: form.elements.provider.value.trim() || null,
+          ...(kind === "services" ? { owner: form.elements.owner.value } : {}),
+          endpoint: form.elements.endpoint.value.trim() || null
+        })
+      });
+      if (feedback) feedback.textContent = kind === "services"
+        ? "Service record saved. It has not been connected or changed."
+        : "Environment saved. FELTUS checked only the public address you entered.";
+      await onRefresh();
+    } catch (error) {
+      if (feedback) feedback.textContent = error.message || "The record could not be saved.";
+      if (button) {
+        button.disabled = false;
+        button.textContent = kind === "services" ? "Add Service" : "Add Environment";
+      }
+    }
+  });
+
+  root.addEventListener("click", async event => {
+    const check = event.target.closest("[data-registration-check]");
+    const remove = event.target.closest("[data-registration-remove]");
+    if (!check && !remove) return;
+    const action = check || remove;
+    const kind = action.dataset.registrationKind;
+    const id = action.dataset.registrationId;
+    const feedback = $("[data-registration-feedback]", root);
+    if (remove && !window.confirm("Remove this record from FELTUS? This only removes FELTUS’s saved record and does not change the service.")) return;
+    action.disabled = true;
+    if (check) action.textContent = "Checking…";
+    if (feedback) feedback.textContent = "";
+    try {
+      if (check) {
+        const result = await api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure-registrations/check`, {
+          method: "POST",
+          body: JSON.stringify({ kind, id })
+        });
+        if (feedback) feedback.textContent = `Check complete: ${registrationStatusLabel(result.registration?.observation?.status)}.`;
+      } else {
+        await api(`/api/apps/${encodeURIComponent(app.id)}/infrastructure-registrations/${encodeURIComponent(id)}`, {
+          method: "DELETE"
+        });
+        if (feedback) feedback.textContent = "The record was removed from FELTUS. The service itself was not changed.";
+      }
+      await onRefresh();
+    } catch (error) {
+      if (feedback) feedback.textContent = error.message || "The request could not be completed.";
+      action.disabled = false;
+      if (check) action.textContent = "Check endpoint";
     }
   });
 }
@@ -1062,10 +1785,12 @@ function updateSourceColumns(root, modelId, preserveSelection = false) {
 
 export async function mountCapabilityPanel(root, app, page, mode, onRefresh) {
   await bindCapabilityActions(root, app, mode, onRefresh);
+  if (page === "my-services" || page === "my-environment") {
+    bindInfrastructureRegistrationActions(root, app, onRefresh);
+  }
   if (page === "relationships") {
     const form = $('[data-form="relationship"]', root);
     const sourceModel = form?.elements.source_model_id.value;
     if (sourceModel) updateSourceColumns(root, sourceModel, true);
   }
 }
-

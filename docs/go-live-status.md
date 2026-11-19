@@ -1,6 +1,6 @@
 # FELTUS go-live status
 
-Status for the production recovery work as of 2026-11-03. Local code checks do not verify a public deployment. FELTUS remains a **production candidate**, not a production-ready service, until the blocked staging and production gates below are completed.
+Status for the production recovery work as of 2026-11-07. Local code checks do not verify a public deployment. FELTUS remains a **production candidate**, not a production-ready service, until the blocked staging and production gates below are completed.
 
 ## Recovery update — 2026-11-03
 
@@ -10,6 +10,28 @@ Status for the production recovery work as of 2026-11-03. Local code checks do n
 - The same test image places `pgcrypto.digest` in `extensions`; the deployment trigger previously called `public.digest`, which would fail when an artifact-backed deployment was inserted. The function now resolves `digest` through `extensions` first and `public` second.
 - A private infrastructure-outbox consumer and server-side Coolify v1 client were added. Local tests cover lease RPCs, scope/artifact checks, exact environment-to-resource mapping, digest pinning, production gating, server-only credentials, HTTPS enforcement, and redirect refusal. This is code-level verification only; no Coolify API or real deployment was contacted.
 - `npm run check`, `npm run test:core`, `npm run test:code`, `npm run test:infrastructure-worker`, `npm run regression`, and the disposable-database `npm run test:deployment-control-plane` passed. Compose configuration parsing and local image builds for `app`, `worker`, and `evidence-extractor` passed.
+
+## Repository finalization and Day-2 update — 2026-11-07
+
+### Implemented locally
+
+- CODE classifies repository stack evidence, resolves quality checks, builds a contract-protection map, and proposes low-risk normalization through the existing reviewed change-set flow. Protected productionization changes are blocked from automatic apply.
+- Required checks run in an isolated validation workspace. Failed or unavailable required checks keep proposals reviewable and block release readiness. Release requests are tied to a clean, recorded source checkpoint and matching validation evidence.
+- CODE activity links productionization run IDs, check results, source snapshots, proposed transformations, apply actions, and Git checkpoints. Portable export reads a recorded Git commit and emits an archive with a manifest, filtered source, application-owned migration assets, applicable infrastructure assets, and environment variable names without secret values.
+- Day-2 acceptance is owner-only, validates the latest observation against an exact recorded source checkpoint, and creates a new immutable Blueprint. Restore requires an explicitly chosen Blueprint, environment, reason, and authorization, then queues the existing rollback RPC.
+- The `feltus.application-state/v1` hash and identity rules remain unchanged. Source commit stays in desired-state identity. No migration or RLS policy was added or changed for this implementation.
+
+### Partially implemented / target
+
+- Deterministic automatic normalization currently covers JSON formatting; other source normalization remains a reviewed proposal. Native formatter fixes, language AST transforms, and security/dependency analysis are not yet built into the pipeline. Contract-path and marker detection is heuristic.
+- Usage continues to use the existing ledger. Execution context fingerprints and retrieved document/chunk links are not recorded for every path, so complete provenance is partial.
+- Day-2 observation remains deployment-level. Runtime configuration, schema version, and infrastructure target drift are not claimed as collected. Existing worker reconciliation remains the recurring path; no second scheduler was introduced.
+
+### Local verification
+
+- Passed: `npm run check`, `npm run regression`, `npm run test:state-contract`, `npm run test:state-api`, `npm run test:core`, `npm run test:code`, `npm run test:artifact`, `npm run test:build-worker`, `npm run test:infrastructure-worker`, `npm run test:build-studio`, `npm run test:productionization` (9 tests), `npm run test:wizard`, `npm run test:data-model`, `npm run test:model-deletion`, `npm run test:teams`, `npm run test:github`, and `npm run test:workspace-seed`.
+- `test:workspace-seed` skipped its Windows junction case because the host denied junction creation. The CODE smoke suite's symlink case passed in the escalated run.
+- `npm run test:deployment-control-plane` could not complete because its expected disposable container (`feltus-cp-test-db`) was absent. This update has no live database or provider verification.
 
 ## Still blocked
 
@@ -31,8 +53,8 @@ Status for the production recovery work as of 2026-11-03. Local code checks do n
 - Production Docker Compose, RLS policies, backup/restore scripts, CI workflow, and deployment documentation are present in the branch. These artifacts are not evidence that production infrastructure has been exercised.
 - The core platform is implemented as an additive migration: project membership/profile tables, multi-conversation chat controls, provider-neutral local AI adapters, embeddings, knowledge-base records, durable jobs, a private worker, safe tools, encrypted secret metadata, usage records, deployment records, realtime publication, and project-scoped RLS policies are present.
 - `npm run check`, `npm run test:core`, and `npm run regression` passed after the core-platform implementation. The regression includes production startup gates for service-role and secret-encryption configuration, provider adapter behavior, worker leasing/cancellation/retry controls, first-class chat controls, and Compose validation.
-- FELTUS CODE is integrated on `codex/feltus-code-integration`; its per-project filesystem root is server-derived, project access uses the authenticated PostgREST/RLS context, `.git` metadata/secrets/symlinks/traversal are blocked, writes use SHA-256 conflict checks, and task execution is limited to repository-defined FELTUS checks.
-- `npm run test:code` passed for safe file create/read/write/rename/delete, secret redaction, search/repo map, symlink and traversal denial, exact Git-root validation, parent-repository inheritance denial, explicit checkpoint confirmation, allowlisted tasks, arbitrary-command rejection, and cancellation.
+- FELTUS CODE is integrated on `codex/feltus-code-integration`; its per-project filesystem root is server-derived, project access uses the authenticated PostgREST/RLS context, and the source includes `.git` metadata, secret, symlink, and traversal protections. Writes use SHA-256 conflict checks, and task execution is limited to repository-defined FELTUS checks. Runtime verification is limited to the cases listed below.
+- The latest `npm run test:code` run on this Windows host exercised safe file create/read/write/rename/delete, secret redaction, search/repo map, traversal denial, exact Git-root validation, parent-repository inheritance denial, explicit checkpoint confirmation, allowlisted tasks, arbitrary-command rejection, and cancellation. Symlink/junction runtime cases were skipped because the host denied link creation; source checks remain present, but this run does not prove link behavior at runtime.
 - FELTUS CODE planning streams through the configured provider when supported. The provider adapter stream/usage mapping and cancellation path pass automated tests; endpoint policy gates source context and code prompts never append stored conversation history.
 - `npm run check`, `npm run test:core`, `npm run test:code`, and `npm run regression` passed for the current working tree. Regression covers anonymous FELTUS CODE API/UI denial, project-scoped migration policies, model selection, cancellation, secret scan, and Compose validation.
 - PDF extractor tests passed (2 tests); Compose configuration and production workflow YAML validation passed.

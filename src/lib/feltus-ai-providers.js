@@ -71,6 +71,7 @@ export class OpenAICompatibleAI {
     temperature = 0.2,
     numPredict = 2048,
     systemPrompt = "",
+    format = undefined,
     signal = null
   } = {}) {
     const messages = [
@@ -79,7 +80,18 @@ export class OpenAICompatibleAI {
     ];
     const result = await this.request("/v1/chat/completions", {
       method: "POST",
-      body: { model, messages, temperature, max_tokens: numPredict, stream: false },
+      body: {
+        model,
+        messages,
+        temperature,
+        max_tokens: numPredict,
+        stream: false,
+        ...(format === "json"
+          ? { response_format: { type: "json_object" } }
+          : format?.schema
+            ? { response_format: { type: "json_schema", json_schema: { name: format.name || "feltus_response", strict: true, schema: format.schema } } }
+            : {})
+      },
       signal
     });
     return {

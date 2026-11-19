@@ -2,6 +2,8 @@
 import { spawnSync } from "node:child_process";
 
 const container = process.env.FELTUS_CP_TEST_DB_CONTAINER || "feltus-cp-test-db";
+const database = process.env.FELTUS_CP_TEST_DB_NAME || "postgres";
+const databaseUser = process.env.FELTUS_CP_TEST_DB_USER || "postgres";
 
 const sql = String.raw`
 BEGIN;
@@ -27,6 +29,8 @@ DECLARE
   v_ok boolean;
   v_audit_id bigint;
 BEGIN
+  PERFORM set_config('request.jwt.claim.role', 'service_role', true);
+
   SELECT organization_id
   INTO v_org_id
   FROM public.feltus_applications
@@ -532,9 +536,9 @@ const result = spawnSync(
     "-v",
     "ON_ERROR_STOP=1",
     "-U",
-    "postgres",
+    databaseUser,
     "-d",
-    "postgres"
+    database
   ],
   {
     input: sql,

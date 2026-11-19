@@ -87,6 +87,13 @@ const coreMigration = fs.readFileSync(
   path.join(root, "supabase/migrations/20261102000000_feltus_core_platform.sql"),
   "utf8"
 );
+const teamMigration = fs.readFileSync(
+  path.join(root, "supabase/migrations/20261106030000_feltus_team_accounts.sql"),
+  "utf8"
+);
+const teamApi = fs.readFileSync(path.join(root, "src/lib/feltus-team-api.js"), "utf8");
+const authorization = fs.readFileSync(path.join(root, "src/lib/feltus-authorization.js"), "utf8");
+const appWizard = fs.readFileSync(path.join(root, "src/app-wizard/app.js"), "utf8");
 const codeMigration = fs.readFileSync(
   path.join(root, "supabase/migrations/20261102010000_feltus_code.sql"),
   "utf8"
@@ -98,6 +105,8 @@ const codeTaskRunner = fs.readFileSync(path.join(root, "src/feltus-code/server/t
 const codeGateway = fs.readFileSync(path.join(root, "src/feltus-code/server/ai-gateway.mjs"), "utf8");
 const codeGitTools = fs.readFileSync(path.join(root, "src/feltus-code/server/git-tools.mjs"), "utf8");
 const codeSecurity = fs.readFileSync(path.join(root, "src/feltus-code/server/security.mjs"), "utf8");
+const codePreview = fs.readFileSync(path.join(root, "src/feltus-code/server/preview-manager.mjs"), "utf8");
+const codeStudioWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
 const codePackageScripts = packageJson.scripts;
 
 check("FELTUS CODE is mounted behind FELTUS auth and project scope", () => {
@@ -161,25 +170,29 @@ check("FELTUS CODE AI grounds every action in server-read selected files", () =>
   assert.match(codeAgentWorkflow, /handlers\.aiPlan\(\{ prompt, paths, model \}/);
   assert.match(codeAgentWorkflow, /handlers\.aiEdit\(\{ prompt, paths, model \}/);
   assert.match(server, /code: "FILE_CONTEXT_REQUIRED"/);
-  assert.match(codeWeb, /paths: requestPaths/);
-  assert.match(codeWeb, /state\.files\.get\(state\.activePath\)\?\.dirty/);
+  assert.match(codeWeb, /paths: selectedPaths\(\)/);
+  assert.match(codeWeb, /open_paths: openPaths\(\)/);
+  assert.match(codeWeb, /selected_text: selectedText\(\)/);
+  assert.match(codeWeb, /function selectedPaths\(\)\s*\{\s*return state\.activePath \? \[state\.activePath\] : \[\]/);
   assert.match(codeWeb, /mode: mode\.toLowerCase\(\)/);
-  assert.match(codeWeb, /Select a project file before using/);
+  assert.match(codeAgent, /Select a project file before requesting this file-specific AI action/);
 });
 
-check("FELTUS CODE Agent validates a temporary proposal before one-time application", () => {
-  assert.match(server, /runValidatedAgent\(\{/);
-  assert.ok(codeAgentWorkflow.indexOf("await handlers.validateTask") < codeAgentWorkflow.indexOf("await handlers.applyEdit"));
-  assert.match(codeAgentWorkflow, /if \(!value\.validationPassed\) return/);
-  assert.match(codeTaskRunner, /runAgainstProposed/);
-  assert.match(codeServer, /validateTask: async \(\{ task, files \}.*tasks\.runAgainstProposed/s);
-  assert.match(codeTaskRunner, /package\.json is missing; npm validation tasks are unavailable/);
-  assert.match(codeTaskRunner, /"git-status"\s*\|\|\s*taskName === "git-diff"/);
-  const codeWeb = fs.readFileSync(path.join(root, "src/feltus-code/web/feltus-code.js"), "utf8");
-  assert.match(codeWeb, /state\.proposal = null;\s*\$\("proposal"\)\.replaceChildren\(\);\s*\$\("apply-edit"\)\.hidden = true/);
-  assert.match(codeWeb, /renderProposal\(agentResult\.proposal, \{ allowApply: false \}\)/);
-  assert.match(codeWeb, /option\.disabled = true/);
-  assert.match(codeWeb, /window\.confirm\("Allow FELTUS CODE Agent to edit/);
+check("FELTUS Build Studio reviews changes and fails closed without isolated preview", () => {
+  assert.match(server, /runStudioAgent\(/);
+  assert.match(server, /allowedTasks\.includes\(selectedTask\)/);
+  assert.match(codeTaskRunner, /runAgainstChangeSet/);
+  assert.match(codeStudioWeb, /function renderChangeSet\(changeSet\)/);
+  assert.match(codeStudioWeb, /apply-selected/);
+  assert.match(codeStudioWeb, /undoChangeSet|change-set\/undo/);
+  assert.match(codePreview, /PREVIEW_ISOLATION_UNAVAILABLE/);
+  assert.match(codePreview, /launchIsolatedPreview/);
+  assert.doesNotMatch(codePreview, /from "node:child_process"/);
+  assert.match(codeStudioWeb, /artifact\.blueprint_id === blueprintId/);
+  assert.match(codeStudioWeb, /state\.idempotencyKey \|\|= crypto\.randomUUID\(\)/);
+  assert.match(codeStudioWeb, /state\.preview\.available === false/);
+  assert.match(codeStudioWeb, /renderStudioActivity/);
+  assert.match(server, /current_actor:/);
 });
 
 check("AI capability controls and auto model", () => {
@@ -203,6 +216,24 @@ check("canonical cross-platform package entrypoints", () => {
   assert.equal(packageJson.scripts.check, "node scripts/check.js");
   assert.equal(packageJson.scripts.regression, "node scripts/production-regression.mjs");
   assert.equal(packageJson.scripts["test:core"], "node scripts/core-platform-tests.mjs");
+  assert.equal(packageJson.scripts["test:teams"], "node scripts/team-account-tests.mjs");
+  assert.equal(packageJson.scripts["test:data-model"], "node scripts/data-model-workflow-tests.mjs");
+});
+
+check("team accounts reuse tenant RBAC and remain feature gated", () => {
+  assert.match(teamMigration, /CREATE TABLE IF NOT EXISTS public\.feltus_workspace_invitations/);
+  assert.match(teamMigration, /UNIQUE INDEX IF NOT EXISTS feltus_workspace_invitations_active_email_uq/);
+  assert.match(teamMigration, /feltus_user_has_workspace_permission/);
+  assert.match(teamMigration, /feltus_transfer_workspace_ownership/);
+  assert.match(teamMigration, /FOR v_user_id IN SELECT id FROM auth\.users/);
+  assert.match(teamMigration, /CREATE TRIGGER feltus_auth_user_default_workspace/);
+  assert.match(teamMigration, /feltus_applications_workspace_read/);
+  assert.match(teamApi, /rpc\/feltus_accept_workspace_invitation/);
+  assert.match(teamApi, /if \(!enabled\)[\s\S]*People management is not available yet/);
+  assert.match(authorization, /function canManagePeople/);
+  assert.match(authorization, /function canDeployProduction/);
+  assert.match(server, /const TEAMS_ENABLED = process\.env\.FELTUS_TEAMS_ENABLED === "true"/);
+  assert.match(appWizard, /key !== "team" \|\| state\.features\.teams === true/);
 });
 
 check("self-hosted core platform services are additive and secured", () => {
@@ -397,10 +428,10 @@ check("only FELTUS CODE UI allows same-origin framing", () => {
   assert.match(smoke, /protectedCodeUI\.headers\["x-frame-options"\], "SAMEORIGIN"/);
 });
 
-check("owner-only password recovery and redirect protections", () => {
+check("feature-gated account recovery and redirect protections", () => {
   assert.match(server, /url\.pathname === "\/auth\/v1\/recover"/);
   assert.match(server, /"password-recovery",\s*5,\s*60 \* 60 \* 1000/);
-  assert.match(server, /email: IS_PRODUCTION\s*\?\s*OWNER_EMAIL/);
+  assert.match(server, /email: IS_PRODUCTION && !TEAMS_ENABLED\s*\?\s*OWNER_EMAIL/);
   assert.match(server, /redirect_to: PUBLIC_URL/);
   assert.match(server, /safeRedirect\.origin/);
   assert.match(server, /redirect:\s*method === "GET" && url\.pathname === "\/auth\/v1\/verify"\s*\?\s*"manual"/);

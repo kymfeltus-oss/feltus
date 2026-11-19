@@ -252,7 +252,9 @@ await test("Relationship create, verify, delete",async()=>{
       method:"POST",
       origin:BASE,
       body:{
-        relationship_id:stale.id
+        app_id:project.id,
+        relationship_id:stale.id,
+        confirm:true
       }
     });
 
@@ -299,7 +301,9 @@ await test("Relationship create, verify, delete",async()=>{
     method:"POST",
     origin:BASE,
     body:{
-      relationship_id:createdRelationship.id
+      app_id:project.id,
+      relationship_id:createdRelationship.id,
+      confirm:true
     }
   });
 

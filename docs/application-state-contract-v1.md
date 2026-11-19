@@ -31,6 +31,19 @@ This contract describes an application independently from PostgreSQL. PostgreSQL
     "knowledge": { "documents": [] },
     "ai": {},
     "code": {},
+    "intelligence": {
+      "classification": {
+        "application_type": "<application type>",
+        "archetypes": [],
+        "business_models": [],
+        "audiences": [],
+        "workflow_patterns": []
+      },
+      "capabilities": {},
+      "permissions": {},
+      "repository": {},
+      "environment_provider_state": []
+    },
     "environments": []
   },
   "execution": {
@@ -45,7 +58,7 @@ This contract describes an application independently from PostgreSQL. PostgreSQL
 ### Required and optional values
 
 - `contract`, `application.id`, `application.name`, `application.type`, and `application.lifecycle_status` are required non-empty strings.
-- `desired_state` is required. `data.models`, `data.relationships`, `knowledge.documents`, `environments`, and the three `execution` collections default to empty arrays.
+- `desired_state` is required. `data.models`, `data.relationships`, `knowledge.documents`, `environments`, and the three `execution` collections default to empty arrays. `desired_state.intelligence` is included in newly reconstructed states; older v1 Blueprints may omit it so their stored hashes remain verifiable.
 - Blueprint metadata is nullable only for an unsaved draft. A persisted blueprint requires an ID, version, state hash, creator, and creation timestamp. The first version has no parent; each later version names the immediately preceding version and ID.
 - Records use stable IDs when FELTUS has one. Git commits use their full source SHA. Artifact identity uses a content digest. Missing external facts use `null`; they are not guessed.
 - Secret values are never part of canonical state. Secret references and non-sensitive fingerprints may be represented when their semantics are documented.
@@ -54,7 +67,7 @@ This contract describes an application independently from PostgreSQL. PostgreSQL
 ## Domain semantics
 
 - **Application** identifies the app and its user-visible lifecycle.
-- **Desired state** is the saved application intent: data models and fields, relationships and delete behavior, document metadata and eligibility, AI purpose/settings and source permissions, repository/branch/commit references, and environment target configuration. It contains no document contents, database row values, credentials, or runtime observations.
+- **Desired state** is the saved application intent: data models and fields, relationships and delete behavior, document metadata and eligibility, AI purpose/settings and source permissions, repository/branch/commit references, and environment target configuration. `intelligence` is the normalized app profile and evidence derived from those canonical facts: declared business models and audiences from the existing app setup record, declared or capability-derived archetypes and workflow patterns, enabled capabilities, AI context permissions, repository metadata, and environment/provider state. The current app record remains the input source; the canonical Blueprint stores its immutable normalized snapshot, with no separate profile table or application-specific state store. It contains no document contents, database row values, credentials, or runtime observations.
 - **Execution** records build, artifact, and deployment references as facts. It is lineage evidence and is not part of blueprint identity.
 - **Observed state** records what a provider reports for a deployment, including environment, provider/deployment ID, blueprint version, source commit, artifact digest, health, observation time, and a hash of the observation. It never overwrites desired state.
 - **Delta** is a factual comparison with one of `changed`, `added`, `removed`, or `unknown`. It records values and references; Phase 3 does not assign compliance, risk, readiness, or policy judgments.
@@ -64,6 +77,8 @@ This contract describes an application independently from PostgreSQL. PostgreSQL
 - All strings are Unicode NFC normalized. JSON values only are accepted. Object keys are recursively ordered lexicographically for canonical JSON. Sensitive-value keys (credentials, secrets, passwords, private keys, API keys, access/refresh tokens) are omitted; `max_tokens` is a generation setting and is retained.
 - Models sort by stable ID (then name when no ID is present). Fields sort by `ordinal_position`, then field name; this order is explicit schema display order. Relationships sort by stable ID, or by source model/field and target model/field when no ID exists. Documents and execution references sort by stable ID. Environments have the fixed order Development, Preview, Staging, Production. Observation histories sort by timestamp, then stable ID. These orderings make input/database query order irrelevant.
 - Blueprint identity is SHA-256 over canonical UTF-8 JSON containing exactly `contract`, application identity (`id`, `name`, `type`, `lifecycle_status`), and `desired_state`. Blueprint IDs, versions, parent references, creation metadata, execution records, event records, and observed state are excluded. Thus deployment activity cannot silently change the desired blueprint hash.
+- Infrastructure ownership is a separate `feltus.infrastructure/v1` configuration exposed by `/api/apps/:id/infrastructure` and stored with existing setup data. It is not inserted into `feltus.application-state/v1` or its hash. The infrastructure contract records one of `FELTUS_MANAGED`, `CUSTOMER_MANAGED`, `HYBRID`, or `EXISTING_APPLICATION` and owner, management, status, and verification evidence per component. Connected-repository verification is refreshed only at release-readiness boundaries; diverged, unavailable, and unconnected states are exposed without treating them as confirmed.
+- App-scoped customer backup and restore evidence is reported independently in `components.backups_recovery.backup` and `components.backups_recovery.restore`, based on durable backup records. Deployment rollback and source checkpoints are not evidence that customer data or private files can be backed up or restored. These statuses remain outside `feltus.application-state/v1` and its hash.
 - State changes that alter any included application identity or desired-state value create a new blueprint version. Saving an unchanged CURRENT state reuses the current revision. Returning to an older historical state creates a new chronological revision whose semantic hash may match an older revision. SHA-256 output is 64 lowercase hexadecimal characters.
 
 ## Blueprint lineage and immutability

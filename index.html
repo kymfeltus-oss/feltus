@@ -5,15 +5,61 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>FELTUS LABS — Build your app</title>
-  <link rel="stylesheet" href="/app-wizard.css">
+  <style>
+    :root{color-scheme:dark;--bg:#070711;--surface:#0d0d18;--surface-2:#121220;--line:#ffffff17;--text:#f8f7fc;--muted:#b9b7c6;--accent:#a855f7;--accent-ink:#171124;--danger:#fb7185;--good:#34d399;--shadow:none;font-family:Inter,"Segoe UI",Arial,sans-serif;font-synthesis:none;text-rendering:optimizeLegibility}
+    *{box-sizing:border-box}html{min-width:320px;background:var(--bg)}body{margin:0;min-height:100vh;padding-top:0;color:var(--text);background:var(--bg)}
+    .app-shell{min-height:100vh}.topbar{height:76px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(18px,4vw,64px);border-bottom:1px solid #ffffff0c;background:#101820c9;backdrop-filter:blur(16px)}.brand{display:inline-flex;align-items:center;gap:12px;font-weight:760;letter-spacing:.08em;color:inherit;text-decoration:none}.brand small{margin-left:4px;color:var(--muted);font-size:10px;letter-spacing:.18em}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border:1px solid #a68bff66;border-radius:11px;color:var(--accent);font-size:17px;background:#a68bff14}.topbar-right{display:flex;gap:14px;align-items:center}.saved-indicator{color:var(--muted);font-size:12px}
+    .button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:42px;padding:0 16px;border:1px solid var(--line);border-radius:10px;color:var(--text);background:#1c2932}.button-primary{border-color:transparent;color:var(--accent-ink);font-weight:700;background:linear-gradient(120deg,#c2b0ff,#a68bff)}.button:disabled{opacity:.48;cursor:not-allowed}.main-wrap{width:min(1180px,calc(100% - 40px));margin:0 auto;padding:54px 0 80px}.loading-card{margin:80px auto;max-width:420px;padding:24px;border:1px solid var(--line);border-radius:13px;color:var(--muted);text-align:center;background:var(--surface)}
+    .app-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.app-card{min-height:206px}.workspace-layout{display:grid;grid-template-columns:226px minmax(0,1fr);min-height:calc(100vh - 77px)}.workspace-sidebar{padding:22px 14px;border-right:1px solid #ffffff10;background:#121e26a8}.workspace-content{width:min(1060px,100%);padding:clamp(25px,5vw,57px);margin:0 auto}
+    .cap-environment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;align-items:stretch}.env-card{display:flex;min-width:0;min-height:322px;flex-direction:column}.env-card>.cap-item-head{min-height:50px}.env-card>.env-detail-grid{min-height:118px}.env-card>.cap-advanced{min-height:43px}.env-card>.cap-item-actions{min-height:42px;margin-top:auto}.env-card-loading{pointer-events:none}.env-skeleton{display:block;border-radius:7px;background:#302f43}.env-skeleton-title{width:104px;height:14px}.env-skeleton-copy{width:150px;max-width:100%;height:10px;margin-top:8px}.env-skeleton-status{width:70px;height:27px;border-radius:999px}.env-skeleton-label{width:62px;height:8px}.env-skeleton-value{width:84px;height:13px;margin-top:10px}.env-skeleton-details{display:flex;align-items:center}.env-skeleton-details .env-skeleton-copy{margin:0}.env-skeleton-button{width:126px;height:42px;border-radius:10px;background:#423b63}.home-activity-body{min-height:300px}.activity-loading-list{display:grid;gap:10px}.activity-loading-row{height:48px;border:1px solid #ffffff0c;border-radius:11px;background:#17232b}
+    @media(max-width:980px){.app-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:700px){.topbar{height:64px;padding:0 16px}.main-wrap{width:calc(100% - 30px);padding-top:35px}.app-grid{grid-template-columns:1fr}.workspace-layout{display:block}.workspace-sidebar{position:sticky;z-index:8;top:64px;padding:10px 12px;border-right:0;border-bottom:1px solid #ffffff10;overflow-x:auto;white-space:nowrap}.workspace-content{padding:31px 18px 50px}.cap-environment-grid{grid-template-columns:1fr}.env-card{min-height:310px}}
+  </style>
+  <link rel="preload" href="/app-wizard.css" as="style">
+  <link rel="stylesheet" href="/app-wizard.css" media="print" onload="this.media='all'">
+  <noscript><link rel="stylesheet" href="/app-wizard.css"></noscript>
+  <link rel="modulepreload" href="/app-wizard.js">
+  <link rel="modulepreload" href="/app-wizard-lib.js">
+  <link rel="modulepreload" href="/app-wizard-capabilities.js">
 </head>
 <body>
   <div class="app-shell">
+    <aside class="customer-sidebar" aria-label="Workspace navigation">
+      <a class="brand" href="/" aria-label="FELTUS home"><img class="brand-logo" src="/brand/feltus-logo-horizontal.png" alt="FELTUS LABS"></a>
+      <nav class="customer-nav" aria-label="Main navigation">
+        <span class="nav-section-label">Workspace</span>
+        <a href="/" data-nav data-nav-section="home"><span aria-hidden="true">⌂</span>Home</a>
+        <a href="/apps" data-nav data-nav-section="projects"><span aria-hidden="true">▦</span>Projects</a>
+        <a href="/services" data-nav data-nav-section="services"><span aria-hidden="true">◇</span>Services</a>
+        <a href="/domains" data-nav data-nav-section="domains"><span aria-hidden="true">◎</span>Domains</a>
+        <a href="/activity" data-nav data-nav-section="activity"><span aria-hidden="true">≋</span>Activity</a>
+      </nav>
+      <nav class="customer-nav customer-nav-secondary" aria-label="Workspace settings">
+        <span class="nav-section-label">Manage</span>
+        <a href="/usage" data-nav data-nav-section="usage"><span aria-hidden="true">◷</span>Usage</a>
+        <a href="/settings" data-nav data-nav-section="settings"><span aria-hidden="true">⚙</span>Settings</a>
+      </nav>
+    </aside>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="FELTUS home"><span class="brand-mark">F</span><span>FELTUS <small>LABS</small></span></a>
-      <div class="topbar-right"><span id="saved-indicator" class="saved-indicator" aria-live="polite"></span><button id="top-create" class="button button-primary" type="button" hidden>Create new app</button></div>
+      <a class="mobile-brand" href="/" aria-label="FELTUS home"><img class="brand-logo" src="/brand/feltus-logo-horizontal.png" alt="FELTUS LABS"></a>
+      <span class="topbar-context">Workspace</span>
+      <div class="topbar-right"><span id="saved-indicator" class="saved-indicator" aria-live="polite"></span><button id="top-create" class="button button-primary" type="button" hidden>Build with FELTUS</button></div>
     </header>
     <main id="view" tabindex="-1" aria-live="polite"><div class="loading-card">Loading your workspace…</div></main>
+    <nav class="mobile-nav" aria-label="Primary navigation">
+      <a href="/" data-nav data-nav-section="home"><span aria-hidden="true">⌂</span>Home</a>
+      <a href="/apps" data-nav data-nav-section="projects"><span aria-hidden="true">▦</span>Projects</a>
+      <a href="/services" data-nav data-nav-section="services"><span aria-hidden="true">◇</span>Services</a>
+      <a href="/domains" data-nav data-nav-section="domains"><span aria-hidden="true">◎</span>Domains</a>
+      <details class="mobile-more">
+        <summary><span aria-hidden="true">···</span>More</summary>
+        <div class="mobile-more-menu">
+          <a href="/activity" data-nav data-nav-section="activity">Activity</a>
+          <a href="/usage" data-nav data-nav-section="usage">Usage</a>
+          <a href="/settings" data-nav data-nav-section="settings">Settings</a>
+        </div>
+      </details>
+    </nav>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </div>
   <script type="module" src="/app-wizard.js"></script>

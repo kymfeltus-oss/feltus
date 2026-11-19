@@ -5,6 +5,7 @@ import { createAIProvider } from "./lib/feltus-ai-providers.js";
 import { resolveAIEndpointPolicy } from "./lib/feltus-ai-policy.js";
 import { createCoolifyClient } from "./lib/feltus-coolify.js";
 import { createInfrastructureWorker } from "./lib/feltus-infrastructure-worker.js";
+import { createApplicationCleanupClient } from "./lib/feltus-application-cleanup-worker.js";
 
 dotenv.config();
 
@@ -12,6 +13,8 @@ const GATEWAY = String(process.env.FELTUS_GATEWAY_URL || "").replace(/\/+$/, "")
 const SERVICE_KEY = process.env.FELTUS_SERVICE_ROLE_KEY || "";
 const WORKER_ID = process.env.FELTUS_WORKER_ID || `worker-${crypto.randomUUID()}`;
 const PORT = Number(process.env.FELTUS_WORKER_PORT || 8081);
+const APPLICATION_SERVER_URL = String(process.env.FELTUS_APPLICATION_SERVER_URL ||
+  (process.env.NODE_ENV !== "production" ? `http://127.0.0.1:${process.env.FELTUS_PORT || 8080}` : "http://app:8080")).replace(/\/+$/, "");
 const POLL_MS = Math.max(250, Number(process.env.FELTUS_WORKER_POLL_MS || 1000));
 const LEASE_SECONDS = Math.max(30, Number(process.env.FELTUS_JOB_LEASE_SECONDS || 180));
 const COOLIFY_URL = String(process.env.FELTUS_COOLIFY_URL || "").trim();
@@ -39,6 +42,10 @@ if (!GATEWAY || !SERVICE_KEY) {
 
 const aiPolicy = await resolveAIEndpointPolicy(process.env);
 const ai = createAIProvider({ ...process.env, FELTUS_AI_ENDPOINT: aiPolicy.endpoint });
+const runApplicationCleanup = createApplicationCleanupClient({
+  apiUrl: APPLICATION_SERVER_URL,
+  serviceKey: SERVICE_KEY
+});
 const coolify = COOLIFY_URL && COOLIFY_TOKEN
   ? createCoolifyClient({
       baseUrl: COOLIFY_URL,
@@ -127,6 +134,10 @@ async function cancelled(job) {
   return !rows?.[0] || rows[0].status === "CANCELLED" || rows[0].cancellation_requested === true;
 }
 
+async function cleanupApplication(job) {
+  return runApplicationCleanup(job);
+}
+
 async function generateWithCancellation(job, prompt, options) {
   const controller = new AbortController();
   let checking = false;
@@ -155,6 +166,7 @@ async function generateWithCancellation(job, prompt, options) {
 async function execute(job) {
   const payload = job.payload && typeof job.payload === "object" ? job.payload : {};
   if (job.job_type === "system.noop") return { ok: true };
+  if (job.job_type === "application.cleanup") return cleanupApplication(job);
   if (job.job_type === "ai.generate") {
     const result = await generateWithCancellation(job, String(payload.prompt || ""), {
       model: String(payload.model || ai.model),
@@ -231,14 +243,30 @@ async function processJob(job) {
       await patchJob(job.id, { status: "CANCELLED", completed_at: new Date().toISOString() });
       return;
     }
-    const terminal = Number(job.attempts || 0) >= Number(job.max_attempts || 3);
+    const terminal = error.retryable === false || Number(job.attempts || 0) >= Number(job.max_attempts || 3);
     const delaySeconds = Math.min(300, 2 ** Math.max(Number(job.attempts || 1) - 1, 0) * 5);
+    if (job.job_type === "application.cleanup") {
+      const requestId = String(job.payload?.request_id || "");
+      if (/^[0-9a-f-]{36}$/i.test(requestId)) {
+        await rest("/rest/v1/rpc/feltus_fail_application_cleanup", {
+          method: "POST",
+          body: {
+            p_app_id: job.app_id,
+            p_request_id: requestId,
+            p_error_code: /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "APP_CLEANUP_FAILED",
+            p_retryable: !terminal
+          }
+        }).catch(() => {});
+      }
+    }
     await patchJob(job.id, {
       status: terminal ? "FAILED" : "QUEUED",
       worker_id: null,
       lease_expires_at: null,
       retry_at: terminal ? null : new Date(Date.now() + delaySeconds * 1000).toISOString(),
-      last_error: String(error?.message || "Worker failure").slice(0, 1000),
+      last_error: job.job_type === "application.cleanup"
+        ? String(error?.code || "APP_CLEANUP_FAILED").slice(0, 64)
+        : String(error?.message || "Worker failure").slice(0, 1000),
       completed_at: terminal ? new Date().toISOString() : null
     });
   }

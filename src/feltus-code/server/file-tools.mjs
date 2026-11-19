@@ -99,7 +99,11 @@ export function createFileTools({ repoRoot, maxReadBytes = 1024 * 1024 }) {
       await fs.rm(temporary, { force: true });
       throw error;
     }
-    return { path: relativePath, bytes: Buffer.byteLength(String(content)) };
+    return {
+      path: relativePath,
+      bytes: Buffer.byteLength(String(content)),
+      sha256: crypto.createHash("sha256").update(String(content)).digest("hex")
+    };
   }
 
   async function createDirectory(relativePath) {
@@ -126,7 +130,12 @@ export function createFileTools({ repoRoot, maxReadBytes = 1024 * 1024 }) {
       throw error;
     }
     await handle.close();
-    return { path: relativePath, bytes: Buffer.byteLength(String(content)), created: true };
+    return {
+      path: relativePath,
+      bytes: Buffer.byteLength(String(content)),
+      sha256: crypto.createHash("sha256").update(String(content)).digest("hex"),
+      created: true
+    };
   }
 
   async function rename(fromPath, toPath) {

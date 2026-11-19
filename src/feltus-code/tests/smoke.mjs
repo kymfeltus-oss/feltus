@@ -10,8 +10,12 @@ import { runValidatedAgent } from "../server/agent-workflow.mjs";
 import { createFeltusCodeHandlers } from "../server/routes.mjs";
 import { createGitTools, assertExactGitRoot } from "../server/git-tools.mjs";
 import { createTaskRunner, DEFAULT_TASKS } from "../server/task-runner.mjs";
+import { redactSecrets } from "../server/security.mjs";
 
-const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "feltus-code-test-"));
+const tempParent = await fs.realpath(process.env.FELTUS_TEST_TMPDIR || os.tmpdir());
+const tempRootPrefix = ".feltus-code-tests-";
+const tempRoot = await fs.mkdtemp(path.join(tempParent, tempRootPrefix));
+const validationTempRoot = path.join(tempRoot, "validation-workspaces");
 const parent = path.join(tempRoot, "parent-repository");
 const root = path.join(parent, "project-workspace");
 const outside = path.join(tempRoot, "outside");
@@ -19,6 +23,16 @@ await fs.mkdir(root, { recursive: true });
 await fs.mkdir(outside, { recursive: true });
 const otherProject = path.join(parent, "other-project");
 await fs.mkdir(otherProject, { recursive: true });
+const baseCreateTaskRunner = createTaskRunner;
+const baseCreateCodeHandlers = createFeltusCodeHandlers;
+
+function createTestTaskRunner(options) {
+  return baseCreateTaskRunner({ ...options, validationTempRoot });
+}
+
+function createTestCodeHandlers(options) {
+  return baseCreateCodeHandlers({ ...options, validationTempRoot });
+}
 
 function git(args, cwd) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -26,6 +40,10 @@ function git(args, cwd) {
 }
 
 try {
+  const unittestOutput = `.\n${"-".repeat(70)}\nRan 1 test in 0.000s\n\nOK\n`;
+  assert.equal(redactSecrets(unittestOutput), unittestOutput);
+  assert.equal(redactSecrets("SERVICE_ROLE_KEY=private-value"), "SERVICE_ROLE_KEY=[REDACTED]");
+
   const stagingFileContent = "FELTUS CODE STAGING TEST\n";
   await fs.writeFile(path.join(root, "hello.txt"), stagingFileContent, "utf8");
   await fs.writeFile(path.join(root, "workflow.txt"), "Original validation content\n", "utf8");
@@ -189,9 +207,15 @@ try {
   git(["init", "--initial-branch=main"], parent);
   const gitTools = createGitTools({ repoRoot: root });
   const gitMetadataLink = path.join(root, ".git");
-  await fs.symlink(path.join(parent, ".git"), gitMetadataLink, process.platform === "win32" ? "junction" : "dir");
-  await assert.rejects(() => gitTools.initialize(), error => error.code === "SYMLINK_NOT_ALLOWED");
-  await fs.rm(gitMetadataLink, { recursive: true, force: true });
+  try {
+    await fs.symlink(path.join(parent, ".git"), gitMetadataLink, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(() => gitTools.initialize(), error => error.code === "SYMLINK_NOT_ALLOWED");
+  } catch (error) {
+    if (["EPERM", "EACCES", "ENOTSUP", "ENOSYS"].includes(error?.code)) symlinkTested = false;
+    else throw error;
+  } finally {
+    await fs.rm(gitMetadataLink, { recursive: true, force: true });
+  }
   assert.equal((await gitTools.available()).available, false);
   await assert.rejects(() => gitTools.diff(), error => error.code === "NOT_GIT_ROOT");
 
@@ -214,13 +238,19 @@ try {
   await assert.rejects(() => gitTools.stage(["../outside.txt"]), error => error.code === "INVALID_REPO_PATH");
   await assert.rejects(() => gitTools.stage(["values-secret.yml"]), error => error.code === "SENSITIVE_FILE_BLOCKED");
   await assert.rejects(() => gitTools.stage(["nested"]), error => error.code === "INVALID_GIT_PATHS");
+  await fs.mkdir(path.join(root, "initial-source"));
+  await fs.writeFile(path.join(root, "initial-source", "index.html"), "<main>initial</main>", "utf8");
+  await fs.writeFile(path.join(root, "initial-source", "script.js"), "console.log('initial');", "utf8");
+  const initialStage = await gitTools.stage(["initial-source/"]);
+  assert.deepEqual(initialStage.paths, ["initial-source/index.html", "initial-source/script.js"]);
+  await gitTools.unstage(initialStage.paths);
   await assert.rejects(
     () => gitTools.checkpoint({ message: "missing confirmation" }),
     error => error.code === "CONFIRMATION_REQUIRED"
   );
 
-  const validationTasks = createTaskRunner({ repoRoot: root });
-  const routeHandlers = createFeltusCodeHandlers({ repoRoot: root, aiGateway: { async complete() { throw new Error("AI not expected"); } } });
+  const validationTasks = createTestTaskRunner({ repoRoot: root });
+  const routeHandlers = createTestCodeHandlers({ repoRoot: root, aiGateway: { async complete() { throw new Error("AI not expected"); } } });
   assert.deepEqual(validationTasks.list(), ["git-status", "git-diff"]);
   assert.equal(validationTasks.defaultTask(), "git-diff");
   assert.match(validationTasks.unavailable().find(item => item.task === "npm-check")?.reason || "", /package\.json is missing/);
@@ -248,11 +278,11 @@ try {
 
   let applyCalls = 0;
   let validationCalls = 0;
-  const failingValidationTasks = createTaskRunner({
+  const failingValidationTasks = createTestTaskRunner({
     repoRoot: root,
     tasks: { "fixture-validation": { command: process.execPath, args: ["-e", "process.exit(1)"] } }
   });
-  const passingValidationTasks = createTaskRunner({
+  const passingValidationTasks = createTestTaskRunner({
     repoRoot: root,
     tasks: { "fixture-validation": { command: process.execPath, args: ["-e", "process.exit(0)"] } }
   });
@@ -333,7 +363,7 @@ try {
   await gitTools.stage(["hello.txt"]);
   assert.match((await gitTools.diff({ staged: true })).stdout, /FELTUS CODE STAGING TEST/);
 
-  const tasks = createTaskRunner({ repoRoot: root });
+  const tasks = createTestTaskRunner({ repoRoot: root });
   assert.ok(tasks.list().includes("git-status"));
   assert.ok(tasks.list().includes("git-diff"));
   assert.deepEqual(tasks.list(), ["git-status", "git-diff"]);
@@ -353,7 +383,7 @@ try {
   }
   await assert.rejects(() => tasks.run("arbitrary-shell"), error => error.code === "TASK_NOT_ALLOWED");
   const abortController = new AbortController();
-  const cancellableTask = createTaskRunner({
+  const cancellableTask = createTestTaskRunner({
     repoRoot: root,
     tasks: { "slow-task": { command: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"] } }
   });
@@ -369,5 +399,9 @@ try {
   process.stdout.write("PASS FELTUS CODE server task allowlist and arbitrary-command rejection tests\n");
   process.stdout.write("PASS FELTUS CODE stale task cancellation test\n");
 } finally {
-  await fs.rm(tempRoot, { recursive: true, force: true });
+  const resolvedTempRoot = await fs.realpath(tempRoot);
+  if (path.dirname(resolvedTempRoot) !== tempParent || !path.basename(resolvedTempRoot).startsWith(tempRootPrefix)) {
+    throw new Error("Refusing to remove a FELTUS CODE test directory outside its configured temp root.");
+  }
+  await fs.rm(resolvedTempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import os from "node:os";
 
 const SENSITIVE_FILE_NAME = /^(?:\.env(?:\..*)?|credentials?(?:\..*)?|secrets?(?:\..*)?|id_(?:rsa|dsa|ecdsa|ed25519)|known_hosts|authorized_keys)(?:$)/i;
 const SENSITIVE_EXTENSION = /\.(?:pem|key|p12|pfx|keystore|jks|kdbx)$/i;
@@ -109,9 +110,35 @@ export async function assertNoSymlinkTraversal(root, requested = ".") {
 export function redactSecrets(text = "") {
   return String(text)
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16})\b/g, "[REDACTED TOKEN]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:live_|test_|proj-)?[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[0-9A-Za-z-]{10,}|sb_(?:publishable|secret)_[A-Za-z0-9_-]{16,})\b/g, "[REDACTED TOKEN]")
     .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED JWT]")
     .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[REDACTED]")
-    .replace(/((?:["']?(?:[a-z0-9.-]+[_-])*?(?:api[_-]?key|key|secret|password|token|private[_-]?key|credentials?)["']?)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s"'`},]+)/gi, "$1[REDACTED]")
+    .replace(/((["'`]?(?:[a-z0-9]+[._-])*?(?:api[_-]?key|key|secret|password|token|private[_-]?key|credentials?|auth|bearer)["'`]?)\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s"'`},;]+)/gi, "$1[REDACTED]")
     .replace(/(postgres(?:ql)?:\/\/[^:\s/]+:)[^@\s/]+(@)/gi, "$1[REDACTED]$2");
+}
+
+export function safeProjectEnvironment({ extra = {} } = {}) {
+  const allowed = new Set([
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR",
+    "COMSPEC", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "NUMBER_OF_PROCESSORS",
+    "OS", "LANG", "LC_ALL", "TZ"
+  ]);
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (allowed.has(key.toUpperCase()) && typeof value === "string") env[key] = value;
+  }
+  const nullConfig = process.platform === "win32"
+    ? name => path.join(os.tmpdir(), `feltus-${process.pid}-${name}.npmrc`)
+    : () => "/dev/null";
+  Object.assign(env, {
+    CI: "1",
+    NO_COLOR: "1",
+    NPM_CONFIG_USERCONFIG: nullConfig("user-config"),
+    NPM_CONFIG_GLOBALCONFIG: nullConfig("global-config"),
+    NPM_CONFIG_AUDIT: "false",
+    NPM_CONFIG_FUND: "false",
+    PYTHONDONTWRITEBYTECODE: "1",
+    ...extra
+  });
+  return env;
 }

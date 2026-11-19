@@ -4,7 +4,7 @@ This is a route inventory of `src/server.js` at baseline `484cb4e` plus the curr
 
 ## Authentication model
 
-Production browser sessions use the secure `__Host-feltus_session` cookie. `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`, `/api/health`, and `/api/ready` are handled before the owner-session gate. Other `/api/*` routes require an authenticated owner session. Project IDs and conversation IDs are checked against the authenticated owner; database RLS is an additional boundary. The Auth proxy is same-origin under `/auth/v1/*`, and public signup is disabled in production. Recovery requests are limited to the configured owner and protected by an application rate limit plus Auth's own rate limits.
+Production browser sessions use the secure `__Host-feltus_session` cookie. `/api/auth/login`, `/api/auth/logout`, `/api/auth/session`, `/api/health`, and `/api/ready` are handled before the authenticated-session gate. Team sign-in is default-off: while `FELTUS_TEAMS_ENABLED` is not `true`, only the configured owner can establish a production session. When explicitly enabled, active workspace members and users with a valid pending invitation may establish a session. Database RLS and workspace/project permissions remain authoritative. The Auth proxy is same-origin under `/auth/v1/*`, and public signup remains disabled in production.
 
 Requests with an unapproved `Origin` are rejected. Mutating operations use JSON request bodies except document upload, which uses multipart form data. Unsupported methods return `405` on routes with explicit method checks; unknown paths return `404`.
 
@@ -16,22 +16,38 @@ Requests with an unapproved `Origin` are rejected. Mutating operations use JSON 
 | `GET` | `/api/health` | Public | Process liveness. |
 | `GET` | `/api/ready` | Public | Dependency readiness for required backend services and PDF extraction. |
 | `GET` | `/api/auth/session` | Public | Report whether the browser has an authenticated session; refreshes/clears stale sessions as needed. |
-| `POST` | `/api/auth/login` | Public, throttled | Authenticate the configured owner and set the session cookie. |
+| `POST` | `/api/auth/login` | Public, throttled | Authenticate the configured owner, or an invited/workspace user when team access is explicitly enabled, and set the session cookie. |
 | `POST` | `/api/auth/logout` | Public | Clear the session cookie and in-process session. |
 | `*` | `/auth/v1/*` | Auth proxy | Same-origin Supabase-compatible Auth API proxy; public signup is disabled. |
-| `POST` | `/auth/v1/recover` | Public, throttled | Request recovery for the configured owner only; the submitted address is ignored and every response is generic. The redirect destination is fixed to `FELTUS_PUBLIC_URL`. |
+| `POST` | `/auth/v1/recover` | Public, throttled | Request password recovery. Team access disabled: the submitted address is replaced with the configured owner. Team access enabled: the submitted account email is used. Responses remain generic and the redirect destination is fixed to `FELTUS_PUBLIC_URL`. |
 | `GET` | `/auth/v1/verify` | Public | Verify Auth email-action links. Recovery redirects are forwarded only when their destination origin is configured in the allowed-origin list. |
 | `PUT` | `/auth/v1/user` | Recovery access token | Set the new password from a recovery flow. The application reads the access token from the URL fragment, removes the fragment from browser history, and keeps the token in memory while the password is changed. |
 | `GET`, `POST` | `/api/apps` | Owner | List owned applications or create an application. |
 | `GET` | `/api/apps/:id` | Owner | Read one owned application and its persisted setup state. |
 | `PATCH` | `/api/apps/:id/setup` | Owner | Save app basics, setup choices, completed steps, and the resume step. Secret-like setup keys are rejected. |
+| `GET`, `PUT` | `/api/apps/:id/infrastructure` | Application owner | Read or explicitly configure component ownership in `feltus.infrastructure/v1`; managed build/deployment mutations are blocked for customer- or externally managed components. |
+| `GET` | `/api/apps/:id/infrastructure-registrations` | Authorized app user | Read this app's registered services and environments, including ownership and the latest endpoint observation. |
+| `POST` | `/api/apps/:id/infrastructure-registrations` | Application owner | Save a metadata-only service or environment record. Only explicitly entered public HTTP(S) base addresses receive a bounded, unauthenticated `HEAD` check. |
+| `POST` | `/api/apps/:id/infrastructure-registrations/check` | Application owner | Recheck the exact public endpoint for a saved API/runtime record; redirects and non-public destinations are not followed or contacted. |
+| `DELETE` | `/api/apps/:id/infrastructure-registrations/:registrationId` | Application owner | Remove only FELTUS's saved record; this does not change or disconnect the external service. |
+| `GET`, `POST` | `/api/apps/:id/backups` | App owner | List the app's customer backup history or create a private, versioned backup of supported app data and uploaded files. |
+| `GET` | `/api/apps/:id/backups/:backupId` | App owner | Read one app-scoped backup's current status and restore eligibility. |
+| `POST` | `/api/apps/:id/backups/:backupId/restore` | App owner | Restore an eligible backup after integrity checks and creation of a safety snapshot. Generated-app sessions are not authorized. |
 | `POST` | `/api/apps/:id/archive` | Owner | Archive an owned app without deleting its data. |
+| `GET` | `/api/workspaces` | Team feature enabled; authenticated workspace user | List the user's active workspaces, role, and non-authoritative UI capability hints. All workspace/People routes return `404` while the default-off team feature is disabled. |
+| `GET` | `/api/workspaces/:id/people` | Authorized workspace member | List workspace membership and, for People managers, pending invitation metadata. Database RLS is authoritative. |
+| `POST` | `/api/workspaces/:id/invitations` | Workspace owner or admin | Create an expiring invitation. Returns the one-time plaintext acceptance token because no email provider is configured; only its SHA-256 hash is stored. |
+| `POST` | `/api/workspaces/invitations/accept` | Signed-in invited account | Accept one unexpired, unrevoked invitation matching the signed-in account's verified email. |
+| `POST` | `/api/workspaces/:id/invitations/:invitationId/revoke` | Workspace owner or admin | Revoke an unused invitation. |
+| `PATCH`, `DELETE` | `/api/workspaces/:id/members/:userId` | Workspace owner or admin | Change a non-owner role or remove a non-owner member. Owner changes require the explicit transfer route. |
+| `POST` | `/api/workspaces/:id/ownership-transfer` | Workspace owner | Explicitly transfer ownership to an active member and retain the former owner as an admin. |
 | `GET` | `/api/documents` | Owner | List authorized project documents and processing metadata. |
 | `GET` | `/api/document-chunks` | Owner | Read authorized extracted document chunks. |
 | `GET` | `/api/documents/extraction` | Owner | Read extraction status/evidence metadata. |
 | `POST` | `/api/documents/upload` | Owner, throttled | Upload and register a project document. |
 | `POST` | `/api/documents/process` | Owner, throttled | Process an authorized document and persist extraction results. |
 | `GET`, `POST` | `/api/deployment` | Owner | Read or update a project's deployment state/configuration. |
+
 | `GET` | `/api/ai/route` | Owner | Inspect available model/capability routing. |
 | `GET` | `/api/ai/models` and `/api/ai/models/:id` | Owner | List runtime-discovered model metadata or one model. |
 | `GET` | `/api/ai/runtime/health` | Owner | Report provider-neutral runtime health, model count, and latency without credentials. |
@@ -54,7 +70,7 @@ Requests with an unapproved `Origin` are rejected. Mutating operations use JSON 
 | `POST` | `/api/ai/chat` | Owner, throttled | Send a non-streaming project-grounded AI request. |
 | `POST` | `/api/ai/chat/stream` | Owner, throttled | Send a project-grounded AI request as a token stream. |
 | `GET` | `/api/code/ui` and `/code-assets/*` | Authenticated FELTUS session | Serve the FELTUS CODE workspace frame and its fixed same-origin JavaScript/CSS assets. |
-| `GET`, `POST` | `/api/code/workspace` | Authenticated project member; write permission for initialization | Read workspace state or create a private empty Git repository for the selected FELTUS project. The server derives its filesystem root from the authorized application ID. |
+| `GET`, `POST` | `/api/code/workspace` | Authenticated project member; write permission for initialization | Read workspace state or create a private Git workspace for the selected FELTUS project. In local development only, `action=seed_local` accepts one folder name under the configured approved source root and copies safe regular project files into that private workspace. |
 | `GET`, `POST` | `/api/code/session` | Authenticated project member; write permission to create | Read or create the project's active FELTUS CODE session. |
 | `GET` | `/api/code/tree`, `/api/code/file`, `/api/code/search`, `/api/code/repo-map` | Authenticated project member | Read a bounded repository tree, file, search result, or repo map. Secret paths are excluded or redacted. |
 | `PUT`, `POST`, `DELETE` | `/api/code/file`, `/api/code/file/create`, `/api/code/directory`, `/api/code/rename` | Authenticated project member with write permission | Operate on relative paths inside the selected project's workspace; writes require an expected SHA-256 and deletion requires explicit confirmation. |
@@ -64,16 +80,20 @@ Requests with an unapproved `Origin` are rejected. Mutating operations use JSON 
 | `POST` | `/api/code/ai/edit`, `/api/code/ai/apply`, `/api/code/ai/agent` | Authenticated project member with write permission | Propose selected-file edits, apply only accepted edits with unchanged source hashes, or run a confirmed allowlisted agent task. Project source is blocked unless endpoint policy permits it. |
 | `GET` | `/api/model-columns` | Owner | Read columns for an authorized model/table. |
 | `GET`, `POST` | `/api/relationships` | Owner | Read or create project model relationships. |
-| `POST` | `/api/relationships/delete` | Owner | Delete an authorized model relationship. |
-| `GET`, `POST` | `/api/models` | Owner | Read or create project data models. |
+| `GET` | `/api/relationships/deletion-impact` | Owner | Inspect one app-scoped relationship and verify its exact database constraint before removal. |
+| `POST` | `/api/relationships/delete` | Owner | Remove one confirmed relationship, then verify registry and canonical state reconstruction. |
+| `GET`, `POST`, `PATCH`, `DELETE` | `/api/models` | Owner | Read/create models, update custom fields, or remove one confirmed custom field after dependency and state checks. |
+| `GET` | `/api/models/field-impact` | Owner | Inspect stored values and relationship dependencies before removing a custom field. |
 | `POST` | `/api/models/rls` | Owner | Update row-level security settings for an authorized model. |
 | `GET`, `POST` | `/api/assets` | Owner | Read or create project assets. |
+
+My Services and My Environment records are stored app-scoped in application setup data and are also returned by `feltus.infrastructure/v1`. Database, sign-in, and storage entries are metadata only; no external credentials or provider mutations are supported. Endpoint statuses mean `Not checked`, `Reachable`, `Needs attention`, or `Unavailable` and reflect the saved observation, not an integration or deployment claim.
 
 The project code is the source of truth for request/response fields. There is no generated OpenAPI document in this revision. Use `npm run check` and `npm run regression` after route changes.
 
 ## Error and operational behavior
 
-Protected routes return `401` without a valid owner session. Invalid/unauthorized project references are rejected by server-side ownership checks and database row-level security. Rate-limited operations return `429` with retry timing. Responses carry `X-Request-ID`; use it to correlate supported activity/error telemetry. `/api/health` can remain healthy while `/api/ready` reports unavailable dependencies.
+Protected routes return `401` without a valid FELTUS session. Invalid or unauthorized workspace/project references are rejected by server-side permission checks and database row-level security. Rate-limited operations return `429` with retry timing. Responses carry `X-Request-ID`; use it to correlate supported activity/error telemetry. `/api/health` can remain healthy while `/api/ready` reports unavailable dependencies.
 
 ## AI data boundary
 

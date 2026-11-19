@@ -1,4 +1,4 @@
-﻿import http from "node:http";
+import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -12,18 +12,63 @@ import { composeAIPrompt } from "./lib/feltus-ai-prompt.js";
 import { createAIProvider, publicRuntimeMetadata } from "./lib/feltus-ai-providers.js";
 import { BUILT_IN_TOOLS, executeBuiltInTool, toolByKey } from "./lib/feltus-tools.js";
 import { createFeltusCodeHandlers } from "./feltus-code/server/routes.mjs";
+import { resolveChangeSetSelection } from "./feltus-code/server/change-set.mjs";
+import { productionizationChangeSetFingerprint } from "./feltus-code/server/repository-productionization.mjs";
+import {
+  evaluateReleaseReadiness,
+  normalizeSourceIdentity,
+  readinessBindings,
+  RELEASE_READINESS_CONTRACT,
+  resolveStoredReleaseReadiness
+} from "./feltus-code/server/release-readiness.mjs";
+import { createPortableApplicationExport } from "./feltus-code/server/portable-export.mjs";
 import { createFeltusCodeAIGateway } from "./feltus-code/server/ai-gateway.mjs";
 import { runValidatedAgent } from "./feltus-code/server/agent-workflow.mjs";
 import { assertNoSymlinkTraversal } from "./feltus-code/server/security.mjs";
-import { createAppWizardHandler, isAppShellRoute } from "./lib/feltus-app-wizard.js";
+import { buildStudioContext } from "./feltus-code/server/studio-context.mjs";
+import { runStudioAgent } from "./feltus-code/server/studio-workflow.mjs";
+import { createPreviewManager } from "./feltus-code/server/preview-manager.mjs";
+import { createDockerPreviewLauncher } from "./feltus-code/server/docker-preview-runner.mjs";
+import { isLocalSourceSeedingEnabled, seedLocalCodeWorkspace } from "./feltus-code/server/local-source-seeder.mjs";
+import { requireStudioCapability, studioCapabilities } from "./feltus-code/server/studio-capabilities.mjs";
+import { createAppWizardHandler, isAppShellRoute, validateSetupData } from "./lib/feltus-app-wizard.js";
+import { resolveApplicationLifecycleStatus } from "./lib/feltus-application-state.js";
 import { createApplicationStateHandler } from "./lib/feltus-application-state-api.js";
+import { createGeneratedAppAuthHandler } from "./lib/feltus-generated-app-auth.js";
+import { createAppBackupHandler } from "./lib/feltus-app-backup-restore.js";
 import { createGithubApiHandler } from "./lib/feltus-github-api.js";
+import { createTeamApiHandler } from "./lib/feltus-team-api.js";
+import {
+  applyInfrastructureRepositoryVerification,
+  resolveInfrastructureContract
+} from "./lib/feltus-infrastructure-contract.js";
+import { removeApplicationLocalFiles } from "./lib/feltus-application-filesystem-cleanup.js";
+import { handleDataModelApiRoute, handleRelationshipDeletionApiRoute } from "./lib/feltus-data-model-api.js";
+import { createDesignStudioLifecycle } from "./feltus-code/server/design-studio-lifecycle.mjs";
+import { componentSyncSummary, designStateHash, reconcileDesignSource, validateDesignState } from "./feltus-code/server/design-studio.mjs";
+import { deserializeDesignStateFromSetupData, serializeDesignStateForSetupData } from "./lib/feltus-design-state-storage.js";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, "..");
+const landingAssetTypes = new Map([
+  [".css", "text/css; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".gif", "image/gif"],
+  [".ico", "image/x-icon"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
+  [".ttf", "font/ttf"]
+]);
 
 /* ============================================================
    FELTUS PRIVATE DOCUMENT STORAGE
@@ -136,9 +181,10 @@ const OWNER_EMAIL =
   (process.env.FELTUS_OWNER_EMAIL || "")
     .trim()
     .toLowerCase();
+const TEAMS_ENABLED = process.env.FELTUS_TEAMS_ENABLED === "true";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const SESSION_COOKIE = "__Host-feltus_session";
-const ownerSessions = new Map();
+const userSessions = new Map();
 const loginFailures = new Map();
 const operationRateLimits = new Map();
 const requestContext = new AsyncLocalStorage();
@@ -160,7 +206,11 @@ const CODE_WORKSPACE_ROOT = path.resolve(
   process.env.FELTUS_CODE_WORKSPACE_ROOT ||
     path.join(STORAGE_ROOT, "code-workspaces")
 );
+const CODE_LOCAL_SOURCE_ROOT = LOCAL_DEV_MODE && process.env.FELTUS_CODE_LOCAL_SOURCE_ROOT
+  ? path.resolve(process.env.FELTUS_CODE_LOCAL_SOURCE_ROOT)
+  : null;
 fs.mkdirSync(CODE_WORKSPACE_ROOT, { recursive: true });
+const codePreviewManagers = new Map();
 const canonicalCodeWorkspaceRoot = fs.realpathSync(CODE_WORKSPACE_ROOT);
 if (
   process.platform === "win32"
@@ -1867,17 +1917,17 @@ function loginAttemptKey(req, email = "") {
   return `${clientAddress(req)}:${String(email).trim().toLowerCase().slice(0, 320)}`;
 }
 
-async function authenticateOwnerSession(req) {
+async function authenticateUserSession(req) {
   const sessionId = parseCookie(req, SESSION_COOKIE);
 
   if (!sessionId || !/^[A-Za-z0-9_-]{40,}$/.test(sessionId)) {
     return null;
   }
 
-  const session = ownerSessions.get(sessionId);
+  const session = userSessions.get(sessionId);
 
   if (!session || session.cookieExpiresAt <= Date.now()) {
-    ownerSessions.delete(sessionId);
+    userSessions.delete(sessionId);
     return null;
   }
 
@@ -1902,7 +1952,7 @@ async function authenticateOwnerSession(req) {
         !result.data?.access_token ||
         !result.data?.refresh_token
       ) {
-        ownerSessions.delete(sessionId);
+        userSessions.delete(sessionId);
         return null;
       }
 
@@ -1912,7 +1962,7 @@ async function authenticateOwnerSession(req) {
         id: sessionId
       });
     } catch {
-      ownerSessions.delete(sessionId);
+      userSessions.delete(sessionId);
       return null;
     }
   }
@@ -1920,7 +1970,40 @@ async function authenticateOwnerSession(req) {
   return session;
 }
 
-async function establishOwnerSession(credentials) {
+async function authenticatedUserCanStartSession(authenticated) {
+  const userId = authenticated?.user?.id;
+  const email = String(authenticated?.user?.email || "").trim().toLowerCase();
+  if (!userId || !email) return false;
+  if (email === OWNER_EMAIL) return true;
+  if (!TEAMS_ENABLED) return false;
+
+  const membership = await serviceRequest(
+    "/rest/v1/feltus_organization_memberships?" + new URLSearchParams({
+      select: "id",
+      user_id: "eq." + userId,
+      status: "eq.active",
+      limit: "1"
+    })
+  );
+  if (membership.status >= 200 && membership.status < 300 && Array.isArray(membership.data) && membership.data.length) {
+    return true;
+  }
+
+  const invitation = await serviceRequest(
+    "/rest/v1/feltus_workspace_invitations?" + new URLSearchParams({
+      select: "id",
+      email: "eq." + email,
+      accepted_at: "is.null",
+      revoked_at: "is.null",
+      expires_at: "gt." + new Date().toISOString(),
+      limit: "1"
+    })
+  );
+  return invitation.status >= 200 && invitation.status < 300 &&
+    Array.isArray(invitation.data) && invitation.data.length > 0;
+}
+
+async function establishUserSession(credentials) {
   const authenticated = await login(credentials);
   const authenticatedEmail =
     String(authenticated.user?.email || "")
@@ -1929,10 +2012,10 @@ async function establishOwnerSession(credentials) {
 
   if (
     !authenticatedEmail ||
-    authenticatedEmail !== OWNER_EMAIL ||
+    !await authenticatedUserCanStartSession(authenticated) ||
     !authenticated.refresh_token
   ) {
-    throw new Error("Owner authentication failed.");
+    throw new Error("Authentication failed.");
   }
 
   const id = crypto.randomBytes(32).toString("base64url");
@@ -1944,7 +2027,7 @@ async function establishOwnerSession(credentials) {
     cookieExpiresAt
   };
 
-  ownerSessions.set(id, session);
+  userSessions.set(id, session);
   return session;
 }
 
@@ -2010,7 +2093,7 @@ async function renewSession() {
       !result.data?.access_token ||
       !result.data?.refresh_token
     ) {
-      ownerSessions.delete(session.id);
+      userSessions.delete(session.id);
       setActiveSession(null);
       throw new Error("Authentication required.");
     }
@@ -2021,7 +2104,7 @@ async function renewSession() {
       id: session.id
     });
 
-    ownerSessions.set(session.id, session);
+    userSessions.set(session.id, session);
     setActiveSession(session);
     return session;
   }
@@ -2036,12 +2119,14 @@ async function tableRequest(
   method,
   {
     body = null,
-    query = ""
+    query = "",
+    prefer = "return=representation",
+    accessToken = null
   } = {}
 ) {
-  if (
+  if (!accessToken && (
     !activeSession()?.access_token
-  ) {
+  )) {
     await renewSession();
   }
 
@@ -2049,7 +2134,7 @@ async function tableRequest(
     async () => {
       const headers = {
         Authorization:
-          `Bearer ${activeSession().access_token}`
+          `Bearer ${accessToken || activeSession().access_token}`
       };
 
       if (
@@ -2059,8 +2144,7 @@ async function tableRequest(
         headers["Content-Type"] =
           "application/json";
 
-        headers.Prefer =
-          "return=representation";
+        headers.Prefer = prefer;
       }
 
       return upstream(
@@ -2082,9 +2166,7 @@ async function tableRequest(
   let result =
     await execute();
 
-  if (
-    result.status === 401
-  ) {
+  if (result.status === 401 && !accessToken) {
     await renewSession();
 
     result =
@@ -2155,44 +2237,193 @@ async function serviceRequest(
 }
 
 
-async function authorizedProject(appId) {
+async function authorizedProject(appId, { activeOnly = false } = {}) {
   if (typeof appId !== "string" || !UUID_PATTERN.test(appId)) {
     return null;
   }
   const result = await tableRequest("feltus_applications", "GET", {
     query:
-      "?select=id,app_name,environment,owner_id" +
+      "?select=id,app_name,app_type,environment,owner_id,organization_id,lifecycle_status,setup_status" +
       "&id=eq." + encodeURIComponent(appId) +
       "&limit=1"
   });
-  return result.status >= 200 && result.status < 300 && Array.isArray(result.data)
+  const app = result.status >= 200 && result.status < 300 && Array.isArray(result.data)
     ? result.data[0] || null
     : null;
+  const lifecycle = resolveApplicationLifecycleStatus(app);
+  if (!app || !["active", "archived"].includes(lifecycle)) return null;
+  if (activeOnly && lifecycle !== "active") return null;
+  return app;
 }
 
 async function authorizedCodeProject(appId, permission = "read") {
   const app = await authorizedProject(appId);
   const actorId = activeSession()?.user?.id;
   if (!app || !actorId) return null;
-  if (permission === "read" || app.owner_id === actorId) return app;
+  const isRead = permission === "read" || permission === "canViewCode";
+  if (app.lifecycle_status === "archived" && !isRead) return null;
+  let role = app.owner_id === actorId ? "owner" : "viewer";
+  let projectRole = null;
+  let permissions = [];
+  let active = true;
+  let membershipFound = role === "owner";
 
-  const membershipResult = await tableRequest("feltus_project_memberships", "GET", {
-    query:
-      "?select=role,permissions,disabled_at" +
-      "&app_id=eq." + encodeURIComponent(appId) +
-      "&user_id=eq." + encodeURIComponent(actorId) +
-      "&limit=1"
-  });
-  const membership = Array.isArray(membershipResult.data) ? membershipResult.data[0] : null;
-  if (membershipResult.status < 200 || membershipResult.status >= 300 || !membership || membership.disabled_at) return null;
-  const writeRoles = new Set(["owner", "admin", "developer", "operator"]);
-  const explicitWrite = membership.permissions?.write === true;
-  return writeRoles.has(membership.role) || explicitWrite ? app : null;
+  if (role !== "owner") {
+    const membershipResult = await tableRequest("feltus_project_memberships", "GET", {
+      query:
+        "?select=role,permissions,disabled_at" +
+        "&app_id=eq." + encodeURIComponent(appId) +
+        "&user_id=eq." + encodeURIComponent(actorId) +
+        "&limit=1"
+    });
+    const membership = Array.isArray(membershipResult.data) ? membershipResult.data[0] : null;
+    if (membershipResult.status >= 200 && membershipResult.status < 300 && membership) {
+      membershipFound = true;
+      projectRole = membership.role;
+      permissions = membership.permissions || [];
+      active = !membership.disabled_at;
+    } else if (app.organization_id) {
+      const organizationResult = await tableRequest("feltus_organization_memberships", "GET", {
+        query:
+          "?select=status,role:feltus_roles(role_key)" +
+          "&organization_id=eq." + encodeURIComponent(app.organization_id) +
+          "&user_id=eq." + encodeURIComponent(actorId) +
+          "&limit=1"
+      });
+      const organizationMembership = Array.isArray(organizationResult.data) ? organizationResult.data[0] : null;
+      membershipFound = Boolean(organizationMembership);
+      role = organizationMembership?.role?.role_key || organizationMembership?.role?.[0]?.role_key || role;
+      active = organizationMembership?.status ? organizationMembership.status === "active" : active;
+    }
+  }
+
+  if (!membershipFound) return null;
+
+  const capabilities = studioCapabilities({ role, projectRole, permissions, active });
+  const requiredCapability = permission === "read"
+    ? "canViewCode"
+    : permission === "write"
+      ? "canEditCode"
+      : permission;
+  if (!capabilities[requiredCapability]) return null;
+  return { ...app, studio_access: { role: capabilities.role, capabilities } };
 }
 
 function codeRepositoryRoot(appId) {
   if (!UUID_PATTERN.test(String(appId || ""))) throw Object.assign(new Error("Valid application ID required."), { status: 400, code: "INVALID_PROJECT_ID" });
   return path.join(CODE_WORKSPACE_ROOT, appId);
+}
+
+function codePreviewManager(appId) {
+  let manager = codePreviewManagers.get(appId);
+  if (!manager) {
+    const repoRoot = codeRepositoryRoot(appId);
+    const previewEnabled = !IS_PRODUCTION || process.env.FELTUS_PREVIEW_DOCKER_ENABLED === "1";
+    const launchIsolatedPreview = previewEnabled
+      ? createDockerPreviewLauncher({
+        workspaceRoot: CODE_WORKSPACE_ROOT,
+        scratchRoot: path.join(CODE_WORKSPACE_ROOT, ".preview-sandboxes"),
+        appId
+      })
+      : null;
+    manager = createPreviewManager({ repoRoot, launchIsolatedPreview });
+    codePreviewManagers.set(appId, manager);
+  }
+  return manager;
+}
+
+function codePermissionForRequest(route, method) {
+  if (method === "GET") return "canViewCode";
+  if (route === "/api/code/design/apply" || route === "/api/code/design/undo") return "canApplyAIChanges";
+  if (route === "/api/code/design/ai-proposal") return "canRunAgent";
+  if (route.startsWith("/api/code/release-readiness")) return "canRunAgent";
+  if (route.startsWith("/api/code/productionization")) return "canRunAgent";
+  if (route === "/api/code/preview/errors") return "canViewCode";
+  if (route === "/api/code/task" || route.startsWith("/api/code/preview/")) return "canUseTerminal";
+  if (route.startsWith("/api/code/ai/") && !route.endsWith("/apply")) return "canRunAgent";
+  if (route === "/api/code/change-set/apply" || route === "/api/code/change-set/undo" || route === "/api/code/change-set/reject" || route === "/api/code/ai/apply") return "canApplyAIChanges";
+  return "canEditCode";
+}
+
+async function readApplicationDesignData(appId, ownerId) {
+  const result = await tableRequest("feltus_applications", "GET", {
+    query: "?select=id,owner_id,setup_data,setup_updated_at&" +
+      "id=eq." + encodeURIComponent(appId) + "&owner_id=eq." + encodeURIComponent(ownerId) + "&limit=1"
+  });
+  if (result.status < 200 || result.status >= 300) throw Object.assign(new Error("Application Design State could not be loaded."), { status: result.status || 500, code: "DESIGN_STATE_STORAGE_UNAVAILABLE" });
+  const app = Array.isArray(result.data) ? result.data[0] : null;
+  if (!app) throw Object.assign(new Error("Application Design State is unavailable for this app."), { status: 404, code: "DESIGN_STATE_NOT_FOUND" });
+  const setupData = app.setup_data && typeof app.setup_data === "object" ? app.setup_data : {};
+  if (setupData.code?.design) setupData.code = { ...setupData.code, design: deserializeDesignStateFromSetupData(setupData.code.design) };
+  return { setup_data: setupData, setup_updated_at: app.setup_updated_at || null };
+}
+
+async function saveApplicationDesignData({ appId, ownerId, expectedStateHash, designState, undoRecord }) {
+  const current = await readApplicationDesignData(appId, ownerId);
+  const existing = current.setup_data?.code?.design;
+  const existingHash = existing ? designStateHash(validateDesignState(existing)) : null;
+  if (existingHash !== expectedStateHash) throw Object.assign(new Error("Design State changed while this proposal was open. Refresh Design Studio and try again."), { status: 409, code: "DESIGN_STATE_STALE" });
+  const next = JSON.parse(JSON.stringify(current.setup_data));
+  next.code = { ...(next.code && typeof next.code === "object" ? next.code : {}), design: serializeDesignStateForSetupData(validateDesignState(designState)) };
+  if (undoRecord) next.code.design_undo = undoRecord;
+  else delete next.code.design_undo;
+  validateSetupData(next);
+  const timestampFilter = current.setup_updated_at
+    ? "&setup_updated_at=eq." + encodeURIComponent(current.setup_updated_at)
+    : "&setup_updated_at=is.null";
+  const saved = await tableRequest("feltus_applications", "PATCH", {
+    query: "?id=eq." + encodeURIComponent(appId) + "&owner_id=eq." + encodeURIComponent(ownerId) + timestampFilter + "&select=id,setup_updated_at",
+    body: { setup_data: next, setup_updated_at: new Date().toISOString() }
+  });
+  if (saved.status < 200 || saved.status >= 300) throw Object.assign(new Error("Application Design State could not be saved."), { status: saved.status || 500, code: "DESIGN_STATE_SAVE_FAILED" });
+  if (!Array.isArray(saved.data) || !saved.data.length) throw Object.assign(new Error("Application setup data changed concurrently. Refresh Design Studio before saving."), { status: 409, code: "DESIGN_STATE_STALE" });
+  return { setup_data: next, setup_updated_at: saved.data[0].setup_updated_at || null };
+}
+
+async function loadCodeSchema(appId) {
+  const modelsResult = await tableRequest("feltus_models", "GET", {
+    query: "?select=id,logical_name,physical_table_name,rls_enabled,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.asc&limit=100"
+  });
+  const models = modelsResult.status >= 200 && modelsResult.status < 300 && Array.isArray(modelsResult.data) ? modelsResult.data : [];
+  const columnsResult = models.length ? await tableRequest("feltus_model_columns", "GET", {
+    query: "?select=id,model_id,column_name,data_type,is_nullable,ordinal_position&model_id=in.(" + models.map(model => model.id).join(",") + ")&order=ordinal_position.asc&limit=1000"
+  }) : { status: 200, data: [] };
+  const relationshipsResult = await tableRequest("feltus_model_relationships", "GET", {
+    query: "?select=id,source_model_id,source_column,target_model_id,target_column,on_delete_action,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.asc&limit=200"
+  });
+  const columns = columnsResult.status >= 200 && columnsResult.status < 300 && Array.isArray(columnsResult.data) ? columnsResult.data : [];
+  const relationships = relationshipsResult.status >= 200 && relationshipsResult.status < 300 && Array.isArray(relationshipsResult.data) ? relationshipsResult.data : [];
+  return {
+    models: models.map(model => ({ ...model, fields: columns.filter(column => column.model_id === model.id) })),
+    relationships
+  };
+}
+
+async function loadCodeActivity(appId, limit = 30) {
+  const result = await tableRequest("feltus_code_actions", "GET", {
+    query: "?select=id,actor_id,action_type,target_path,task_name,model,summary,result_status,details,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.desc&limit=" + Math.min(Math.max(Number(limit) || 30, 1), 100)
+  });
+  if (result.status < 200 || result.status >= 300) return [];
+  return Array.isArray(result.data) ? result.data : [];
+}
+
+async function loadCodeCheckpoints(appId) {
+  const result = await tableRequest("feltus_code_checkpoints", "GET", {
+    query: "?select=id,actor_id,git_commit,label,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.desc&limit=100"
+  });
+  if (result.status < 200 || result.status >= 300) return [];
+  return Array.isArray(result.data) ? result.data : [];
+}
+
+async function loadCodeVersion(appId) {
+  const [blueprints, builds, artifacts, deployments] = await Promise.all([
+    tableRequest("feltus_application_blueprints", "GET", { query: "?select=id,version,state_hash,source_commit,status,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=version.desc&limit=1" }),
+    tableRequest("feltus_builds", "GET", { query: "?select=id,blueprint_id,commit_sha,status,created_at,completed_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.desc&limit=1" }),
+    tableRequest("feltus_artifacts", "GET", { query: "?select=id,build_id,blueprint_id,verification_status,environment_eligibility,created_at&app_id=eq." + encodeURIComponent(appId) + "&order=created_at.desc&limit=1" }),
+    tableRequest("feltus_deployments", "GET", { query: "?select=id,environment,status,artifact_id,blueprint_id,created_at&app_id=eq." + encodeURIComponent(appId) + "&environment=eq.staging&order=created_at.desc&limit=1" })
+  ]);
+  const first = result => result.status >= 200 && result.status < 300 && Array.isArray(result.data) ? result.data[0] || null : null;
+  return { blueprint: first(blueprints), build: first(builds), artifact: first(artifacts), testing_deployment: first(deployments) };
 }
 
 async function ensureCodeSession(app, { create = true, title = "Code session", model = null } = {}) {
@@ -2274,6 +2505,7 @@ function codeStructuredError(res, error, fallbackStatus = 400) {
     ok: false,
     code: error?.code || "FELTUS_CODE_REQUEST_FAILED",
     error: status >= 500 ? "FELTUS CODE request failed." : (error?.message || "FELTUS CODE request failed."),
+    ...(error?.recovery ? { recovery: error.recovery } : {}),
     request_id: requestContext.getStore()?.requestId || null
   });
 }
@@ -2284,6 +2516,224 @@ function requestAbortController(req, res) {
   req.once("aborted", abort);
   res.once("close", () => { if (!res.writableEnded) abort(); });
   return controller;
+}
+
+function releaseReadinessNameList(value) {
+  const candidates = Array.isArray(value) ? value : [];
+  return [...new Set(candidates
+    .map(item => typeof item === "string" ? item : item?.name)
+    .filter(name => /^[A-Z][A-Z0-9_]*$/.test(String(name)))
+    .map(String))].sort();
+}
+
+function releaseReadinessMetadata(app, detectedEnvironmentVariables = []) {
+  const setup = app?.setup_data && typeof app.setup_data === "object" ? app.setup_data : {};
+  const declaration = setup.release_readiness && typeof setup.release_readiness === "object"
+    ? setup.release_readiness
+    : setup.code?.release_readiness && typeof setup.code.release_readiness === "object"
+      ? setup.code.release_readiness
+      : {};
+  const configuration = declaration.configuration && typeof declaration.configuration === "object"
+    ? declaration.configuration
+    : declaration;
+  const environment = declaration.environment && typeof declaration.environment === "object"
+    ? declaration.environment
+    : {};
+  return {
+    configuration: {
+      required: releaseReadinessNameList(configuration.required || configuration.required_configuration || declaration.required_environment_variables)
+        .map(name => ({ name, evidence_ref: "application.release_readiness.configuration" })),
+      configured_names: releaseReadinessNameList(configuration.configured_names || configuration.configured || configuration.environment_variables),
+      detected_environment_variables: releaseReadinessNameList([
+        ...(Array.isArray(configuration.detected_environment_variables) ? configuration.detected_environment_variables : []),
+        ...(Array.isArray(detectedEnvironmentVariables) ? detectedEnvironmentVariables : [])
+      ]),
+      evidence_refs: ["application.release_readiness.configuration"]
+    },
+    environment: {
+      required: environment.required === true,
+      configured: environment.configured === true,
+      environment_id: environment.environment_id || null,
+      environment_name: environment.environment_name || null,
+      target_id: environment.target_id || null,
+      scope_valid: environment.scope_valid !== false,
+      evidence_refs: ["application.release_readiness.environment"]
+    }
+  };
+}
+
+function releaseReadinessSourceIdentity(app, overview = {}, run = null) {
+  const classification = overview.classification || {};
+  return normalizeSourceIdentity({
+    application_id: app.id,
+    workspace_id: run?.source_workspace_id || classification.source_workspace_id || overview.source_workspace_id,
+    branch: run?.source_branch || classification.source_branch || overview.source_branch,
+    checkpoint: run?.source_checkpoint_id || classification.source_checkpoint_id || overview.source_checkpoint || run?.source_commit || classification.source_commit,
+    source_commit: run?.source_commit || classification.source_commit || overview.source_checkpoint,
+    source_snapshot_sha256: run?.source_snapshot_sha256 || classification.source_snapshot_sha256 || overview.source_snapshot_sha256,
+    source_snapshot_complete: run?.source_snapshot_complete ?? classification.source_snapshot_complete ?? overview.contract_protection?.source_snapshot_complete,
+    classifier_version: run?.classifier_version || classification.classifier_version
+  });
+}
+
+async function loadApplicationInfrastructure(app, sourceIdentity) {
+  const loadRows = async (table, params) => {
+    const result = await tableRequest(table, "GET", { query: `?${new URLSearchParams(params)}` });
+    if (!result || result.status < 200 || result.status >= 300) {
+      throw Object.assign(new Error("Infrastructure evidence could not be loaded."), {
+        code: "INFRASTRUCTURE_EVIDENCE_UNAVAILABLE"
+      });
+    }
+    return Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+  };
+  const [targets, repoLinks, deployments, observations, models, buildWorkers, deploymentWorkers] = await Promise.all([
+    loadRows("feltus_deployment_targets", { select: "id,environment_id,provider_key,provider_resource_reference,active", app_id: `eq.${app.id}`, active: "eq.true", limit: "20" }),
+    loadRows("feltus_project_repositories", { select: "repository_id", app_id: `eq.${app.id}`, limit: "20" }),
+    loadRows("feltus_deployments", { select: "id,status,environment,created_at", app_id: `eq.${app.id}`, order: "created_at.desc", limit: "100" }),
+    loadRows("feltus_observed_application_states", { select: "id,health,observed_at", app_id: `eq.${app.id}`, order: "observed_at.desc", limit: "20" }),
+    loadRows("feltus_models", { select: "id", app_id: `eq.${app.id}`, limit: "500" }),
+    loadRows("feltus_worker_heartbeats", { select: "worker_type,status,last_seen_at", worker_type: "eq.build", status: "eq.online", limit: "5" }),
+    loadRows("feltus_worker_heartbeats", { select: "worker_type,status,last_seen_at,metadata", worker_type: "eq.core", status: "in.(online,degraded)", limit: "5" })
+  ]);
+  const repositoryIds = [...new Set(repoLinks.map(link => link.repository_id).filter(Boolean))];
+  const repositories = repositoryIds.length
+    ? await loadRows("feltus_repositories", {
+        select: "id,repository_name,default_branch,archived_at",
+        id: `in.(${repositoryIds.join(",")})`,
+        archived_at: "is.null"
+      })
+    : [];
+  const cutoff = Date.now() - 90_000;
+  const buildWorkerReady = process.env.FELTUS_BUILD_RUNNER_ENABLED === "true" && buildWorkers.some(worker =>
+    worker.worker_type === "build" && worker.status === "online" &&
+    Date.parse(worker.last_seen_at) >= Date.now() - 120_000
+  );
+  const deploymentWorker = deploymentWorkers.find(worker => worker.worker_type === "core" &&
+    ["online", "degraded"].includes(worker.status) &&
+    Date.parse(worker.last_seen_at) >= cutoff &&
+    worker.metadata?.infrastructure_outbox === "enabled" &&
+    !worker.metadata?.infrastructure_error_code);
+  const contract = resolveInfrastructureContract({
+    app,
+    inputs: { targets, repoLinks, repositories, deployments, observations, models },
+    buildWorkerReady,
+    deploymentWorkerReady: Boolean(deploymentWorker),
+    deploymentWorkerEnvironments: Array.isArray(deploymentWorker?.metadata?.infrastructure_environments)
+      ? deploymentWorker.metadata.infrastructure_environments
+      : []
+  });
+  const repositoryId = repositoryIds.length === 1 && repositories.some(repository => repository.id === repositoryIds[0])
+    ? repositoryIds[0]
+    : null;
+  let remoteVerification;
+  if (repositoryIds.length > 1) {
+    remoteVerification = { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_REPOSITORY_AMBIGUOUS" };
+  } else if (repositoryIds.length === 1 && !repositoryId) {
+    remoteVerification = { status: "REMOTE_UNAVAILABLE", error_code: "REMOTE_REPOSITORY_UNAVAILABLE" };
+  } else if (repositoryId) {
+    remoteVerification = await handleGithubApi.verifyRemoteBranch({
+      app,
+      repositoryId,
+      branch: sourceIdentity?.branch,
+      expectedCommit: sourceIdentity?.source_commit || sourceIdentity?.checkpoint
+    });
+  } else {
+    remoteVerification = { status: "NOT_CONNECTED" };
+  }
+  return applyInfrastructureRepositoryVerification(contract, remoteVerification);
+}
+
+async function releaseReadinessDesignEvidence({ app, code, sourceIdentity }) {
+  const stored = await readApplicationDesignData(app.id, app.owner_id);
+  const persisted = stored.setup_data?.code?.design || null;
+  if (!persisted) {
+    return {
+      applicable: false,
+      evidence_refs: ["application.design_state:none"]
+    };
+  }
+  const designState = validateDesignState(persisted);
+  const context = await code.designSourceContext({
+    applicationId: app.id,
+    sourceIdentity: {
+      checkpoint: sourceIdentity.checkpoint,
+      snapshot_sha256: sourceIdentity.source_snapshot_sha256,
+      classifier_version: sourceIdentity.classifier_version
+    }
+  });
+  const source = context.result.source_identity || {};
+  const designSourceIdentity = normalizeSourceIdentity({
+    application_id: app.id,
+    workspace_id: source.workspace_id,
+    branch: source.branch,
+    checkpoint: source.checkpoint,
+    source_commit: source.checkpoint,
+    source_snapshot_sha256: source.snapshot_sha256,
+    source_snapshot_complete: context.result.snapshot?.complete,
+    classifier_version: source.classifier_version
+  });
+  const reconciliation = reconcileDesignSource(designState, context.result.files || [], {
+    commit: designSourceIdentity.checkpoint,
+    workspace_id: designSourceIdentity.workspace_id,
+    branch: designSourceIdentity.branch,
+    snapshot_sha256: designSourceIdentity.source_snapshot_sha256,
+    classifier_version: designSourceIdentity.classifier_version,
+    clean: source.source_clean !== false
+  });
+  return {
+    applicable: true,
+    design_state_hash: designStateHash(designState),
+    source_identity: designSourceIdentity,
+    components: reconciliation.state.components,
+    reconciliation: reconciliation.decisions,
+    sync_summary: reconciliation.summary || componentSyncSummary(reconciliation.state),
+    conflict: reconciliation.summary?.stylesheet_reconciliation_required > 0,
+    evidence_refs: [
+      `design.state:${designStateHash(designState)}`,
+      `design.source:${designSourceIdentity.source_snapshot_sha256 || "unknown"}`
+    ]
+  };
+}
+
+async function releaseReadinessCurrentContext({ app, code, overview = null }) {
+  const currentOverview = overview || (await code.productionizationOverview({ applicationId: app.id })).result;
+  const sourceIdentity = releaseReadinessSourceIdentity(app, currentOverview);
+  const metadata = releaseReadinessMetadata(app, currentOverview.environment_variable_names);
+  const [design, infrastructure] = await Promise.all([
+    releaseReadinessDesignEvidence({ app, code, sourceIdentity }),
+    loadApplicationInfrastructure(app, sourceIdentity)
+  ]);
+  return {
+    source_identity: sourceIdentity,
+    classification: currentOverview.classification || {},
+    configuration: metadata.configuration,
+    environment: metadata.environment,
+    source_clean: currentOverview.source_clean !== false,
+    design,
+    infrastructure,
+    bindings: readinessBindings({
+      configuration: metadata.configuration,
+      environment: metadata.environment,
+      design,
+      infrastructure
+    })
+  };
+}
+
+function recordedCodeCheckpoint(checkpoints, sourceCommit) {
+  const expected = String(sourceCommit || "").toLowerCase();
+  return /^[0-9a-f]{40,64}$/.test(expected) && checkpoints.some(checkpoint =>
+    String(checkpoint.git_commit || "").toLowerCase() === expected
+  );
+}
+
+function latestReleaseReadinessEvaluation(actions) {
+  return actions.find(action => action.action_type === "release_readiness.evaluated" &&
+    action.details?.release_readiness?.contract === RELEASE_READINESS_CONTRACT) || null;
+}
+
+function currentProductionizationPlan(actions) {
+  return actions.find(action => ["productionization.plan", "productionization.propose"].includes(action.action_type) && action.details?.plan_id) || null;
 }
 
 async function handleFeltusCodeRequest(req, res, url) {
@@ -2299,7 +2749,7 @@ async function handleFeltusCodeRequest(req, res, url) {
     const contentTypes = { "feltus-code.js": "text/javascript; charset=utf-8", "feltus-code.css": "text/css; charset=utf-8" };
     if (!Object.hasOwn(contentTypes, asset)) { send(res, 404, { error: "Code asset not found." }); return true; }
     const content = await fs.promises.readFile(path.join(projectRoot, "src", "feltus-code", "web", asset));
-    res.writeHead(200, { "Content-Type": contentTypes[asset], "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+    res.writeHead(200, { "Content-Type": contentTypes[asset], "Cache-Control": "public, max-age=0, must-revalidate", "X-Content-Type-Options": "nosniff" });
     res.end(content);
     return true;
   }
@@ -2311,13 +2761,20 @@ async function handleFeltusCodeRequest(req, res, url) {
     send(res, 405, { code: "METHOD_NOT_ALLOWED", error: "Method not allowed." });
     return true;
   }
-  const limit = consumeOperationRateLimit(req, "feltus-code", 120, 60 * 60 * 1000);
+  const isPreviewProxy = /^\/api\/code\/preview\/proxy\/[0-9a-f-]{36}(\/.*)?$/i.test(url.pathname);
+
+  const limit = isPreviewProxy
+
+    ? consumeOperationRateLimit(req, "feltus-code-preview-proxy", 1200, 60 * 60 * 1000)
+
+    : consumeOperationRateLimit(req, "feltus-code", 120, 60 * 60 * 1000);
   if (!limit.allowed) { sendRateLimitResponse(res, limit); return true; }
 
   let codePlanStreamStarted = false;
   try {
     const body = method === "GET" ? {} : await readBody(req, 2 * 1024 * 1024);
-    const appId = body.app_id || url.searchParams.get("app_id");
+    const previewProxyMatch = /^\/api\/code\/preview\/proxy\/([0-9a-f-]{36})(\/.*)?$/i.exec(url.pathname);
+    const appId = body.app_id || url.searchParams.get("app_id") || previewProxyMatch?.[1];
     if (!appId || !UUID_PATTERN.test(appId)) {
       send(res, 400, { code: "INVALID_PROJECT_ID", error: "Valid FELTUS project ID required." });
       return true;
@@ -2325,8 +2782,7 @@ async function handleFeltusCodeRequest(req, res, url) {
     const route = url.pathname;
     const workspaceRoute = route === "/api/code/workspace";
     const sessionRoute = route === "/api/code/session";
-    const readOnlyRoute = method === "GET";
-    const permission = readOnlyRoute ? "read" : "write";
+    const permission = codePermissionForRequest(previewProxyMatch ? "/api/code/preview/proxy" : route, method);
     const app = await authorizedCodeProject(appId, permission);
     if (!app) {
       send(res, 404, { code: "PROJECT_ACCESS_DENIED", error: "FELTUS project not found or access denied." });
@@ -2355,8 +2811,62 @@ async function handleFeltusCodeRequest(req, res, url) {
         send(res, 200, { ok: true, initialized: exists && git.available, git_available: git.available });
         return true;
       }
-      if (method !== "POST" || body.action !== "initialize") {
+      if (method !== "POST") {
         send(res, 400, { code: "WORKSPACE_ACTION_REQUIRED", error: "Use action=initialize to create this project's private code workspace." });
+        return true;
+      }
+      if (body.action === "seed_local") {
+        const developmentSeedEnabled = isLocalSourceSeedingEnabled({
+          environment: FELTUS_ENV,
+          localDevMode: LOCAL_DEV_MODE,
+          sourceRoot: CODE_LOCAL_SOURCE_ROOT
+        });
+        if (!developmentSeedEnabled) {
+          send(res, 404, { code: "LOCAL_SOURCE_SEED_UNAVAILABLE", error: "Local source seeding is available only in local development." });
+          return true;
+        }
+        const result = await seedLocalCodeWorkspace({
+          appId: app.id,
+          sourceRoot: CODE_LOCAL_SOURCE_ROOT,
+          sourcePath: body.source_path,
+          workspaceRoot: CODE_WORKSPACE_ROOT,
+          development: developmentSeedEnabled
+        });
+        const code = createFeltusCodeHandlers({ repoRoot });
+        const gitStatus = await code.gitStatus();
+        if (!gitStatus.ok) throw Object.assign(new Error("The seeded private Git workspace could not be verified."), { code: "CODE_WORKSPACE_VERIFY_FAILED", status: 500 });
+        const session = await ensureCodeSession(app, { title: body.title || app.app_name });
+        await recordCodeAction(app, session, {
+          actionType: "workspace.seed_local",
+          summary: result.already_seeded
+            ? "Reused the existing local development workspace seed"
+            : "Seeded private CODE workspace from an approved local development project",
+          details: {
+            source_path: result.source_path,
+            seeded_file_count: result.seeded_file_count,
+            baseline_commit: result.baseline_commit || null,
+            already_seeded: result.already_seeded,
+            development_only: true
+          }
+        });
+        send(res, 200, {
+          ok: true,
+          workspace: {
+            initialized: true,
+            git_available: true,
+            status: "ready",
+            source_path: result.source_path,
+            seeded_file_count: result.seeded_file_count,
+            baseline_commit: result.baseline_commit || null,
+            already_seeded: result.already_seeded
+          },
+          result,
+          session
+        });
+        return true;
+      }
+      if (body.action !== "initialize") {
+        send(res, 400, { code: "WORKSPACE_ACTION_REQUIRED", error: "Use action=initialize or the development-only seed_local action." });
         return true;
       }
       fs.mkdirSync(CODE_WORKSPACE_ROOT, { recursive: true });
@@ -2375,9 +2885,501 @@ async function handleFeltusCodeRequest(req, res, url) {
       return true;
     }
     await assertNoSymlinkTraversal(CODE_WORKSPACE_ROOT, app.id);
-    const session = method === "GET" ? null : await ensureCodeSession(app, { title: app.app_name });
+    const session = method === "GET" || route === "/api/code/preview/errors"
+      ? null
+      : await ensureCodeSession(app, { title: app.app_name });
     const code = createFeltusCodeHandlers({ repoRoot });
+    code.loadDesignCapabilities = async () => {
+      const schema = await loadCodeSchema(app.id);
+      return {
+        models: schema.models || [],
+        relationships: schema.relationships || [],
+        knowledge_documents: Boolean(app.setup_data?.knowledge?.documents?.length || app.setup_data?.knowledge_documents?.length)
+      };
+    };
     const requestSignal = requestAbortController(req, res).signal;
+
+    if (route.startsWith("/api/code/design")) {
+      const design = createDesignStudioLifecycle({
+        app,
+        code,
+        userId: activeSession()?.user?.id,
+        readState: () => readApplicationDesignData(app.id, app.owner_id),
+        saveState: options => saveApplicationDesignData({ appId: app.id, ownerId: app.owner_id, ...options }),
+        recordAction: details => recordCodeAction(app, session, details)
+      });
+      try {
+        if (route === "/api/code/design" && method === "GET") {
+          send(res, 200, await design.get());
+          return true;
+        }
+        if (route === "/api/code/design/initialize" && method === "POST") {
+          send(res, 200, await design.initialize());
+          return true;
+        }
+        if (route === "/api/code/design/reconcile" && method === "POST") {
+          send(res, 200, await design.reconcile());
+          return true;
+        }
+        if (route === "/api/code/design/proposal" && method === "POST") {
+          send(res, 200, await design.propose({ actions: body.actions, base_state_hash: body.base_state_hash, summary: body.summary }));
+          return true;
+        }
+        if (route === "/api/code/design/ai-proposal" && method === "POST") {
+          const aiLimit = consumeOperationRateLimit(req, "feltus-design-ai", LOCAL_DEV_MODE ? 200 : 10, 60 * 60 * 1000);
+          if (!aiLimit.allowed) { sendRateLimitResponse(res, aiLimit); return true; }
+          const { ai, policy } = await createConfiguredAI();
+          if (!policy.sendProjectContext) throw Object.assign(new Error("The AI trust policy does not allow sending application design context."), { status: 403, code: "AI_CODE_CONTEXT_NOT_APPROVED" });
+          const requestedModel = String(body.model || ai.model);
+          const installed = await ai.listModels();
+          if (!installed.some(model => model.name === requestedModel)) throw Object.assign(new Error("Selected model is not available on the configured FELTUS AI runtime."), { status: 400, code: "FELTUS_AI_MODEL_NOT_INSTALLED" });
+          const aiHandlers = createFeltusCodeHandlers({ repoRoot, aiGateway: createFeltusCodeAIGateway(ai) });
+          const response = await design.proposeAI({
+            prompt: body.prompt,
+            base_state_hash: body.base_state_hash,
+            selected_page_id: body.selected_page_id || null,
+            selected_component_id: body.selected_component_id || null,
+            responsive_target: body.responsive_target || "desktop",
+            aiProposal: async input => (await aiHandlers.aiDesignProposal({ ...input, model: requestedModel, signal: requestSignal })).result
+          });
+          if (response.blocked) {
+            await recordCodeAction(app, session, { actionType: "design.ai.proposal", model: requestedModel, prompt: body.prompt, summary: response.message, resultStatus: "blocked", details: { blocked: true, component_id: body.selected_component_id || null, page_id: body.selected_page_id || null } });
+          } else {
+            await recordCodeAction(app, session, { actionType: "design.ai.proposal", model: requestedModel, prompt: body.prompt, summary: response.proposal.summary, details: { proposal_id: response.proposal.id, scope: response.proposal.scope, component_id: body.selected_component_id || null, page_id: body.selected_page_id || null } });
+          }
+          send(res, 200, response);
+          return true;
+        }
+        if (route === "/api/code/design/review" && method === "POST") {
+          send(res, 200, await design.review({ proposal_id: body.proposal_id }));
+          return true;
+        }
+        if (route === "/api/code/design/apply" && method === "POST") {
+          send(res, 200, await design.apply({ proposal_id: body.proposal_id, confirm_review: body.confirm_review === true, signal: requestSignal }));
+          return true;
+        }
+        if (route === "/api/code/design/undo" && method === "POST") {
+          send(res, 200, await design.undo({ signal: requestSignal }));
+          return true;
+        }
+        send(res, 404, { ok: false, code: "DESIGN_ROUTE_NOT_FOUND", error: "Design Studio route not found." });
+        return true;
+      } catch (error) {
+        send(res, error.status || 400, {
+          ok: false,
+          code: error.code || "DESIGN_STUDIO_REQUEST_FAILED",
+          error: error.message || "Design Studio request failed.",
+          ...(error.guardrail ? { guardrail: error.guardrail } : {}),
+          ...(error.path ? { path: error.path } : {}),
+          ...(error.contract_review ? { contract_review: error.contract_review } : {}),
+          ...(error.validation ? { validation: error.validation } : {}),
+          ...(error.rollback_error ? { rollback_error: error.rollback_error } : {})
+        });
+        return true;
+      }
+    }
+
+    if (route === "/api/code/capabilities" && method === "GET") {
+      const currentUser = activeSession()?.user || {};
+      const userId = String(currentUser.id || "");
+      send(res, 200, {
+        ok: true,
+        role: app.studio_access.role,
+        capabilities: app.studio_access.capabilities,
+        is_app_owner: app.owner_id === userId,
+        current_actor: { id: userId, label: String(currentUser.email || `User ${userId.slice(0, 8)}`).slice(0, 160) }
+      }); return true;
+    }
+    if (route === "/api/code/activity" && method === "GET") {
+      send(res, 200, { ok: true, actions: await loadCodeActivity(app.id, url.searchParams.get("limit")) }); return true;
+    }
+    if (route === "/api/code/productionization" && method === "GET") {
+      const [overview, actions] = await Promise.all([
+        code.productionizationOverview({ applicationId: app.id }),
+        loadCodeActivity(app.id, 100)
+      ]);
+      const latestRun = actions.find(action => String(action.action_type || "").startsWith("productionization.")) || null;
+      const savedRun = latestRun?.details?.productionization_run || null;
+      const linkedApply = savedRun && actions.find(action => action.action_type === "ai.change_set.apply" && action.details?.productionization_run_id === savedRun.run_id);
+      const linkedCheckpoint = savedRun && actions.find(action => action.action_type === "git.checkpoint" && action.details?.productionization_run_id === savedRun.run_id);
+      const sourceHashMatches = savedRun?.after_source_snapshot_sha256 === overview.result.source_snapshot_sha256;
+      const currentCommit = String(overview.result.classification?.source_commit || "").toLowerCase();
+      const checkpointCommit = String(linkedCheckpoint?.details?.commit || "").toLowerCase();
+      const checkpointMatches = Boolean(linkedCheckpoint && /^[0-9a-f]{40,64}$/.test(currentCommit) &&
+        currentCommit === checkpointCommit && overview.result.source_clean);
+      const validatedCheckpoint = Boolean(savedRun?.status === "READY_FOR_RELEASE" && sourceHashMatches && overview.result.source_clean &&
+        currentCommit && String(savedRun.source_commit || "").toLowerCase() === currentCommit);
+      const sourceIsCheckpointed = checkpointMatches || validatedCheckpoint;
+      const visibleRun = savedRun ? {
+        ...savedRun,
+        release_readiness: latestRun?.details?.release_readiness || null,
+        status: sourceHashMatches && sourceIsCheckpointed
+          ? "READY_FOR_RELEASE"
+          : sourceHashMatches && linkedApply && savedRun.status === "VALIDATED_FOR_REVIEW"
+            ? "CHECKPOINT_REQUIRED"
+            : savedRun.status,
+        ready_for_release: Boolean(sourceHashMatches && sourceIsCheckpointed && savedRun.checks?.every(check => !check.blocking)),
+        after_source_commit: checkpointMatches ? linkedCheckpoint.details.commit : savedRun.after_source_commit,
+        checkpoint_id: linkedCheckpoint?.id || null
+      } : null;
+      send(res, 200, { ...overview.result, latest_run: visibleRun, latest_action: latestRun });
+      return true;
+    }
+    if (route === "/api/code/release-readiness" && method === "GET") {
+      const [current, actions] = await Promise.all([
+        releaseReadinessCurrentContext({ app, code }),
+        loadCodeActivity(app.id, 100)
+      ]);
+      const action = latestReleaseReadinessEvaluation(actions);
+      const readiness = resolveStoredReleaseReadiness(action?.details?.release_readiness || null, current);
+      send(res, 200, {
+        ok: true,
+        readiness,
+        latest_evaluation: action ? {
+          id: action.id,
+          created_at: action.created_at || null,
+          result_status: action.result_status || null
+        } : null
+      });
+      return true;
+    }
+    if (route.startsWith("/api/code/release-readiness/evaluations/") && method === "GET") {
+      const evaluationId = decodeURIComponent(route.slice("/api/code/release-readiness/evaluations/".length));
+      if (!UUID_PATTERN.test(evaluationId)) {
+        send(res, 400, { code: "RELEASE_READINESS_EVALUATION_INVALID", error: "A valid release readiness evaluation ID is required." });
+        return true;
+      }
+      const [current, actions] = await Promise.all([
+        releaseReadinessCurrentContext({ app, code }),
+        loadCodeActivity(app.id, 250)
+      ]);
+      const action = actions.find(item => item.id === evaluationId && item.action_type === "release_readiness.evaluated");
+      if (!action?.details?.release_readiness) {
+        send(res, 404, { code: "RELEASE_READINESS_EVALUATION_NOT_FOUND", error: "Release readiness evaluation was not found for this application." });
+        return true;
+      }
+      send(res, 200, {
+        ok: true,
+        readiness: resolveStoredReleaseReadiness(action.details.release_readiness, current),
+        evaluation: { id: action.id, created_at: action.created_at || null, result_status: action.result_status || null }
+      });
+      return true;
+    }
+    if (route === "/api/code/release-readiness/evaluations" && method === "POST") {
+      const initialOverview = (await code.productionizationOverview({ applicationId: app.id })).result;
+      const initialSource = releaseReadinessSourceIdentity(app, initialOverview);
+      const validation = await code.productionizationValidate({
+        applicationId: app.id,
+        sourceCheckpointId: initialSource.checkpoint,
+        sourceSnapshotSha256: initialSource.source_snapshot_sha256,
+        classifierVersion: initialSource.classifier_version
+      }, { signal: requestSignal });
+      const validationResult = validation.result;
+      const run = validationResult.run;
+      const [checkpoints, actions] = await Promise.all([
+        loadCodeCheckpoints(app.id),
+        loadCodeActivity(app.id, 100)
+      ]);
+      run.source_checkpoint_recorded = recordedCodeCheckpoint(checkpoints, run.source_commit);
+      const sourceIdentity = releaseReadinessSourceIdentity(app, validationResult, run);
+      const metadata = releaseReadinessMetadata(app, initialOverview.environment_variable_names);
+      const design = await releaseReadinessDesignEvidence({ app, code, sourceIdentity });
+      const infrastructure = await loadApplicationInfrastructure(app, sourceIdentity);
+      const plan = currentProductionizationPlan(actions);
+      const classification = {
+        ...(validationResult.classification || initialOverview.classification || {}),
+        is_current: true,
+        stale: false,
+        evidence_refs: [
+          `repository.classification:${sourceIdentity.source_snapshot_sha256 || "unknown"}`,
+          `repository.classifier:${sourceIdentity.classifier_version || "unknown"}`
+        ]
+      };
+      const productionization = {
+        run,
+        plan_id: plan?.details?.plan_id || null,
+        is_current: true,
+        stale: false,
+        blocked_contract_changes: run.blocked_contract_changes || [],
+        evidence_refs: [
+          run.run_id ? `productionization.run:${run.run_id}` : null,
+          plan?.id ? `code_action:${plan.id}` : null
+        ].filter(Boolean)
+      };
+      const readiness = evaluateReleaseReadiness({
+        sourceIdentity,
+        classification,
+        productionization,
+        validation: { run, checks: run.checks || [] },
+        design,
+        configuration: metadata.configuration,
+        environment: metadata.environment,
+        infrastructure
+      });
+      await recordCodeAction(app, session, {
+        actionType: "release_readiness.evaluated",
+        summary: readiness.summary.executive_state,
+        resultStatus: readiness.state === "READY" ? "complete" : "failed",
+        details: {
+          release_readiness: readiness,
+          productionization_run_id: run.run_id || null,
+          source_application_id: sourceIdentity.application_id,
+          source_workspace_id: sourceIdentity.workspace_id,
+          source_branch: sourceIdentity.branch,
+          source_checkpoint: sourceIdentity.checkpoint,
+          source_snapshot_sha256: sourceIdentity.source_snapshot_sha256,
+          classifier_version: sourceIdentity.classifier_version,
+          design_state_hash: readiness.design.design_state_hash || null,
+          ready_for_release: readiness.ready_for_release,
+          build_eligible: readiness.build_eligibility.eligible
+        }
+      });
+      send(res, 200, { ok: true, readiness });
+      return true;
+    }
+    if (route === "/api/code/export" && method === "GET") {
+      const checkpoints = await loadCodeCheckpoints(app.id);
+      const requestedCommit = String(url.searchParams.get("commit") || checkpoints[0]?.git_commit || "");
+      const approvedCheckpoint = checkpoints.find(checkpoint => String(checkpoint.git_commit).toLowerCase() === requestedCommit.toLowerCase());
+      if (!approvedCheckpoint) {
+        send(res, 404, { code: "APPROVED_CHECKPOINT_NOT_FOUND", error: "Choose a source checkpoint recorded for this application." });
+        return true;
+      }
+      const [blueprintResult, artifactResult] = await Promise.all([
+        tableRequest("feltus_application_blueprints", "GET", {
+          query: "?select=id,version,state_hash,source_commit,state&app_id=eq." + encodeURIComponent(app.id) + "&order=version.desc&limit=100"
+        }),
+        tableRequest("feltus_artifacts", "GET", {
+          query: "?select=id,artifact_digest,blueprint_id&app_id=eq." + encodeURIComponent(app.id) + "&order=created_at.desc&limit=1"
+        })
+      ]);
+      const blueprints = Array.isArray(blueprintResult.data) ? blueprintResult.data : [];
+      const blueprint = blueprints.find(item => [item.source_commit, item.state?.desired_state?.code?.commit]
+        .some(value => value && String(value).toLowerCase().startsWith(requestedCommit.toLowerCase()))) || null;
+      const artifact = Array.isArray(artifactResult.data) ? artifactResult.data[0] || null : null;
+      const exported = await createPortableApplicationExport({
+        repoRoot,
+        commit: approvedCheckpoint.git_commit,
+        application: app,
+        blueprint,
+        artifact
+      });
+      const exportSession = await ensureCodeSession(app, { title: app.app_name });
+      await recordCodeAction(app, exportSession, {
+        actionType: "portable-export.created",
+        summary: "Exported application source from an approved checkpoint",
+        details: {
+          source_checkpoint_id: approvedCheckpoint.id,
+          source_commit: exported.manifest.source_commit,
+          blueprint_id: exported.manifest.blueprint_id,
+          artifact_digest: exported.manifest.artifact_digest,
+          source_file_count: exported.manifest.source_file_count,
+          redacted_files: exported.manifest.redacted_files
+        }
+      });
+      res.writeHead(200, {
+        "Content-Type": "application/x-tar",
+        "Content-Disposition": `attachment; filename="feltus-application-${app.id.slice(0, 8)}-${exported.manifest.source_commit.slice(0, 12)}.tar"`,
+        "Content-Length": String(exported.archive.length),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff"
+      });
+      res.end(exported.archive);
+      return true;
+    }
+    if (route === "/api/code/productionization/plan" && method === "POST") {
+      const overview = await code.productionizationOverview({ applicationId: app.id });
+      const sourceCommit = String(overview.result.source_checkpoint || "").toLowerCase();
+      const checkpoints = await loadCodeCheckpoints(app.id);
+      const checkpointRecorded = Boolean(sourceCommit && checkpoints.some(item => String(item.git_commit || "").toLowerCase() === sourceCommit));
+      if (!checkpointRecorded) {
+        send(res, 409, {
+          code: "SOURCE_CHECKPOINT_REQUIRED",
+          error: "Save the current source as a CODE checkpoint before preparing productionization changes.",
+          source_checkpoint: overview.result.source_checkpoint,
+          source_snapshot_sha256: overview.result.source_snapshot_sha256
+        });
+        return true;
+      }
+      const result = await code.productionizationPlan({ applicationId: app.id }, { signal: requestSignal });
+      const plan = result.result;
+      const changeSet = plan.change_set;
+      await recordCodeAction(app, session, {
+        actionType: "productionization.plan",
+        summary: plan.status === "BLOCKED" ? "Productionization plan blocked by source policy" : "Prepared a source-bound productionization plan",
+        resultStatus: plan.status === "BLOCKED" ? "failed" : "complete",
+        details: {
+          productionization_run_id: plan.run_id,
+          productionization_run: plan.run,
+          plan_id: plan.id,
+          plan_status: plan.status,
+          change_set_id: changeSet?.id || null,
+          change_set_sha256: plan.change_set_sha256,
+          source_application_id: plan.source.application_id,
+          source_workspace_id: plan.source.workspace_id,
+          source_branch: plan.source.branch,
+          source_checkpoint: plan.source.checkpoint,
+          source_snapshot_sha256: plan.source.snapshot_sha256,
+          classifier_version: plan.source.classifier_version,
+          automatic_safe_count: plan.automatic_safe.length,
+          review_required_count: plan.review_required.length,
+          protected_skipped_count: plan.protected_skipped.length
+        }
+      });
+      send(res, 200, result);
+      return true;
+    }
+    if (route === "/api/code/productionization/validate" && method === "POST") {
+      const productionization = body.change_set?.productionization || null;
+      let sourceAction = null;
+      if (body.change_set) {
+        if (!productionization || productionization.source_application_id !== app.id || productionization.source_workspace_id !== app.id ||
+            productionizationChangeSetFingerprint(body.change_set) !== productionization.change_set_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_PLAN_INVALID", error: "Validation requires the unchanged plan for this application and workspace." });
+          return true;
+        }
+        const actions = await loadCodeActivity(app.id, 100);
+        sourceAction = actions.find(action => ["productionization.plan", "productionization.propose"].includes(action.action_type) &&
+          action.details?.productionization_run_id === productionization.run_id &&
+          action.details?.change_set_id === body.change_set.id &&
+          action.details?.change_set_sha256 === productionization.change_set_sha256 &&
+          action.details?.source_checkpoint === productionization.source_checkpoint &&
+          action.details?.source_snapshot_sha256 === productionization.source_snapshot_sha256 &&
+          action.details?.classifier_version === productionization.classifier_version);
+        if (!sourceAction) {
+          send(res, 409, { code: "PRODUCTIONIZATION_PLAN_NOT_FOUND", error: "The source-bound plan is no longer available. Reclassify and prepare a new plan." });
+          return true;
+        }
+      }
+      const result = await code.productionizationValidate({
+        applicationId: app.id,
+        changeSet: body.change_set || null,
+        sourceCheckpointId: productionization?.source_checkpoint || null,
+        sourceSnapshotSha256: productionization?.source_snapshot_sha256 || null,
+        classifierVersion: productionization?.classifier_version || null
+      }, { signal: requestSignal });
+      const run = result.result.run;
+      run.change_set_id = body.change_set?.id || null;
+      run.change_set_sha256 = productionization?.change_set_sha256 || null;
+      const checkpoints = await loadCodeCheckpoints(app.id);
+      const runCommit = String(run.source_commit || "").toLowerCase();
+      const recordedCheckpoint = Boolean(runCommit && checkpoints.some(checkpoint => {
+        const savedCommit = String(checkpoint.git_commit || "").toLowerCase();
+        return /^[0-9a-f]{40,64}$/.test(savedCommit) && savedCommit === runCommit;
+      }));
+      run.source_checkpoint_recorded = recordedCheckpoint;
+      if (!recordedCheckpoint) {
+        result.result.ready_for_release = false;
+        result.result.release_readiness.ready_for_release = false;
+        result.result.release_readiness.status = "BLOCKED";
+        result.result.release_readiness.blocking_reasons = [...new Set([
+          ...(result.result.release_readiness.blocking_reasons || []),
+          "Save the exact source checkpoint in CODE before release readiness can be granted."
+        ])];
+        if (!body.change_set) run.status = "BLOCKED";
+      }
+      await recordCodeAction(app, session, {
+        actionType: "productionization.validation",
+        summary: run.status === "READY_FOR_RELEASE" ? "Required release checks passed" : "Required release checks need attention",
+        resultStatus: run.status === "READY_FOR_RELEASE" ? "complete" : "failed",
+        details: {
+          productionization_run_id: run.run_id,
+          productionization_run: run,
+          release_readiness: result.result.release_readiness,
+          source_checkpoint: run.source_commit,
+          source_snapshot_sha256: run.source_snapshot_sha256,
+          change_set_id: body.change_set?.id || null,
+          change_set_sha256: productionization?.change_set_sha256 || null,
+          classifier_version: productionization?.classifier_version || null,
+          source_workspace_id: productionization?.source_workspace_id || result.result.classification.source_workspace_id,
+          ready_for_review: result.result.ready_for_review,
+          ready_for_release: result.result.ready_for_release
+        }
+      });
+      send(res, 200, result);
+      return true;
+    }
+    if (route === "/api/code/checkpoints" && method === "GET") {
+      send(res, 200, { ok: true, checkpoints: await loadCodeCheckpoints(app.id) }); return true;
+    }
+    if (route === "/api/code/checkpoint/compare" && method === "GET") {
+      send(res, 200, await code.checkpointCompare({ commit: url.searchParams.get("commit") })); return true;
+    }
+    if (route === "/api/code/checkpoint/restore" && method === "POST") {
+      const result = await code.checkpointRestore({ commit: body.commit, paths: body.paths, confirm: body.confirm === true });
+      await recordCodeAction(app, session, { actionType: "git.restore", summary: `Restored ${(result.paths || []).length} file(s) from ${body.commit}`, details: { commit: body.commit, paths: result.paths || [] } });
+      send(res, 200, result); return true;
+    }
+
+    const preview = codePreviewManager(app.id);
+    if (route === "/api/code/preview/status" && method === "GET") {
+      send(res, 200, { ok: true, preview: preview.status() }); return true;
+    }
+    if (route === "/api/code/preview/heartbeat" && method === "GET") {
+      send(res, 200, { ok: true, preview: preview.heartbeat() }); return true;
+    }
+    if (route === "/api/code/preview/start" && method === "POST") {
+      const result = await preview.start();
+      await recordCodeAction(app, session, { actionType: "preview.start", summary: `Started project preview with npm run ${result.script}` });
+      send(res, 200, { ok: true, preview: result, frame_url: `/api/code/preview/frame?app_id=${encodeURIComponent(app.id)}` }); return true;
+    }
+    if (route === "/api/code/preview/reload" && method === "POST") {
+      const result = await preview.restart();
+      await recordCodeAction(app, session, { actionType: "preview.reload", summary: `Restarted project preview with npm run ${result.script}` });
+      send(res, 200, { ok: true, preview: result, frame_url: `/api/code/preview/frame?app_id=${encodeURIComponent(app.id)}` }); return true;
+    }
+    if (route === "/api/code/preview/stop" && method === "POST") {
+      const result = await preview.stop();
+      await recordCodeAction(app, session, { actionType: "preview.stop", summary: "Stopped project preview" });
+      send(res, 200, { ok: true, preview: result }); return true;
+    }
+    if (route === "/api/code/preview/errors" && method === "POST") {
+      const error = preview.recordError(body);
+      send(res, 202, { ok: true, error }); return true;
+    }
+    if ((route === "/api/code/preview/frame" || previewProxyMatch) && method === "GET") {
+      const resourcePath = previewProxyMatch?.[2] || "/";
+      const forwardedSearch = new URLSearchParams(url.searchParams);
+      forwardedSearch.delete("app_id");
+      const result = await preview.proxy(app.id, resourcePath, forwardedSearch.size ? `?${forwardedSearch}` : "");
+      const headers = {
+        "Content-Type": result.contentType,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline' data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:",
+        "Referrer-Policy": "no-referrer"
+      };
+      if (result.location) headers.Location = result.location;
+      res.writeHead(result.status, headers);
+      res.end(result.body);
+      return true;
+    }
+
+    async function studioContext(input = {}) {
+      const [schema, recentActions, currentVersion] = await Promise.all([
+        loadCodeSchema(app.id),
+        loadCodeActivity(app.id, 20),
+        loadCodeVersion(app.id)
+      ]);
+      return buildStudioContext({
+        repoRoot,
+        app,
+        capabilities: app.studio_access.capabilities,
+        prompt: input.prompt,
+        selectedPaths: input.paths,
+        openPaths: input.open_paths,
+        selectedText: input.selected_text,
+        schema,
+        preview: preview.status(),
+        taskState: input.task_state,
+        recentActions,
+        currentVersion
+      });
+    }
+    if (route === "/api/code/context" && method === "GET") {
+      const [context, checkpoints] = await Promise.all([studioContext(), loadCodeCheckpoints(app.id)]);
+      send(res, 200, { ok: true, context, checkpoints }); return true;
+    }
 
     if (route === "/api/code/tree" && method === "GET") {
       const result = await code.listTree({ path: url.searchParams.get("path") || "." });
@@ -2428,17 +3430,102 @@ async function handleFeltusCodeRequest(req, res, url) {
       send(res, 200, await code.gitLog({ limit: Number(url.searchParams.get("limit") || 20) })); return true;
     }
     if (route === "/api/code/git/stage" && method === "POST") {
+      if (body.productionization_run_id) {
+        const actions = await loadCodeActivity(app.id, 100);
+        const applied = actions.find(action => action.action_type === "ai.change_set.apply" &&
+          action.details?.productionization_run_id === body.productionization_run_id);
+        const validated = actions.find(action => action.action_type === "productionization.validation" &&
+          action.details?.productionization_run_id === body.productionization_run_id &&
+          action.details?.productionization_run?.status === "VALIDATED_FOR_REVIEW" &&
+          action.details?.release_readiness?.checks?.every(check => !check.blocking));
+        const expectedPaths = [...new Set(applied?.details?.paths || [])].sort();
+        const requestedPaths = [...new Set((body.paths || []).map(String))].sort();
+        if (!applied || !validated || !validated.details?.ready_for_review || !expectedPaths.length ||
+            JSON.stringify(expectedPaths) !== JSON.stringify(requestedPaths) ||
+            applied.details?.change_set_sha256 !== validated.details?.change_set_sha256 ||
+            body.source_snapshot_sha256 !== validated.details?.productionization_run?.after_source_snapshot_sha256 ||
+            body.source_checkpoint_before !== validated.details?.source_checkpoint ||
+            body.change_set_sha256 !== applied?.details?.change_set_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_CHECKPOINT_INVALID", error: "Checkpoint only the exact, validated productionization changes." });
+          return true;
+        }
+        const [overview, staged, changed] = await Promise.all([
+          code.productionizationOverview({ applicationId: app.id }),
+          code.gitStagedPaths(),
+          code.gitChangedPaths()
+        ]);
+        if (staged.paths.length || JSON.stringify(changed.paths) !== JSON.stringify(expectedPaths) ||
+            overview.result.source_checkpoint !== body.source_checkpoint_before ||
+            overview.result.source_snapshot_sha256 !== body.source_snapshot_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_SOURCE_STALE", error: "The worktree changed or contains unrelated staged files. Restore the source, revalidate, and replan." });
+          return true;
+        }
+      }
       const result = await code.gitStage({ paths: body.paths });
-      await recordCodeAction(app, session, { actionType: "git.stage", summary: `Staged ${(body.paths || []).length} path(s)` });
+      await recordCodeAction(app, session, {
+        actionType: "git.stage",
+        summary: `Staged ${(result.paths || body.paths || []).length} path(s)`,
+        details: {
+          productionization_run_id: body.productionization_run_id || null,
+          paths: body.productionization_run_id
+            ? [...new Set((body.paths || []).map(String))].sort()
+            : (result.paths || []).slice(),
+          source_checkpoint_before: body.source_checkpoint_before || null,
+          source_snapshot_sha256: body.source_snapshot_sha256 || null
+        }
+      });
       send(res, 200, result); return true;
     }
     if (route === "/api/code/git/checkpoint" && method === "POST") {
+      if (body.productionization_run_id) {
+        const actions = await loadCodeActivity(app.id, 100);
+        const applied = actions.find(action => action.action_type === "ai.change_set.apply" &&
+          action.details?.productionization_run_id === body.productionization_run_id);
+        const validated = actions.find(action => action.action_type === "productionization.validation" &&
+          action.details?.productionization_run_id === body.productionization_run_id &&
+          action.details?.productionization_run?.status === "VALIDATED_FOR_REVIEW" &&
+          action.details?.release_readiness?.checks?.every(check => !check.blocking));
+        const stagedAction = actions.find(action => action.action_type === "git.stage" &&
+          action.details?.productionization_run_id === body.productionization_run_id);
+        const expectedPaths = [...new Set(applied?.details?.paths || [])].sort();
+        if (!applied || !validated || !stagedAction || !validated.details?.ready_for_review || !expectedPaths.length ||
+            JSON.stringify(stagedAction.details?.paths || []) !== JSON.stringify(expectedPaths) ||
+            applied.details?.change_set_sha256 !== validated.details?.change_set_sha256 ||
+            body.source_snapshot_sha256 !== validated.details?.productionization_run?.after_source_snapshot_sha256 ||
+            body.source_checkpoint_before !== validated.details?.source_checkpoint ||
+            body.change_set_sha256 !== applied?.details?.change_set_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_CHECKPOINT_INVALID", error: "A validated, applied change set and its exact source identity are required for this checkpoint." });
+          return true;
+        }
+        const [overview, staged, changed] = await Promise.all([
+          code.productionizationOverview({ applicationId: app.id }),
+          code.gitStagedPaths(),
+          code.gitChangedPaths()
+        ]);
+        if (JSON.stringify(staged.paths) !== JSON.stringify(expectedPaths) ||
+            JSON.stringify(changed.paths) !== JSON.stringify(expectedPaths) ||
+            overview.result.source_checkpoint !== body.source_checkpoint_before ||
+            overview.result.source_snapshot_sha256 !== body.source_snapshot_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_SOURCE_STALE", error: "The source or staged paths changed after validation. Revalidate before checkpointing." });
+          return true;
+        }
+      }
       const result = await code.checkpoint({ message: body.message, confirm: body.confirm === true });
-      const commit = await code.gitLog({ limit: 1 });
-      const commitText = commit.stdout.split("\t")[0] || "unknown";
+      const commit = await code.gitHead();
+      const commitText = commit.commit || "unknown";
       const saved = await tableRequest("feltus_code_checkpoints", "POST", { body: { session_id: session.id, app_id: app.id, actor_id: activeSession().user.id, git_commit: commitText, label: String(body.message || "FELTUS CODE checkpoint").slice(0, 200) } });
       if (saved.status < 200 || saved.status >= 300) throw Object.assign(new Error("Checkpoint succeeded but FELTUS checkpoint record could not be saved."), { status: 500, code: "CHECKPOINT_RECORD_FAILED" });
-      await recordCodeAction(app, session, { actionType: "git.checkpoint", summary: `Committed ${commitText}` });
+      await recordCodeAction(app, session, {
+        actionType: "git.checkpoint",
+        summary: `Committed ${commitText}`,
+        details: {
+          commit: commitText,
+          productionization_run_id: body.productionization_run_id || null,
+          source_checkpoint_before: body.source_checkpoint_before || null,
+          source_snapshot_sha256: body.source_snapshot_sha256 || null,
+          change_set_sha256: body.change_set_sha256 || null
+        }
+      });
       send(res, 200, { ...result, commit: commitText }); return true;
     }
     if (route === "/api/code/tasks" && method === "GET") {
@@ -2449,8 +3536,236 @@ async function handleFeltusCodeRequest(req, res, url) {
       await recordCodeAction(app, session, { actionType: "task.run", taskName: body.task, summary: `Task ${body.task} exited ${result.result?.code}`, resultStatus: result.result?.code === 0 ? "complete" : "failed", details: result.result });
       send(res, 200, result); return true;
     }
+    if (route === "/api/code/change-set/review" && method === "POST") {
+      const result = await code.reviewChangeSet({ changeSet: body.change_set, selectedIds: body.selected_ids });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/change-set/apply" && method === "POST") {
+      const { changeSet: selectedSet, selectedIds } = resolveChangeSetSelection(body.change_set, body.selected_ids);
+      const productionization = body.change_set?.productionization || null;
+      if (productionization) {
+        if (productionization.source_application_id !== app.id || productionization.source_workspace_id !== app.id ||
+            productionizationChangeSetFingerprint(selectedSet) !== productionization.change_set_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_PLAN_INVALID", error: "Apply requires the complete, unchanged plan for this application and workspace." });
+          return true;
+        }
+        const actions = await loadCodeActivity(app.id, 100);
+        const planned = actions.find(action => ["productionization.plan", "productionization.propose"].includes(action.action_type) &&
+          action.details?.productionization_run_id === productionization.run_id &&
+          action.details?.change_set_id === body.change_set.id &&
+          action.details?.change_set_sha256 === productionization.change_set_sha256 &&
+          action.details?.source_checkpoint === productionization.source_checkpoint &&
+          action.details?.source_snapshot_sha256 === productionization.source_snapshot_sha256 &&
+          action.details?.classifier_version === productionization.classifier_version &&
+          action.result_status === "complete");
+        const validated = actions.find(action => action.action_type === "productionization.validation" &&
+          action.details?.productionization_run_id === productionization.run_id &&
+          action.details?.change_set_id === body.change_set.id &&
+          action.details?.change_set_sha256 === productionization.change_set_sha256 &&
+          action.details?.productionization_run?.status === "VALIDATED_FOR_REVIEW" &&
+          action.details?.release_readiness?.checks?.every(check => !check.blocking));
+        if (!planned || !validated || !validated.details?.ready_for_review) {
+          send(res, 409, { code: "PRODUCTIONIZATION_VALIDATION_REQUIRED", error: "Apply is available only for the source-bound plan after its isolated validation passes." });
+          return true;
+        }
+        const current = await code.productionizationOverview({ applicationId: app.id });
+        if (current.result.classification?.productionization_safe !== true || current.result.source_clean !== true ||
+            current.result.source_checkpoint !== productionization.source_checkpoint ||
+            current.result.source_snapshot_sha256 !== productionization.source_snapshot_sha256) {
+          send(res, 409, { code: "PRODUCTIONIZATION_SOURCE_STALE", error: "The source changed after planning or validation. Reclassify and prepare a new plan." });
+          return true;
+        }
+      }
+      const contractReview = await code.classifyChangeSetContracts({ changeSet: selectedSet });
+      const blocked = contractReview.result.blocked_operations || [];
+      if (blocked.length) {
+        if (body.change_set?.productionization) {
+          send(res, 409, {
+            code: "PRODUCTIONIZATION_CONTRACT_CHANGE_BLOCKED",
+            error: "Automatic normalization cannot change protected contracts. Use a separately authorized, versioned compatibility or migration workflow.",
+            contract_review: contractReview.result
+          });
+          return true;
+        }
+        const expectedPaths = [...new Set(blocked.map(item => item.path))].sort();
+        const approvedPaths = Array.isArray(body.contract_approval_paths)
+          ? [...new Set(body.contract_approval_paths.map(String))].sort()
+          : [];
+        const exactOwner = app.owner_id === activeSession()?.user?.id;
+        if (!exactOwner || body.approve_contract_changes !== true || JSON.stringify(expectedPaths) !== JSON.stringify(approvedPaths)) {
+          send(res, 409, {
+            code: "CONTRACT_OWNER_APPROVAL_REQUIRED",
+            error: "This change set touches protected contracts. Review the exact files and affected contract markers, then approve every affected path as the application owner.",
+            contract_review: contractReview.result
+          });
+          return true;
+        }
+      }
+      const reviewRequired = contractReview.result.review_required_operations || [];
+      if (productionization && reviewRequired.length) {
+        const expectedPaths = [...new Set(reviewRequired.map(item => item.path))].sort();
+        const reviewedPaths = Array.isArray(body.reviewed_medium_paths)
+          ? [...new Set(body.reviewed_medium_paths.map(String))].sort()
+          : [];
+        if (body.confirm_review_required !== true || JSON.stringify(expectedPaths) !== JSON.stringify(reviewedPaths)) {
+          send(res, 409, {
+            code: "PRODUCTIONIZATION_REVIEW_REQUIRED",
+            error: "Review and explicitly approve every medium-risk file before applying the productionization change set.",
+            review_required_operations: reviewRequired
+          });
+          return true;
+        }
+      }
+      const result = await code.applyChangeSet({
+        changeSet: selectedSet,
+        selectedIds,
+        confirmDestructive: body.confirm_destructive === true
+      }, { signal: requestSignal });
+      await recordCodeAction(app, session, {
+        actionType: "ai.change_set.apply",
+        summary: result.result.summary,
+        details: {
+          change_set_id: result.result.change_set_id,
+          paths: result.result.applied.flatMap(operation => operation.type === "rename" ? [operation.from, operation.to] : [operation.path]),
+          productionization_run_id: body.change_set?.productionization?.run_id || null,
+          change_set_sha256: body.change_set?.productionization?.change_set_sha256 || null,
+          source_checkpoint_before: body.change_set?.productionization?.source_checkpoint || null,
+          source_snapshot_sha256: body.change_set?.productionization?.source_snapshot_sha256 || null,
+          after_source_snapshot_sha256: body.change_set?.productionization?.after_source_snapshot_sha256 || null,
+          file_hashes: result.result.applied.map(operation => ({ path: operation.type === "rename" ? operation.to : operation.path, before_sha256: operation.before_sha256 || null })),
+          undo_token: result.result.undo_token
+        }
+      });
+      send(res, 200, result); return true;
+    }
+    if (route === "/api/code/change-set/reject" && method === "POST") {
+      await recordCodeAction(app, session, {
+        actionType: "ai.change_set.reject",
+        summary: String(body.summary || "Rejected proposed change set").slice(0, 1000),
+        details: { change_set_id: body.change_set_id || null }
+      });
+      send(res, 200, { ok: true, rejected: true }); return true;
+    }
+    if (route === "/api/code/change-set/undo" && method === "POST") {
+      const result = await code.undoChangeSet({ token: body.undo_token, confirm: body.confirm === true }, { signal: requestSignal });
+      await recordCodeAction(app, session, { actionType: "ai.change_set.undo", summary: `Undid ${result.result.summary}`, details: { change_set_id: result.result.change_set_id, paths: result.result.restored } });
+      send(res, 200, result); return true;
+    }
+    if (["/api/code/ai/architect", "/api/code/ai/change-set", "/api/code/ai/studio-agent", "/api/code/ai/productionize"].includes(route) && method === "POST") {
+      const aiLimit = consumeOperationRateLimit(req, "feltus-code-ai", LOCAL_DEV_MODE ? 200 : 10, 60 * 60 * 1000);
+      if (!aiLimit.allowed) { sendRateLimitResponse(res, aiLimit); return true; }
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt || prompt.length > 8000) { send(res, 400, { code: "INVALID_CODE_PROMPT", error: "Prompt must contain 1 to 8000 characters." }); return true; }
+      const selectedPaths = body.paths === undefined ? [] : body.paths;
+      const openPaths = body.open_paths === undefined ? [] : body.open_paths;
+      if (![selectedPaths, openPaths].every(list => Array.isArray(list) && list.length <= 12 && list.every(filePath => typeof filePath === "string" && filePath.trim()))) {
+        send(res, 400, { code: "INVALID_FILE_CONTEXT", error: "Select up to 12 project-relative files for FELTUS CODE AI." }); return true;
+      }
+      if (route.endsWith("/productionize")) {
+        const productionCode = createFeltusCodeHandlers({ repoRoot });
+        const overview = await productionCode.productionizationOverview({ applicationId: app.id });
+        if (overview.result.classification?.productionization_safe !== true || overview.result.classification_status !== "CLASSIFIED") {
+          send(res, 409, { code: "PRODUCTIONIZATION_BLOCKED", error: "This repository is not a safe single-stack productionization target.", classification: overview.result.classification });
+          return true;
+        }
+        if (!overview.result.source_clean) {
+          send(res, 409, { code: "SOURCE_CHECKPOINT_REQUIRED", error: "Create a CODE checkpoint before requesting productionization changes." });
+          return true;
+        }
+        const sourceCommit = String(overview.result.source_checkpoint || "").toLowerCase();
+        const checkpoints = await loadCodeCheckpoints(app.id);
+        if (!sourceCommit || !checkpoints.some(item => String(item.git_commit || "").toLowerCase() === sourceCommit)) {
+          send(res, 409, { code: "SOURCE_CHECKPOINT_REQUIRED", error: "Save the current source as a CODE checkpoint before requesting productionization changes." });
+          return true;
+        }
+      }
+      const { ai, policy } = await createConfiguredAI();
+      if (!policy.sendProjectContext) { send(res, 403, { code: "AI_CODE_CONTEXT_NOT_APPROVED", error: "The AI endpoint trust policy does not allow sending project code context." }); return true; }
+      const installed = await ai.listModels();
+      const requestedModel = String(body.model || ai.model);
+      if (!installed.some(model => model.name === requestedModel)) { send(res, 400, { code: "FELTUS_AI_MODEL_NOT_INSTALLED", error: "Selected model is not available on the configured FELTUS AI runtime." }); return true; }
+      const context = await studioContext({
+        prompt,
+        paths: selectedPaths,
+        open_paths: openPaths,
+        selected_text: body.selected_text,
+        task_state: body.task_state
+      });
+      const handlers = createFeltusCodeHandlers({ repoRoot, aiGateway: createFeltusCodeAIGateway(ai) });
+      let result;
+      let actionType;
+      if (route.endsWith("/architect")) {
+        result = await handlers.aiArchitect({ prompt, context, model: requestedModel }, { signal: requestSignal });
+        actionType = "ai.architect.plan";
+      } else if (route.endsWith("/productionize")) {
+        result = await handlers.aiProductionize({ prompt, context, model: requestedModel, applicationId: app.id }, { signal: requestSignal });
+        actionType = "productionization.propose";
+      } else if (route.endsWith("/change-set")) {
+        result = await handlers.aiChangeSet({ prompt, context, plan: body.plan, model: requestedModel, mode: body.mode || "build" }, { signal: requestSignal });
+        actionType = "ai.change_set.propose";
+      } else {
+        const taskCatalog = await handlers.listTasks();
+        const selectedTask = String(body.task || taskCatalog.default_task || "");
+        const allowedTasks = taskCatalog.tasks || [];
+        const knownUnavailable = (taskCatalog.unavailable || []).some(item => item.task === selectedTask);
+        if (!selectedTask) throw Object.assign(new Error("No applicable validation task is available for this project."), { status: 400, code: "TASK_UNAVAILABLE" });
+        if (!allowedTasks.includes(selectedTask) && !knownUnavailable) throw Object.assign(new Error("Task is not allowlisted."), { status: 400, code: "TASK_NOT_ALLOWED" });
+        result = {
+          ok: true,
+          result: await runStudioAgent({
+            prompt,
+            context,
+            model: requestedModel,
+            task: selectedTask,
+            plan: body.plan || null,
+            repairLimit: Math.min(Math.max(Number(body.repair_limit ?? 2), 0), 2),
+            signal: requestSignal,
+            architect: input => handlers.aiArchitect(input, { signal: requestSignal }).then(value => value.result),
+            propose: input => handlers.aiChangeSet({
+              ...input,
+              prompt: input.previousChangeSet
+                ? `${input.prompt}\n\nPrevious proposed change set:\n${JSON.stringify(input.previousChangeSet)}`
+                : input.prompt
+            }, { signal: requestSignal }).then(value => value.result),
+            validate: ({ task, changeSet, signal }) => handlers.validateChangeSet({ task, changeSet }, { signal }).then(value => value.result)
+          })
+        };
+        actionType = "ai.studio_agent";
+      }
+      const value = result.result;
+      const usage = value?.usage || value?.changeSet?.usage || value?.plan?.usage || {};
+      const changeSet = value?.changeSet || (value?.operations ? value : null);
+      await recordCodeAction(app, session, {
+        actionType,
+        model: requestedModel,
+        prompt,
+        summary: String(value?.summary || value?.title || value?.plan?.summary || changeSet?.summary || "Studio AI request complete").slice(0, 3000),
+        usage,
+        details: {
+          paths: changeSet?.operations?.map(operation => operation.type === "rename" ? operation.to : operation.path) || [],
+          task: value?.validation?.task || null,
+          validation_code: value?.validation?.code ?? null,
+          repair_attempts: value?.attempts?.length || 0,
+          productionization_run_id: value?.productionization?.run_id || null,
+          productionization_run: value?.productionization?.run || null,
+          source_checkpoint: value?.productionization?.source_checkpoint || null,
+          source_snapshot_sha256: value?.productionization?.source_snapshot_sha256 || null,
+          source_application_id: value?.productionization?.source_application_id || null,
+          source_workspace_id: value?.productionization?.source_workspace_id || null,
+          source_branch: value?.productionization?.source_branch || null,
+          classifier_version: value?.productionization?.classifier_version || null,
+          change_set_id: changeSet?.id || null,
+          change_set_sha256: value?.productionization?.change_set_sha256 || null,
+          proposal_type: value?.productionization?.proposal_type || null,
+          contract_review: value?.productionization?.contract_review || null
+        }
+      });
+      await recordUsage({ appId: app.id, category: "AI", operation: `code.${actionType}`, model: requestedModel, requestId: requestContext.getStore()?.requestId, inputUnits: usage.input_tokens || 0, outputUnits: usage.output_tokens || 0 });
+      send(res, 200, { ...result, model: requestedModel, request_id: requestContext.getStore()?.requestId });
+      return true;
+    }
     if (route === "/api/code/ai/plan" || route === "/api/code/ai/plan/stream" || route === "/api/code/ai/edit" || route === "/api/code/ai/agent") {
-      const aiLimit = consumeOperationRateLimit(req, "feltus-code-ai", 10, 60 * 60 * 1000);
+      const aiLimit = consumeOperationRateLimit(req, "feltus-code-ai", LOCAL_DEV_MODE ? 200 : 10, 60 * 60 * 1000);
       if (!aiLimit.allowed) { sendRateLimitResponse(res, aiLimit); return true; }
       const prompt = String(body.prompt || "").trim();
       if (!prompt || prompt.length > 8000) { send(res, 400, { code: "INVALID_CODE_PROMPT", error: "Prompt must contain 1 to 8000 characters." }); return true; }
@@ -2588,14 +3903,294 @@ function boundedNumber(value, fallback, minimum, maximum) {
 const handleAppWizardApi = createAppWizardHandler({
   tableRequest,
   readBody,
-  getUser: () => activeSession()?.user || null
+  getUser: () => activeSession()?.user || null,
+  rpcRequest
 });
+
+const generatedAppAuthRequest = async (endpoint, { method = "GET", body = null, token = null } = {}) => upstream(endpoint, {
+  method,
+  headers: {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(body ? { "Content-Type": "application/json" } : {})
+  },
+  ...(body ? { body: JSON.stringify(body) } : {})
+});
+
+const generatedAppAdminAuthRequest = async (endpoint, { method = "GET", body = null } = {}) => {
+  if (!SERVICE_ROLE_KEY) return { status: 503, data: { error: "Auth administration is unavailable." } };
+  try {
+    const response = await fetch(`${GATEWAY}${endpoint}`, {
+      method,
+      headers: {
+        apikey: SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        Accept: "application/json",
+        ...(body ? { "Content-Type": "application/json" } : {})
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(15000)
+    });
+    const text = await response.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    return { status: response.status, data };
+  } catch {
+    return { status: 503, data: { error: "Auth administration is unavailable." } };
+  }
+};
+
+const prepareGeneratedAppAuth = appId => serviceRequest("/rest/v1/rpc/feltus_enable_generated_app_auth", {
+  method: "POST",
+  body: { p_app_id: appId }
+});
+
+const generatedAppAuthReady = async app => {
+  if (!Array.isArray(app?.setup_data?.platform_services?.selected_service_ids) ||
+      !app.setup_data.platform_services.selected_service_ids.includes("data_sign_in")) return false;
+  const [health, configuration] = await Promise.all([
+    generatedAppAuthRequest("/auth/v1/health"),
+    serviceRequest("/rest/v1/rpc/feltus_generated_app_auth_configuration", {
+      method: "POST",
+      body: { p_app_id: app.id }
+    })
+  ]);
+  return health.status >= 200 && health.status < 300 && configuration.status >= 200 && configuration.status < 300 &&
+    configuration.data?.active === true && configuration.data?.enabled === true && configuration.data?.models_ready === true;
+};
+
+const handleGeneratedAppAuth = createGeneratedAppAuthHandler({
+  readBody,
+  serviceRequest,
+  authRequest: generatedAppAuthRequest,
+  adminAuthRequest: generatedAppAdminAuthRequest,
+  dataRequest: tableRequest,
+  prepareApp: prepareGeneratedAppAuth,
+  isProduction: IS_PRODUCTION,
+  allowRegistration: (req, email, appId) => consumeOperationRateLimit(
+    req,
+    `generated-app-register:${appId}:${email}`,
+    10,
+    60 * 60 * 1000
+  ).allowed,
+  allowLogin: (req, email, appId) => allowLoginAttempt(req, `${appId}:${email}`)
+});
+
+async function handleInternalApplicationCleanup(req, res) {
+  if (req.method !== "POST") return send(res, 405, { error: "Method not allowed." });
+  const supplied = Buffer.from(String(req.headers.authorization || ""));
+  const expected = Buffer.from(`Bearer ${SERVICE_ROLE_KEY}`);
+  if (!SERVICE_ROLE_KEY || supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
+    return send(res, 403, { error: "Internal cleanup authorization required." });
+  }
+  let body;
+  try {
+    body = await readBody(req, 4096);
+  } catch {
+    return send(res, 400, { error: "Invalid cleanup request." });
+  }
+  const appId = String(body?.app_id || "");
+  const requestId = String(body?.request_id || "");
+  if (!UUID_PATTERN.test(appId) || !UUID_PATTERN.test(requestId)) {
+    return send(res, 400, { error: "Valid application and deletion request IDs are required." });
+  }
+  const started = await serviceRequest("/rest/v1/rpc/feltus_start_application_cleanup", {
+    method: "POST", body: { p_app_id: appId, p_request_id: requestId }
+  });
+  if (started.status < 200 || started.status >= 300) {
+    return send(res, started.status >= 500 ? 503 : started.status, { error: "Application cleanup is not ready." });
+  }
+  if (started.data?.status === "cleanup_complete") return send(res, 200, started.data);
+  try {
+    removeApplicationLocalFiles({
+      appId,
+      documentStorageRoot: DOCUMENT_STORAGE_ROOT,
+      codeWorkspaceRoot: CODE_WORKSPACE_ROOT,
+      backupStorageRoot: path.join(STORAGE_ROOT, "app-backups")
+    });
+  } catch (error) {
+    return send(res, 503, {
+      error: "Application files could not be removed safely. Cleanup will retry.",
+      code: /^[A-Z0-9_]{1,64}$/.test(String(error?.code || "")) ? error.code : "APP_CLEANUP_FILES_FAILED"
+    });
+  }
+  const files = await serviceRequest("/rest/v1/rpc/feltus_mark_application_files_removed", {
+    method: "POST", body: { p_app_id: appId, p_request_id: requestId }
+  });
+  if (files.status < 200 || files.status >= 300) return send(res, 503, { error: "Application cleanup could not record its progress.", code: "APP_CLEANUP_PROGRESS_FAILED" });
+  const completed = await serviceRequest("/rest/v1/rpc/feltus_complete_application_cleanup", {
+    method: "POST", body: { p_app_id: appId, p_request_id: requestId }
+  });
+  if (completed.status < 200 || completed.status >= 300) return send(res, 503, { error: "Application data cleanup could not finish.", code: "APP_CLEANUP_DATABASE_FAILED" });
+  return send(res, 200, completed.data || { status: "cleanup_complete" });
+}
 
 const handleApplicationStateApi = createApplicationStateHandler({
   tableRequest,
   serviceRequest,
   readBody,
-  getUser: () => activeSession()?.user || null
+  getUser: () => activeSession()?.user || null,
+  prepareGeneratedAppAuth,
+  generatedAppAuthReady,
+  authorizeApp: (appId, capability) => authorizedCodeProject(appId, capability),
+  validateReconciliation: async ({ applicationId, sourceCommit, sourceCheckpointId }) => {
+    const repoRoot = codeRepositoryRoot(applicationId);
+    if (!fs.existsSync(repoRoot)) return { ready_for_release: false, reason: "Initialize the project code workspace to validate the observed source checkpoint." };
+    const code = createFeltusCodeHandlers({ repoRoot });
+    const [head, status] = await Promise.all([code.gitHead(), code.gitStatus()]);
+    const expected = String(sourceCommit || "").toLowerCase();
+    if (!/^[0-9a-f]{40,64}$/.test(expected) || head.commit.toLowerCase() !== expected) {
+      return { ready_for_release: false, source_commit: head.commit, reason: "The observed source checkpoint is not checked out in the authorized workspace." };
+    }
+    const changed = String(status.stdout || "").split(/\r?\n/).slice(1).some(Boolean);
+    if (changed) return { ready_for_release: false, source_commit: head.commit, reason: "Checkpoint the workspace before validating an observed source change." };
+    const validation = await code.productionizationValidate({ applicationId, sourceCheckpointId });
+    return {
+      ready_for_release: validation.result.ready_for_release,
+      source_commit: validation.result.run.source_commit,
+      run_id: validation.result.run.run_id,
+      reason: validation.result.ready_for_release ? null : "Required release checks must pass before the observed source change can be accepted."
+    };
+  },
+  findReconciliationRun: async ({ app, runId = null, scope = null }) => {
+    const actions = await loadCodeActivity(app.id, 100);
+    return actions.find(action => {
+      if (action.action_type !== "state.reconciliation.day2_evaluated" ||
+          action.details?.day2_reconciliation?.contract !== "feltus.day2-reconciliation/v1") return false;
+      const reconciliation = action.details.day2_reconciliation;
+      if (runId) return reconciliation.run_id === runId;
+      if (!scope) return true;
+      return reconciliation.manifest?.scope?.organization_id === scope.organization_id &&
+        reconciliation.manifest?.scope?.application_id === scope.application_id &&
+        reconciliation.manifest?.scope?.environment_id === scope.environment_id &&
+        reconciliation.manifest?.scope?.environment_kind === scope.environment_kind;
+    }) || null;
+  },
+  reconciliationContext: async ({ app }) => {
+    const repoRoot = codeRepositoryRoot(app.id);
+    if (!fs.existsSync(repoRoot)) {
+      return {
+        available: false,
+        source_clean: false,
+        source_identity: {
+          application_id: app.id,
+          source_snapshot_complete: false
+        },
+        design: { applicable: Boolean(app.setup_data?.code?.design), available: false },
+        classification: { is_current: false, stale: true }
+      };
+    }
+    try {
+      const code = createFeltusCodeHandlers({ repoRoot });
+      const [current, actions] = await Promise.all([
+        releaseReadinessCurrentContext({ app, code }),
+        loadCodeActivity(app.id, 100)
+      ]);
+      const productionization = actions.find(action => action.action_type === "productionization.validation" &&
+        Array.isArray(action.details?.productionization_run?.blocked_contract_changes))?.details?.productionization_run || null;
+      return {
+        available: true,
+        source_clean: current.source_clean,
+        source_identity: current.source_identity,
+        classification: current.classification || {},
+        configuration: current.configuration || {},
+        protected_contract_changes: productionization?.blocked_contract_changes || [],
+        design: current.design || { applicable: false },
+        infrastructure: { evaluator_version: "feltus.deployment-control-plane/v1" }
+      };
+    } catch {
+      return {
+        available: false,
+        source_clean: false,
+        source_identity: {
+          application_id: app.id,
+          source_snapshot_complete: false
+        },
+        design: { applicable: Boolean(app.setup_data?.code?.design), available: false },
+        classification: { is_current: false, stale: true }
+      };
+    }
+  },
+  recordReconciliation: async ({ app, action, details, resultStatus = "complete", summary = null }) => {
+    const session = await ensureCodeSession(app, { title: app.app_name });
+    await recordCodeAction(app, session, {
+      actionType: `state.reconciliation.${action}`,
+      summary: summary || (action === "accept_external_change"
+        ? "Accepted an observed source change into a new Blueprint"
+        : action === "restore_desired_state"
+          ? "Queued restoration to an identified desired version"
+          : "Recorded Day-2 reconciliation evidence"),
+      resultStatus,
+      details: { reconciliation_action: action, ...details }
+    });
+
+  },
+  releaseReadiness: async ({ appId, sourceCommit }) => {
+    const app = await authorizedCodeProject(appId, "canViewCode");
+    if (!app) return { ready_for_release: false, reason: "The application is not available for release-readiness verification." };
+    const repoRoot = codeRepositoryRoot(app.id);
+    if (!fs.existsSync(repoRoot)) return { ready_for_release: false, reason: "Initialize the project code workspace and evaluate release readiness before building." };
+    try {
+      const code = createFeltusCodeHandlers({ repoRoot });
+      const [current, actions] = await Promise.all([
+        releaseReadinessCurrentContext({ app, code }),
+        loadCodeActivity(app.id, 100)
+      ]);
+      const evaluation = latestReleaseReadinessEvaluation(actions)?.details?.release_readiness || null;
+      const readiness = resolveStoredReleaseReadiness(evaluation, { ...current, source_commit: sourceCommit });
+      return {
+        ready_for_release: readiness.state === "READY" && readiness.build_eligibility?.eligible === true,
+        readiness_state: readiness.state,
+        infrastructure: current.infrastructure,
+        evaluation_id: readiness.evaluation_id || null,
+        run_id: readiness.productionization?.run_id || null,
+        reason: readiness.state === "READY"
+          ? null
+          : readiness.build_eligibility?.reason || "Evaluate release readiness for the exact source before building."
+      };
+    } catch (error) {
+      return {
+        ready_for_release: false,
+        readiness_state: "BLOCKED",
+        reason: error?.code === "SOURCE_CLASSIFICATION_STALE" || error?.code === "SOURCE_CHECKPOINT_STALE"
+          ? "Current source classification is stale. Reclassify and reevaluate before building."
+          : "Release readiness could not be verified for the exact source."
+      };
+    }
+  },
+  loadSourceEvidence: async ({ appId }) => {
+    const result = await tableRequest("feltus_code_actions", "GET", {
+      query: "?select=id,action_type,result_status,details,created_at&app_id=eq." +
+        encodeURIComponent(appId) +
+        "&action_type=eq.productionization.validation&order=created_at.desc&limit=100"
+    });
+    if (result.status < 200 || result.status >= 300) {
+      throw Object.assign(new Error("Productionization evidence is unavailable."), { code: "SOURCE_EVIDENCE_UNAVAILABLE" });
+    }
+    return Array.isArray(result.data) ? result.data : [];
+  },
+  loadCodeWorkspaceSource: async ({ appId }) => {
+    const repoRoot = codeRepositoryRoot(appId);
+    if (!fs.existsSync(repoRoot)) return { available: false, clean: false, commit: null };
+    const code = createFeltusCodeHandlers({ repoRoot });
+    const [head, status] = await Promise.all([code.gitHead(), code.gitStatus()]);
+    const statusLines = String(status.stdout || "").split(/\r?\n/);
+    const branchLine = statusLines[0] || "";
+    const workspaceBranch = branchLine.startsWith("## ") && !branchLine.includes("(no branch)")
+      ? branchLine.slice(3).split("...")[0].trim() || null
+      : null;
+    const changed = statusLines.slice(1).some(Boolean);
+    return { available: true, clean: !changed, commit: head.commit, branch: workspaceBranch };
+  },
+  verifyRemoteSource: ({ app, repositoryId, branch, expectedCommit }) =>
+    handleGithubApi.verifyRemoteBranch({ app, repositoryId, branch, expectedCommit })
+});
+
+const handleAppBackupApi = createAppBackupHandler({
+  storageRoot: STORAGE_ROOT,
+  documentStorageRoot: DOCUMENT_STORAGE_ROOT,
+  serviceRequest,
+  getUser: () => activeSession()?.user || null,
+  authorizeApp: appId => authorizedProject(appId, { activeOnly: true })
 });
 
 const handleGithubApi = createGithubApiHandler({
@@ -2604,6 +4199,34 @@ const handleGithubApi = createGithubApiHandler({
   readBody,
   getUser: () => activeSession()?.user || null
 });
+
+const handleTeamApi = createTeamApiHandler({
+  tableRequest,
+  readBody,
+  getUser: () => activeSession()?.user || null,
+  enabled: TEAMS_ENABLED
+});
+
+// Reuse the canonical state endpoint after destructive schema operations so
+// the response reflects the persisted schema and freshly computed hash.
+async function readCanonicalApplicationState(appId) {
+  const captured = { status: 500, body: null };
+  const response = {
+    writeHead(status) { captured.status = status; },
+    end(body) {
+      try { captured.body = JSON.parse(String(body || "null")); }
+      catch { captured.body = null; }
+    }
+  };
+  const handled = await handleApplicationStateApi(
+    { method: "GET", headers: {} },
+    response,
+    new URL(`http://feltus.local/api/apps/${encodeURIComponent(appId)}/state`)
+  );
+  return handled
+    ? { status: captured.status, data: captured.body }
+    : { status: 500, data: { error: "Application state route was unavailable." } };
+}
 
 
 async function projectAIConversation(
@@ -2869,7 +4492,9 @@ async function rpcRequest(
   ) {
     await logEvent({
       eventType:
-        "database.rpc_failed",
+        functionName === "feltus_delete_model"
+          ? "model.deletion_failed"
+          : "database.rpc_failed",
 
       eventSource:
         "database.rpc",
@@ -2887,14 +4512,20 @@ async function rpcRequest(
           : "warning",
 
       resourceType:
-        "rpc",
+        functionName === "feltus_delete_model"
+          ? "model"
+          : "rpc",
 
       resourceId:
-        functionName,
+        functionName === "feltus_delete_model"
+          ? body?.p_model_id || functionName
+          : functionName,
 
       metadata: {
-        status:
-          result.status
+        status: result.status,
+        ...(functionName === "feltus_delete_model"
+          ? { rpc: functionName, model_id: body?.p_model_id || null }
+          : {})
       }
     });
   }
@@ -3163,6 +4794,37 @@ async function rpcTelemetryDescriptor(
     };
   }
 
+  if (functionName === "feltus_delete_model_field") {
+    return {
+      eventType: "model.field_deleted",
+      eventSource: "database.rpc",
+      message: "Custom model field removed.",
+      appId: body?.p_app_id || null,
+      severity: "success",
+      resourceType: "model_field",
+      resourceId: `${body?.p_model_id || ""}:${body?.p_field_name || ""}`,
+      metadata: { rpc: functionName, field_name: body?.p_field_name || null }
+    };
+  }
+
+  if (functionName === "feltus_delete_model") {
+    return {
+      eventType: "model.deleted",
+      eventSource: "database.rpc",
+      message: "Data category removed.",
+      appId: body?.p_app_id || returned.app_id || null,
+      severity: "success",
+      resourceType: "model",
+      resourceId: body?.p_model_id || returned.model_id || null,
+      metadata: {
+        rpc: functionName,
+        model_name: returned.model_name || null,
+        deleted_fields: returned.deleted_fields ?? null,
+        deleted_rows: returned.deleted_rows ?? null
+      }
+    };
+  }
+
 
   if (
     functionName ===
@@ -3330,6 +4992,19 @@ async function rpcTelemetryDescriptor(
     };
   }
 
+  if (functionName === "feltus_delete_relationship_confirmed") {
+    return {
+      eventType: "relationship.deleted",
+      eventSource: "database.rpc",
+      message: "Foreign-key relationship removed.",
+      appId: body?.p_app_id || returned.app_id || null,
+      severity: "success",
+      resourceType: "relationship",
+      resourceId: body?.p_relationship_id || null,
+      metadata: { rpc: functionName }
+    };
+  }
+
 
   return null;
 }
@@ -3350,6 +5025,13 @@ async function modelRequest(
       query
     }
   );
+}
+
+async function modelColumnsRequest(modelId) {
+  return tableRequest("feltus_model_columns", "GET", {
+    query: "?select=id,model_id,column_name,data_type,is_nullable,ordinal_position&model_id=eq." +
+      encodeURIComponent(modelId) + "&order=ordinal_position.asc&limit=1000"
+  });
 }
 
 
@@ -3783,6 +5465,100 @@ const server =
     }
   );
 
+let previewServerShuttingDown = false;
+const previewShutdownHandlers = new Map();
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  const handler = () => {
+    if (previewServerShuttingDown) return;
+    previewServerShuttingDown = true;
+    server.close();
+    server.closeAllConnections?.();
+    const timeout = setTimeout(() => process.exit(signal === "SIGINT" ? 130 : 0), 5000);
+    timeout.unref?.();
+    void Promise.allSettled([...codePreviewManagers.values()].map(manager => manager.dispose())).finally(() => {
+      clearTimeout(timeout);
+      for (const [registeredSignal, registeredHandler] of previewShutdownHandlers) {
+        process.removeListener(registeredSignal, registeredHandler);
+      }
+      process.kill(process.pid, signal);
+    });
+  };
+  previewShutdownHandlers.set(signal, handler);
+  process.once(signal, handler);
+}
+
+async function serveLandingRequest(req, res, url) {
+  const pathname = url.pathname;
+  const isLandingPage = pathname === "/landing" || pathname === "/landing/";
+  const assetPrefix = "/landing/assets/";
+  const isLandingAsset = pathname.startsWith(assetPrefix);
+  if (!isLandingPage && !isLandingAsset) return false;
+
+  const method = String(req.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    res.setHeader("Allow", "GET, HEAD");
+    send(res, 405, { error: "Method not allowed." });
+    return true;
+  }
+
+  try {
+    let filePath;
+    let contentType;
+    if (isLandingPage) {
+      filePath = path.join(projectRoot, "landing", "index.html");
+      contentType = "text/html; charset=utf-8";
+    } else {
+      let relativeAsset;
+      try {
+        relativeAsset = decodeURIComponent(pathname.slice(assetPrefix.length));
+      } catch {
+        send(res, 404, { error: "Landing asset not found." });
+        return true;
+      }
+      const parts = relativeAsset.split(/[\\/]+/);
+      if (!relativeAsset || parts.some(part => !part || part === "." || part === "..")) {
+        send(res, 404, { error: "Landing asset not found." });
+        return true;
+      }
+      const extension = path.extname(relativeAsset).toLowerCase();
+      contentType = landingAssetTypes.get(extension);
+      if (!contentType) {
+        send(res, 404, { error: "Landing asset not found." });
+        return true;
+      }
+      const assetRoot = path.join(projectRoot, "landing", "assets");
+      await assertNoSymlinkTraversal(assetRoot, relativeAsset);
+      filePath = path.resolve(assetRoot, ...parts);
+      const relativeToAssets = path.relative(assetRoot, filePath);
+      if (relativeToAssets === ".." || relativeToAssets.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToAssets)) {
+        send(res, 404, { error: "Landing asset not found." });
+        return true;
+      }
+    }
+
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      send(res, 404, { error: isLandingPage ? "Landing page not found." : "Landing asset not found." });
+      return true;
+    }
+    const content = await fs.promises.readFile(filePath);
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": content.length,
+      "Cache-Control": isLandingPage ? "no-store" : "public, max-age=0, must-revalidate",
+      "X-Content-Type-Options": "nosniff"
+    });
+    res.end(method === "HEAD" ? undefined : content);
+    return true;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "INVALID_REPO_PATH", "SYMLINK_NOT_ALLOWED", "PATH_OUTSIDE_REPO"].includes(error?.code)) {
+      send(res, 404, { error: isLandingPage ? "Landing page not found." : "Landing asset not found." });
+      return true;
+    }
+    throw error;
+  }
+}
+
 async function handleHttpRequest(req, res) {
 
       /* FELTUS INFRASTRUCTURE ERROR TELEMETRY */
@@ -3834,10 +5610,11 @@ async function handleHttpRequest(req, res) {
           );
         const requestUrl = new URL(req.url, `http://${HOST}:${PORT}`);
         const isSignedGithubWebhook = /^\/api\/github\/webhooks\/[0-9a-f-]{36}$/i.test(requestUrl.pathname);
+        const isInternalApplicationCleanup = requestUrl.pathname === "/api/internal/application-cleanup";
 
         if (
           !trustedOrigin(req, {
-            requireOrigin: IS_PRODUCTION && unsafeMethod && !isSignedGithubWebhook
+            requireOrigin: IS_PRODUCTION && unsafeMethod && !isSignedGithubWebhook && !isInternalApplicationCleanup
           })
         ) {
           return send(
@@ -3851,6 +5628,10 @@ async function handleHttpRequest(req, res) {
         }
 
         const url = requestUrl;
+
+        if (isInternalApplicationCleanup) {
+          return handleInternalApplicationCleanup(req, res);
+        }
 
         if (String(req.method || "GET").toUpperCase() === "GET" && url.pathname === "/api/code/ui") {
           res.setHeader("X-Frame-Options", "SAMEORIGIN");
@@ -3951,10 +5732,10 @@ async function handleHttpRequest(req, res) {
                 ...(body && typeof body === "object" && !Array.isArray(body)
                   ? body
                   : {}),
-                email: IS_PRODUCTION
+                email: IS_PRODUCTION && !TEAMS_ENABLED
                   ? OWNER_EMAIL
                   : typeof body?.email === "string"
-                    ? body.email.trim()
+                    ? body.email.trim().toLowerCase()
                     : "",
                 redirect_to: PUBLIC_URL
               };
@@ -4068,9 +5849,30 @@ async function handleHttpRequest(req, res) {
           return res.end(responseBody);
         }
 
+        if (await handleGeneratedAppAuth(req, res, url)) return;
+
+        if (await serveLandingRequest(req, res, url)) return;
+
+        const brandAsset = ({
+          "/brand/feltus-logo-horizontal.png": "feltus-logo-horizontal.png",
+          "/brand/feltus-logo-stacked.png": "feltus-logo-stacked.png"
+        })[url.pathname];
+        if (req.method === "GET" && brandAsset) {
+          const assetPath = path.join(projectRoot, "src", "assets", "brand", "logo", brandAsset);
+          return fs.readFile(assetPath, (error, content) => {
+            if (error) return send(res, 404, { error: "Brand asset not found." });
+            res.writeHead(200, {
+              "Content-Type": "image/png",
+              "Cache-Control": "public, max-age=0, must-revalidate",
+              "X-Content-Type-Options": "nosniff"
+            });
+            res.end(content);
+          });
+        }
+
         if (req.method === "GET" && ["/app-wizard.js", "/app-wizard.css", "/app-wizard-lib.js", "/app-wizard-capabilities.js"].includes(url.pathname)) {
-          const assetName = ({ "/app-wizard.js": "app.js", "/app-wizard.css": "app.css", "/app-wizard-lib.js": "feltus-app-wizard.js", "/app-wizard-capabilities.js": "capabilities.js" })[url.pathname];
-          const assetDirectory = assetName === "feltus-app-wizard.js" ? "lib" : "app-wizard";
+          const assetName = ({ "/app-wizard.js": "app.js", "/app-wizard.css": "app.css", "/app-wizard-lib.js": "feltus-app-wizard-shared.js", "/app-wizard-capabilities.js": "capabilities.js" })[url.pathname];
+          const assetDirectory = assetName === "feltus-app-wizard-shared.js" ? "lib" : "app-wizard";
           const assetPath = path.join(projectRoot, "src", assetDirectory, assetName);
           return fs.readFile(assetPath, (error, content) => {
             if (error) return send(res, 404, { error: "App workspace asset not found." });
@@ -4229,11 +6031,12 @@ async function handleHttpRequest(req, res) {
           if (!IS_PRODUCTION) {
             return send(res, 200, {
               authenticated: Boolean(devSession?.access_token),
-              mode: "local-development"
+              mode: "local-development",
+              features: { teams: TEAMS_ENABLED }
             });
           }
 
-          const session = await authenticateOwnerSession(req);
+          const session = await authenticateUserSession(req);
           setActiveSession(session);
 
           if (!session) {
@@ -4242,7 +6045,8 @@ async function handleHttpRequest(req, res) {
 
           return send(res, 200, {
             authenticated: Boolean(session),
-            mode: "production"
+            mode: "production",
+            features: { teams: TEAMS_ENABLED }
           });
         }
 
@@ -4273,7 +6077,7 @@ async function handleHttpRequest(req, res) {
             password.length > 1024
           ) {
             return send(res, 400, {
-              error: "Enter a valid owner email and password."
+              error: "Enter a valid email and password."
             });
           }
 
@@ -4285,7 +6089,7 @@ async function handleHttpRequest(req, res) {
           }
 
           try {
-            const session = await establishOwnerSession({
+            const session = await establishUserSession({
               email,
               password
             });
@@ -4299,11 +6103,12 @@ async function handleHttpRequest(req, res) {
             );
 
             return send(res, 200, {
-              authenticated: true
+              authenticated: true,
+              features: { teams: TEAMS_ENABLED }
             });
           } catch {
             return send(res, 401, {
-              error: "Owner sign-in failed. Check your credentials."
+              error: "Sign-in failed. Check your credentials or invitation."
             });
           }
         }
@@ -4320,7 +6125,7 @@ async function handleHttpRequest(req, res) {
 
           const sessionId = parseCookie(req, SESSION_COOKIE);
           if (sessionId) {
-            ownerSessions.delete(sessionId);
+            userSessions.delete(sessionId);
           }
 
           setActiveSession(null);
@@ -4336,7 +6141,7 @@ async function handleHttpRequest(req, res) {
         }
 
         const session = IS_PRODUCTION
-          ? await authenticateOwnerSession(req)
+          ? await authenticateUserSession(req)
           : devSession;
 
         if (IS_PRODUCTION && !session) {
@@ -4355,6 +6160,10 @@ async function handleHttpRequest(req, res) {
           return;
         }
 
+        if (await handleTeamApi(req, res, url)) {
+          return;
+        }
+
         if (await handleApplicationStateApi(req, res, url)) {
           return;
         }
@@ -4363,6 +6172,9 @@ async function handleHttpRequest(req, res) {
           return;
         }
 
+        if (await handleAppBackupApi(req, res, url)) {
+          return;
+        }
 
 
 
@@ -5653,7 +7465,7 @@ async function handleHttpRequest(req, res) {
             return send(res, 405, { error: "Method not allowed." });
           }
           const body = await readBody(req);
-          const app = await authorizedProject(body.app_id);
+          const app = await authorizedProject(body.app_id, { activeOnly: true });
           if (!app) return send(res, 404, { error: "Project not found." });
           const input = Array.isArray(body.input) ? body.input : [body.input];
           if (
@@ -5690,7 +7502,7 @@ async function handleHttpRequest(req, res) {
           }
           const body = req.method === "POST" ? await readBody(req) : null;
           const appId = body?.app_id || url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method === "POST" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           if (req.method === "GET") {
@@ -5737,7 +7549,7 @@ async function handleHttpRequest(req, res) {
           const conversationId = conversationRoute[1];
           const routeBody = req.method === "PATCH" ? await readBody(req) : null;
           const appId = url.searchParams.get("app_id") || routeBody?.app_id;
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method !== "GET" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           const baseQuery =
@@ -5812,7 +7624,7 @@ async function handleHttpRequest(req, res) {
           }
           const body = req.method === "POST" ? await readBody(req) : null;
           const appId = body?.app_id || url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method !== "GET" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           if (req.method === "GET") {
@@ -5851,7 +7663,7 @@ async function handleHttpRequest(req, res) {
             return send(res, 405, { error: "Method not allowed." });
           }
           const appId = url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method !== "GET" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           const query =
@@ -5894,7 +7706,7 @@ async function handleHttpRequest(req, res) {
         if (url.pathname === "/api/tools/execute") {
           if (req.method !== "POST") return send(res, 405, { error: "Method not allowed." });
           const body = await readBody(req);
-          const app = await authorizedProject(body.app_id);
+          const app = await authorizedProject(body.app_id, { activeOnly: true });
           if (!app) return send(res, 404, { error: "Project not found." });
           const tool = toolByKey(body.tool);
           if (!tool) return send(res, 404, { error: "Tool not found." });
@@ -5951,7 +7763,7 @@ async function handleHttpRequest(req, res) {
           }
           const body = req.method === "POST" ? await readBody(req) : null;
           const appId = body?.app_id || url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method !== "GET" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           if (req.method === "GET") {
@@ -6016,7 +7828,7 @@ async function handleHttpRequest(req, res) {
           }
           const body = req.method === "POST" ? await readBody(req) : null;
           const appId = body?.app_id || url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method === "POST" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           if (req.method === "GET") {
@@ -6067,7 +7879,7 @@ async function handleHttpRequest(req, res) {
           }
           const body = req.method === "POST" ? await readBody(req) : null;
           const appId = body?.app_id || url.searchParams.get("app_id");
-          const app = await authorizedProject(appId);
+          const app = await authorizedProject(appId, { activeOnly: req.method === "POST" });
           if (!app) return send(res, 404, { error: "Project not found." });
           const ownerId = activeSession()?.user?.id;
           if (req.method === "GET") {
@@ -8800,58 +10612,10 @@ res.write(
         }
 
 
-        if (
-          url.pathname ===
-          "/api/relationships/delete"
-        ) {
-          if (req.method !== "POST") {
-            return send(
-              res,
-              405,
-              {
-                error:
-                  "Method not allowed."
-              }
-            );
-          }
-
-          const body =
-            await readBody(req);
-
-          const relationshipId =
-            body.relationship_id;
-
-          if (
-            typeof relationshipId !== "string" ||
-            !UUID_PATTERN.test(
-              relationshipId
-            )
-          ) {
-            return send(
-              res,
-              400,
-              {
-                error:
-                  "Valid relationship ID required."
-              }
-            );
-          }
-
-          const result =
-            await rpcRequest(
-              "feltus_delete_relationship",
-              {
-                p_relationship_id:
-                  relationshipId
-              }
-            );
-
-          return send(
-            res,
-            result.status,
-            result.data
-          );
-        }
+        if (await handleRelationshipDeletionApiRoute({
+          req, url, res, send, readBody, rpcRequest, tableRequest,
+          stateRequest: readCanonicalApplicationState
+        })) return;
 
 
         if (
@@ -9145,182 +10909,12 @@ res.write(
         }
 
 
-        if (
-          url.pathname ===
-          "/api/models"
-        ) {
-          if (req.method === "GET") {
-            const appId =
-              url.searchParams.get(
-                "app_id"
-              );
-
-            if (
-              !appId ||
-              !UUID_PATTERN.test(appId)
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Valid application ID required."
-                }
-              );
-            }
-
-            const result =
-              await modelRequest(
-                appId
-              );
-
-            return send(
-              res,
-              result.status,
-              result.data
-            );
-          }
-
-
-          if (req.method === "POST") {
-            const body =
-              await readBody(req);
-
-            const appId =
-              body.app_id;
-
-            const tableName =
-              body.table_name;
-
-            const columns =
-              body.columns;
-
-            const enableRls =
-              body.enable_rls !== false;
-
-            if (
-              typeof appId !== "string" ||
-              !UUID_PATTERN.test(appId)
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Valid application ID required."
-                }
-              );
-            }
-
-            if (
-              typeof tableName !== "string" ||
-              !/^[a-z][a-z0-9_]{0,39}$/.test(
-                tableName
-              )
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Invalid table name."
-                }
-              );
-            }
-
-            if (
-              !Array.isArray(columns) ||
-              columns.length > 50
-            ) {
-              return send(
-                res,
-                400,
-                {
-                  error:
-                    "Columns must be an array with no more than 50 entries."
-                }
-              );
-            }
-
-            const allowedTypes =
-              new Set([
-                "text",
-                "integer",
-                "bigint",
-                "numeric",
-                "boolean",
-                "date",
-                "timestamptz",
-                "uuid",
-                "jsonb"
-              ]);
-
-            for (
-              const column
-              of columns
-            ) {
-              if (
-                !column ||
-                typeof column.name !==
-                  "string" ||
-                !/^[a-z][a-z0-9_]{0,39}$/.test(
-                  column.name
-                ) ||
-                !allowedTypes.has(
-                  column.type
-                ) ||
-                (
-                  column.nullable !==
-                    undefined &&
-                  typeof column.nullable !==
-                    "boolean"
-                )
-              ) {
-                return send(
-                  res,
-                  400,
-                  {
-                    error:
-                      "Invalid column definition."
-                  }
-                );
-              }
-            }
-
-            const result =
-              await rpcRequest(
-                "feltus_create_model",
-                {
-                  p_app_id:
-                    appId,
-
-                  p_table_name:
-                    tableName,
-
-                  p_columns:
-                    columns,
-
-                  p_enable_rls:
-                    enableRls
-                }
-              );
-
-            return send(
-              res,
-              result.status,
-              result.data
-            );
-          }
-
-
-          return send(
-            res,
-            405,
-            {
-              error:
-                "Method not allowed."
-            }
-          );
+        if (["/api/models", "/api/models/field-impact", "/api/models/deletion-impact"].includes(url.pathname)) {
+          return handleDataModelApiRoute({
+            req, url, res, send, readBody, modelRequest, modelColumnsRequest,
+            stateRequest: readCanonicalApplicationState,
+            rpcRequest
+          });
         }
 
 
