@@ -39,11 +39,11 @@ function localQuery(sql) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
-  const jsonStart = output.indexOf("{");
-  if (jsonStart < 0) throw new Error("The isolated local database query returned no result.");
-  const result = JSON.parse(output.slice(jsonStart));
-  if (result.error) throw new Error("The isolated local database query failed.");
-  return Array.isArray(result.rows) ? result.rows : [];
+  const start = [output.indexOf("["), output.indexOf("{")].filter(index => index >= 0).sort((a, b) => a - b)[0] ?? -1;
+  if (start < 0) throw new Error("The isolated local database query returned no result.");
+  const result = JSON.parse(output.slice(start));
+  if (result && !Array.isArray(result) && result.error) throw new Error("The isolated local database query failed.");
+  return Array.isArray(result) ? result : (Array.isArray(result?.rows) ? result.rows : []);
 }
 
 function check(name, callback) {

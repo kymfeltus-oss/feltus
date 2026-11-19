@@ -35,11 +35,11 @@ function localQuery(sql) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"]
   });
-  const start = output.indexOf("{");
+  const start = [output.indexOf("["), output.indexOf("{")].filter(index => index >= 0).sort((a, b) => a - b)[0] ?? -1;
   if (start < 0) throw new Error("The isolated local database query returned no result.");
   const result = JSON.parse(output.slice(start));
-  if (result.error) throw new Error("The isolated local database query failed.");
-  return Array.isArray(result.rows) ? result.rows : [];
+  if (result && !Array.isArray(result) && result.error) throw new Error("The isolated local database query failed.");
+  return Array.isArray(result) ? result : (Array.isArray(result?.rows) ? result.rows : []);
 }
 
 const { gateway, apiKey, serviceKey } = localConfig();
@@ -260,7 +260,7 @@ if (!gatewayUrl || !["localhost", "127.0.0.1", "::1"].includes(gatewayHost) || !
       `infrastructure-registrations/${metadataService.body.registration.id}`,
       "DELETE"
     );
-    assert.equal(crossAppDisconnect.status, 404, "App B cannot remove App A’s registration");
+    assert.equal(crossAppDisconnect.status, 404, "App B cannot remove App Aâ€™s registration");
     assert.equal((await invoke(appA.id, "infrastructure-registrations")).body.registrations.services.length, 1);
     assert.equal((await invoke(appB.id, "infrastructure-registrations")).body.registrations.services.length, 0);
 
